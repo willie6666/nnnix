@@ -26,6 +26,7 @@ uint8_t  w5500_phy(void);                           /* PHYCFGR: bit0 link, bit1 
 void     w5500_configure(const struct w5500_netcfg *cfg, const uint8_t buffer_kib[8]);
 int      w5500_tcp_listen(int sn, uint16_t port);   /* 0 on LISTEN */
 uint8_t  w5500_status(int sn);
+int      w5500_can_send(int sn);                   /* ESTABLISHED or peer half-closed (CLOSE_WAIT) */
 void     w5500_peer(int sn, uint8_t ip[4], uint16_t *port);
 uint16_t w5500_rx_available(int sn);
 uint16_t w5500_recv(int sn, void *buf, uint16_t n); /* copies up to n available bytes */

@@ -14,6 +14,8 @@
 #include "../drivers/uart.h"
 #include "../drivers/w5500.h"
 #include "../net/telnetd.h"
+#include "../net/http.h"
+#include "../user/nsh.h"
 
 #define POLL_MS 50u
 
@@ -51,8 +53,12 @@ static void kd_main(void *arg)
         if (modules.w5500) w5500_collect();
         if (due(poll_at)) {
             poll_at = jiffies + POLL_MS;
-            if (modules.w5500) { telnetd_poll(); diag_poll(); }
-            console_poll();
+            if (modules.w5500) {
+                diag_poll();
+                httpd_poll();
+                if (nsh_boot_done()) telnetd_poll();
+            }
+            if (nsh_boot_done()) console_poll();
         }
         if (due(second_at)) {
             second_at += 1000u;

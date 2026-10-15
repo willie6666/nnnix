@@ -39,7 +39,7 @@ void kmem_init(void *start, void *end)
 
 void *kmalloc(size_t size)
 {
-    if (!size) return 0;
+    if (!size || total < HDR || size > total - HDR) return 0;
     uint32_t need = (uint32_t)((size + 7u) & ~(size_t)7u) + HDR;
     uint32_t s = LOCK();
     struct block **link = &free_list, *b;

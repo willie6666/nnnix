@@ -33,6 +33,8 @@ enum {
     SYS_GETCWD  = 21,  /* getcwd(buf, len) -> len */
     SYS_STATFS  = 22,  /* statfs(path, struct nn_statfs *) */
     SYS_DUP2    = 23,  /* dup2(fd, target); fd -1 gives target back to the terminal */
+    SYS_ALLOC   = 24,  /* alloc(bytes) -> pointer, or null */
+    SYS_FREE    = 25,  /* free(pointer) */
     SYS_COUNT
 };
 #define SYS_REBOOT_MAGIC 0x1d0cu
@@ -136,6 +138,8 @@ static inline int sys_chdir(const char *path) { return NN_SYSCALL1(SYS_CHDIR, (u
 static inline int sys_getcwd(char *buf, size_t len) { return NN_SYSCALL2(SYS_GETCWD, (uintptr_t)buf, len); }
 static inline int sys_statfs(const char *path, struct nn_statfs *s) { return NN_SYSCALL2(SYS_STATFS, (uintptr_t)path, (uintptr_t)s); }
 static inline int sys_dup2(int fd, int target) { return NN_SYSCALL2(SYS_DUP2, fd, target); }
+static inline void *sys_alloc(size_t n) { return (void *)(uintptr_t)(uint32_t)NN_SYSCALL1(SYS_ALLOC, n); }
+static inline void sys_free(void *p) { (void)NN_SYSCALL1(SYS_FREE, (uintptr_t)p); }
 static inline int sys_uname(char *buf, size_t len) { return NN_SYSCALL2(SYS_UNAME, (uintptr_t)buf, len); }
 
 #endif

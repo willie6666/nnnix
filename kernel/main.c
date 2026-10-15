@@ -14,6 +14,7 @@
 #include "../fs/vfs.h"
 #include "panic.h"
 #include "../net/telnetd.h"
+#include "../user/nsh.h"
 
 #ifndef NNNIX_VERSION
 #define NNNIX_VERSION "unknown"
@@ -71,6 +72,7 @@ void kmain(void)
     kprintf("spiflash: jedec id %06x, %u KiB\n", spiflash_jedec_id(), spiflash_size() / 1024u);
     vfs_init();
     kd_init();
+    if (!task_spawn("init", nsh_boot, 0, 1280, 5, 1)) panic("cannot start init");
     struct kmem_stats m;
     kmem_stats(&m);
     kprintf("ram: static %u B, msp %u B, heap %u B (%u B free after tasks)\n",

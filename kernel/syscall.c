@@ -67,6 +67,8 @@ static int32_t sys_chdir_k(const char *path) { return vfs_chdir(path); }
 static int32_t sys_getcwd_k(char *buf, uint32_t n) { return vfs_getcwd(buf, n); }
 static int32_t sys_statfs_k(const char *path, struct nn_statfs *s) { return vfs_statfs(path, s); }
 static int32_t sys_dup2_k(int32_t fd, int32_t target) { return vfs_dup2(fd, target); }
+static int32_t sys_alloc_k(uint32_t n) { return (int32_t)(uintptr_t)kmalloc(n); }
+static int32_t sys_free_k(void *p) { kfree(p); return 0; }
 
 static int32_t sys_invalid_k(void) { return SYS_ENOSYS; }
 
@@ -95,6 +97,8 @@ static const uintptr_t table[SYS_COUNT] = {
     [SYS_GETCWD] = (uintptr_t)sys_getcwd_k,
     [SYS_STATFS] = (uintptr_t)sys_statfs_k,
     [SYS_DUP2] = (uintptr_t)sys_dup2_k,
+    [SYS_ALLOC] = (uintptr_t)sys_alloc_k,
+    [SYS_FREE] = (uintptr_t)sys_free_k,
 };
 
 /* Called from SVC_Handler with the caller's exception frame:

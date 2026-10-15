@@ -46,7 +46,7 @@ int rootfs_mount(struct mount *m)
         if (e) { kprintf("rootfs: format failed (%d)\n", e); return e; }
     }
     /* Directories that the other mounts appear in, so "ls /" shows them. */
-    static const char *const dirs[] = { "/usb", "/dev", "/proc", "/home" };
+    static const char *const dirs[] = { "/usb", "/dev", "/proc", "/home", "/etc" };
     for (unsigned i = 0; i < sizeof dirs / sizeof dirs[0]; ++i) lfs_mkdir(&lfs, dirs[i]);
     mounted = 1;
     lfs_ssize_t used = lfs_fs_size(&lfs);

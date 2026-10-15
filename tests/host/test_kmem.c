@@ -49,6 +49,9 @@ int main(void)
     CHECK_EQ_INT(free_bytes(), sizeof heap);
     CHECK(kmalloc(0) == NULL);
     CHECK(kmalloc(sizeof heap) == NULL);     /* header does not fit */
+    CHECK(kmalloc(SIZE_MAX) == NULL);
+    CHECK(kmalloc(UINT32_MAX) == NULL);
+    CHECK_EQ_INT(free_bytes(), sizeof heap);
     void *all = kmalloc(sizeof heap - KMEM_HEADER);
     CHECK(all != NULL);
     CHECK(kmalloc(8) == NULL);

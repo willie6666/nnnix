@@ -14,7 +14,7 @@ enum { Sn_MR = 0x00, Sn_CR = 0x01, Sn_IR = 0x02, Sn_SR = 0x03, Sn_PORT = 0x04,
 enum { SIR = 0x0017, SIMR = 0x0018 };
 enum { CR_OPEN = 0x01, CR_LISTEN = 0x02, CR_DISCON = 0x08, CR_CLOSE = 0x10,
        CR_SEND = 0x20, CR_RECV = 0x40 };
-enum { IR_DISCON = 0x02, IR_TIMEOUT = 0x08, IR_SEND_OK = 0x10 };
+enum { IR_TIMEOUT = 0x08, IR_SEND_OK = 0x10 };
 
 static uint16_t tx_size[8];
 static uint16_t queued[8];           /* bytes written since the last SEND */
@@ -140,6 +140,11 @@ int w5500_tcp_listen(int sn, uint16_t port)
 }
 
 uint8_t w5500_status(int sn) { return r8(Sn_SR, SREG(sn)); }
+int w5500_can_send(int sn)
+{
+    uint8_t sr = w5500_status(sn);
+    return sr == W5500_SOCK_ESTABLISHED || sr == W5500_SOCK_CLOSE_WAIT;
+}
 
 void w5500_peer(int sn, uint8_t ip[4], uint16_t *port)
 {
@@ -191,7 +196,9 @@ static int wait_send_ok(int sn, uint32_t timeout_ms)
             send_pending &= (uint8_t)~(1u << sn);
             return 0;
         }
-        if ((ir & (IR_TIMEOUT | IR_DISCON)) || jiffies - start > timeout_ms) return -1;
+        /* A FIN closes only the peer's sending direction. W5500 permits SEND
+         * in CLOSE_WAIT; keep waiting for SEND_OK so the reply reaches it. */
+        if ((ir & IR_TIMEOUT) || !w5500_can_send(sn) || jiffies - start > timeout_ms) return -1;
         w5500_wait(sn, 1);
     }
 }
@@ -211,7 +218,7 @@ int w5500_send(int sn, const void *buf, uint16_t n, uint32_t timeout_ms)
 {
     uint32_t start = jiffies;
     while (w5500_tx_room(sn) < n) {
-        if (w5500_status(sn) != W5500_SOCK_ESTABLISHED || jiffies - start > timeout_ms) return -1;
+        if (!w5500_can_send(sn) || jiffies - start > timeout_ms) return -1;
     }
     if (w5500_write(sn, buf, n)) return -1;
     return w5500_push(sn);
@@ -222,7 +229,7 @@ int w5500_flush(int sn, uint32_t timeout_ms)
     if (wait_send_ok(sn, timeout_ms)) return -1;
     uint32_t start = jiffies;
     while (w5500_tx_free(sn) != tx_size[sn]) {
-        if (w5500_status(sn) != W5500_SOCK_ESTABLISHED || jiffies - start > timeout_ms) return -1;
+        if (!w5500_can_send(sn) || jiffies - start > timeout_ms) return -1;
     }
     return 0;
 }

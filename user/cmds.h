@@ -17,5 +17,10 @@ int cmd_cd(int argc, char **argv);
 int cmd_df(int argc, char **argv);
 int cmd_mkfile(int argc, char **argv);
 int cmd_sum(int argc, char **argv);
+int cmd_wc(int argc, char **argv);
+int cmd_head(int argc, char **argv);
+int cmd_tail(int argc, char **argv);
+int cmd_grep(int argc, char **argv);
+int cmd_hexdump(int argc, char **argv);
 
 #endif

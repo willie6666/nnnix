@@ -10,6 +10,7 @@ and must not carry the default route.
   sudo python3 tools/nntest.py --flash build/nnnix.bin
 """
 import argparse
+import http.client
 import json
 import os
 import re
@@ -20,6 +21,7 @@ import struct
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 
 sys.dont_write_bytecode = True                  # runs under sudo; keep the tree user-owned
@@ -358,6 +360,190 @@ def telnet_tests(ns, report):
     t1.close()
 
 
+def http_request(method, path, data=None, headers=None):
+    c = http.client.HTTPConnection(TARGET[0], 8080, timeout=10)
+    try:
+        c.request(method, path, body=data, headers=headers or {})
+        r = c.getresponse()
+        return r.status, r.read()
+    finally:
+        c.close()
+
+
+def m5_tests(ns, serial, report):
+    """Shell scripts, text tools and streamed, atomic HTTP file transfers."""
+    time.sleep(.3)
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    folder = f'/home/nntest-{os.getpid()}'
+    t.cmd(f'mkdir {folder}')
+    other = None
+    rc_saved = False
+    rc_changed = False
+    backup = f'/etc/.rc-nntest-{os.getpid()}'
+    files = []
+
+    def upload(name, data):
+        path = f'{folder}/{name}'
+        status, _ = ns.call(http_request, 'PUT', path, data)
+        if status not in (201, 204):
+            raise RuntimeError(f'PUT {path}: HTTP {status}')
+        files.append(path)
+        return path
+
+    try:
+        before = t.cmd('free')
+        t.cmd('set MSG "two words"')
+        out = t.cmd('echo "${MSG}" \'$MSG\' ">literal"')
+        report.add('shell quoting/env', out.strip() == 'two words $MSG >literal', repr(out))
+        other = Telnet(ns)
+        other.read_until(Telnet.PROMPT)
+        isolated = other.cmd('echo "x${MSG}x"').strip() == 'xx'
+        t.cmd('unset MSG')
+        report.add('session variables', isolated and t.cmd('echo "x${MSG}x"').strip() == 'xx', '')
+        other.send('exit\r\n'); other.wait_closed(); other.close(); other = None
+        time.sleep(.2)
+
+        out = t.cmd('echo "unterminated')
+        report.add('shell syntax errors', 'unclosed quote' in out and t.cmd('echo $?').strip() == '2', '')
+        out = t.cmd('echo a b c d e f g h i j k')
+        report.add('argument overflow', 'too many arguments' in out, '')
+
+        data = b'alpha one\nbeta two\nalpha three\ntail'
+        textfile = upload('text.txt', data)
+        got = t.cmd(f'wc {textfile}').split()
+        report.add('wc', got[:3] == ['3', '7', str(len(data))], ' '.join(got))
+        out = t.cmd(f'head -n 2 {textfile}')
+        report.add('head', out.splitlines() == ['alpha one', 'beta two'], repr(out))
+        out = t.cmd(f'tail -n 2 {textfile}')
+        report.add('tail', out.replace('\r\n', '\n') == 'alpha three\ntail', repr(out))
+        report.add('tail zero', t.cmd(f'tail -n 0 {textfile}') == '', '')
+        out = t.cmd(f'grep -n alpha {textfile}')
+        report.add('grep', out.splitlines() == ['1:alpha one', '3:alpha three'], repr(out))
+        t.cmd(f'grep missing {textfile}')
+        report.add('grep exit status', t.cmd('echo $?').strip() == '1', '')
+        out = t.cmd(f'hexdump {textfile}')
+        report.add('hexdump', '00000000  61 6c 70 68 61 20 6f 6e 65 0a' in out and '|ail|' in out, '')
+
+        final = f'{folder}/result.txt'
+        files.append(final)
+        inner = upload('inner.sh', b'# nested script\r\necho inner\r\nexit\r\necho unreachable\r\n')
+        script = upload('main.sh', (f'# script\nset DEST {final}\n'
+                                  f'echo "hello script">"$DEST"\nsh {inner}\n'
+                                  f'echo done>>"$DEST"\ncat "$DEST"').encode())
+        out = t.cmd(f'sh {script}')
+        report.add('scripts/nesting', out.splitlines() == ['inner', 'hello script', 'done'], repr(out))
+        t.cmd('unset DEST')
+        longscript = upload('long.sh', (f'echo bad > {final} ' + 'x' * 192 + '\n').encode())
+        out = t.cmd(f'sh {longscript}')
+        report.add('long script line', 'script read failed' in out and t.cmd(f'cat {final}').splitlines() == ['hello script', 'done'], '')
+
+        payload = pattern(32768)
+        binary = upload('upload.bin', payload)
+        status, body = ns.call(http_request, 'GET', binary)
+        summed = t.cmd(f'sum {binary}')
+        report.add('http binary roundtrip', status == 200 and body == payload and
+                   summed.startswith(f'{zlib.crc32(payload):08x} 32768 '), '32 KiB, CRC-32 verified')
+        with tempfile.TemporaryDirectory(prefix='nnnix-copy-') as tmp:
+            local, copied = Path(tmp) / 'source.bin', Path(tmp) / 'copy.bin'
+            local.write_bytes(payload)
+            remote = f'{folder}/nncp.bin'
+            files.append(remote)
+            put = run('ip', 'netns', 'exec', ns.name, sys.executable, str(REPO / 'tools/nncp.py'),
+                      'put', str(local), remote, check=False)
+            get = run('ip', 'netns', 'exec', ns.name, sys.executable, str(REPO / 'tools/nncp.py'),
+                      'get', remote, str(copied), check=False)
+            report.add('nncp host tool', put.returncode == get.returncode == 0 and copied.read_bytes() == payload,
+                       put.stdout.strip() + '; ' + get.stdout.strip())
+        status, _ = ns.call(http_request, 'PUT', binary, b'new')
+        report.add('http atomic replace', status == 204 and ns.call(http_request, 'GET', binary) == (200, b'new'), '')
+        empty = upload('empty', b'')
+        report.add('http empty file', ns.call(http_request, 'GET', empty) == (200, b''), '')
+
+        def raw(message, half_close=False):
+            s = socket.create_connection((TARGET[0], 8080), timeout=8)
+            try:
+                s.sendall(message)
+                if half_close:
+                    s.shutdown(socket.SHUT_WR)
+                reply = bytearray()
+                while chunk := s.recv(4096):
+                    reply.extend(chunk)
+                return bytes(reply)
+            finally:
+                s.close()
+
+        reply = ns.call(raw, (f'PUT {binary} HTTP/1.0\r\nContent-Length: 4096\r\n\r\nshort').encode(), True)
+        kept = ns.call(http_request, 'GET', binary)
+        report.add('http aborted upload', b' 408 ' in reply and kept == (200, b'new'),
+                   f'original preserved: {kept == (200, b"new")}; {reply.splitlines()[:1]!r}')
+        reply = ns.call(raw, f'GET {textfile} HTTP/1.0\r\n\r\n'.encode(), True)
+        report.add('http TCP half-close', b' 200 ' in reply and reply.partition(b'\r\n\r\n')[2] == data,
+                   'reply arrives after the client closes its send direction')
+        statuses = [ns.call(http_request, 'GET', p)[0]
+                    for p in ('/etc/rc', '/home/../etc/rc', '/home/%2e%2e/etc/rc')]
+        report.add('http path boundary', statuses == [403, 403, 403], str(statuses))
+        reply = ns.call(raw, f'PUT {binary} HTTP/1.0\r\nContent-Length: 1\r\nContent-Length: 2\r\n\r\nx'.encode())
+        report.add('http bad framing', b' 400 ' in reply and ns.call(http_request, 'GET', binary) == (200, b'new'), '')
+        reply = ns.call(raw, f'PUT {binary} HTTP/1.1\r\nHost: nnnix\r\nContent-Length: 0\r\nExpect: 100-continue\r\n\r\n'.encode())
+        report.add('http expect continue', b' 100 Continue' in reply and b' 204 ' in reply, '')
+
+        slow = ns.call(lambda: socket.create_connection((TARGET[0], 8080), timeout=8))
+        try:
+            slow.sendall(b'GET /home/incomplete HTTP/1.0\r\n')
+            started = time.monotonic()
+            out = t.cmd('uptime')
+            elapsed = time.monotonic() - started
+            report.add('http shell concurrency', 'up ' in out and elapsed < .5, f'shell answered in {elapsed * 1000:.0f} ms')
+        finally:
+            slow.close()
+        time.sleep(.3)
+
+        # Keep an existing rc safe across the test, including its error path.
+        etc = t.cmd('ls /etc')
+        rc_saved = any(line.split()[:1] == ['rc'] for line in etc.splitlines())
+        if rc_saved:
+            out = t.cmd(f'mv /etc/rc {backup}')
+            if out:
+                raise RuntimeError(f'cannot preserve /etc/rc: {out}')
+        marker = f'{folder}/boot.txt'
+        files.append(marker)
+        rc_changed = True
+        t.cmd(f'echo "echo boot-script-ok>{marker}" > /etc/rc')
+        t.send('exit\r\n'); t.wait_closed(); t.close(); t = None
+        mark = len(serial.lines)
+        ns.call(request, b'X')
+        serial.wait_for(r'w5500: link up', 20, mark)
+        time.sleep(.5)
+        t = Telnet(ns)
+        t.read_until(Telnet.PROMPT, 10)
+        report.add('boot /etc/rc', t.cmd(f'cat {marker}').strip() == 'boot-script-ok', 'ran before interactive shells')
+        t.cmd('rm /etc/rc')
+        if rc_saved:
+            t.cmd(f'mv {backup} /etc/rc')
+        rc_changed = False
+
+        # Temporary files may consume flash, but should not retain any heap.
+        t.cmd(f'cat {textfile} > /dev/null')
+        time.sleep(.3)
+        after = t.cmd('free')
+        report.add('m5 heap reclaimed', before == after, after.strip())
+    finally:
+        if other:
+            other.close()
+        if t is None:
+            t = Telnet(ns)
+            t.read_until(Telnet.PROMPT, 10)
+        if rc_changed:
+            t.cmd('rm /etc/rc')
+            if rc_saved:
+                t.cmd(f'mv {backup} /etc/rc')
+        for path in files:
+            t.cmd(f'rm {path}')
+        t.cmd(f'rmdir {folder}')
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
 class Report:
     def __init__(self):
         self.rows = []
@@ -449,6 +635,13 @@ def main():
                 fs_tests(ns, serial, report)
             except (OSError, TimeoutError, ConnectionError) as exc:
                 report.add('file systems', False, repr(exc))
+
+            try:
+                m5_tests(ns, serial, report)
+            except (OSError, TimeoutError, ConnectionError, RuntimeError) as exc:
+                import traceback
+                traceback.print_exc()
+                report.add('M5 environment', False, repr(exc))
 
             if args.usb_bytes:
                 text, _ = ns.call(request, b'U', 1, args.usb_bytes, b'', None, 180)

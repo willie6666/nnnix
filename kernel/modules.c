@@ -13,7 +13,7 @@ static const struct w5500_netcfg netcfg = {
     .mac = { 0x02, 0x37, 0x65, 0x55, 0x00, 0x01 },     /* locally administered */
     .ip = { 198, 18, 0, 2 }, .mask = { 255, 255, 255, 252 }, .gateway = { 0, 0, 0, 0 },
 };
-/* Socket plan (net.h): 0 diag, 1-3 telnet, 4 spare. 16 KiB per direction in total. */
+/* Socket plan (net.h): 0 diag, 1-3 telnet, 4 HTTP. 16 KiB per direction in total. */
 static const uint8_t buffers_kib[8] = { 8, 2, 2, 2, 2, 0, 0, 0 };
 
 void modules_poll(void)

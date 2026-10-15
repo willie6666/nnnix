@@ -5,5 +5,7 @@
 /* The nnnix shell. Reads lines from fd 0 and runs built-in commands until
  * "exit" or end of file. Uses only system calls. */
 void nsh_main(void);
+void nsh_boot(void *arg);            /* optional /etc/rc, before interactive shells */
+int nsh_boot_done(void);
 
 #endif

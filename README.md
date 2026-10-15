@@ -8,8 +8,9 @@ flash and a USB drive, and later stand-alone loadable programs. The full plan is
 
 ## Status
 
-**M4 file systems: done** (M0 foundation, M1 kernel core, M2 telnet console, M3 local console and a RAM diet
-done before it).
+**M5 in progress: shell scripts, text tools and HTTP file transfer implemented.**
+M0 foundation, M1 kernel core, M2 telnet, M3 LCD/keyboard, the RAM diet and M4 file systems are complete.
+Pipes/background jobs, the editor, DHCP and RTC tools remain in M5.
 
 nnnix runs a shell on the board's own LCD with a USB keyboard, and up to three more over telnet. Files live on
 the onboard 2 MiB SPI flash (littlefs) and on a USB drive:
@@ -48,15 +49,22 @@ pid name prio state stack_used stack_size cpu_ms
 - File systems: VFS with `/` (littlefs on the SPI flash), `/usb` (CH376S FAT drive), `/dev`, `/proc`; per-task file descriptors and working directory; littlefs and CH376S work runs in the `fsd` task
 - Network: interrupt-driven W5500, socket layer with self re-arming listeners, telnet server with three sessions
 - Shell `nsh`: `help echo ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir touch pwd cd df mkfile sum`, redirection `< > >>`, using only system calls
+- M5 shell: quotes/escapes, per-session variables (`set`, `unset`, `env`, `$NAME`, `${NAME}`, `$?`),
+  `sh`/`source` scripts and optional `/etc/rc` at boot; streaming `wc head tail grep hexdump`
+- HTTP transfers: TCP port 8080, GET/PUT under `/home`, temporary-file uploads committed by atomic rename;
+  `tools/nncp.py` transfers binary files with no third-party host dependencies
 - Memory: first-fit kmalloc with coalescing; task stacks get red-zone and canary checks and an overflow panics
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 45 checks) | Result |
+| On-target tests (`make test`, 70 checks) | Result |
 | --- | --- |
 | Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
 | Two sessions reading two different files on the single-file CH376S at once | pass |
 | Files survive a reboot | pass |
+| M5: quoting, variables, scripts/nesting, long-line rejection, `/etc/rc` after reboot and text tools | pass |
+| HTTP: 32 KiB binary roundtrip, atomic replacement, aborted upload, framing/path checks, TCP half-close | pass |
+| `nncp.py` upload/download, concurrent shell use and heap reclamation | pass |
 | littlefs write / read (32 KiB) | 50 KiB/s / 256 KiB/s |
 | Console: banner, typing, line editing, clear, scrolling, shell restart after `exit` | pass |
 | Two telnet sessions: one runs `sleep 2`, the other answers | in 5 ms |
@@ -66,8 +74,11 @@ pid name prio state stack_used stack_size cpu_ms
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot | pass |
-| Free RAM floor: heap free with the console shell and one telnet session | 6.5 KiB (test limit 5.5 KiB) |
-| Code size / static RAM / heap | 55.4 KiB / 3.3 KiB / 12.0 KiB |
+| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5784 B (test limit 5500 B) |
+| Code size / static RAM including crash records / heap | 62.0 KiB / 3.3 KiB / 11.9 KiB |
+
+Host tests: 1326 checks pass. An additional 20 consecutive telnet
+connect/command/logout cycles pass.
 
 ## Hardware
 
@@ -95,12 +106,18 @@ make flash        # program APROM through Nu-Link (APROM only; CONFIG and LDROM 
 make test         # flash + on-target tests (needs sudo for a temporary network namespace)
 telnet 198.18.0.2 # log in (from the test network; see below)
 python3 tools/console.py   # kernel log (/dev/ttyUSB0, 115200 8N1)
+sudo python3 tools/nncp.py --iface eth1 put local.bin /home/local.bin
+sudo python3 tools/nncp.py --iface eth1 get /home/local.bin copy.bin
 ```
 
 `make test` needs a USB Ethernet adapter cabled straight to the W5500. The test moves it into an isolated
 network namespace (198.18.0.1/30; nnnix is 198.18.0.2) and moves it back afterwards. The adapter must have
 no IPv4 address and must not carry the default route. The default is `eth1`; pass `--iface` to
 `tools/nntest.py` to change it.
+
+Shell syntax, script limits, `/etc/rc` and file-transfer usage are documented in
+[docs/USER_ENV.md](docs/USER_ENV.md). The network address is still static; boot-time network
+configuration and service control remain pending in M5.
 
 OpenOCD lookup order: `$NNNIX_OPENOCD_ROOT` (an extracted Debian openocd package root), then
 `.tools/openocd/root` one level above the repository, then `openocd` on `PATH`.
@@ -110,14 +127,14 @@ OpenOCD lookup order: `$NNNIX_OPENOCD_ROOT` (an extracted Debian openocd package
 ```
 arch/nuc140/   startup, vector table, clock, pins, context switch, HardFault, linker script
 kernel/        scheduler, synchronisation, system calls, kmalloc, klog, panic, kd (kernel daemon), tty, line editor, vt, console, input, module supervision, diag service
-net/           socket layer, telnet filter, telnetd
+net/           socket layer, telnet filter, telnetd, bounded HTTP parser and file-transfer server
 drivers/       uart spi ch376 w5500 ch9350 hidkey kbd lcd font5x7 spiflash
 fs/            vfs and fsd, rootfs (littlefs), usbfs (CH376S), devfs, procfs, littlefs port
 lib/           printf subset, string functions, EABI division (no divide instruction on M0), system-call stubs (sys.h), user stdio
-user/          nsh shell and file commands, scheduler demo programs
+user/          nsh shell, parser, file/text commands, scheduler demo programs
 third_party/   littlefs v2.11.3 (BSD-3-Clause), unmodified
 tests/host/    host unit tests (including a recorded CH9350 capture)
-tools/         flash.py, console.py, nntest.py
+tools/         flash.py, console.py, nntest.py, nncp.py (HTTP file transfer)
 docs/          development plan
 ```
 

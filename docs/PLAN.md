@@ -3,7 +3,9 @@
 **nnnix**: NuvotoN NUC UNIX (NuvotoN Nuc NIX), a small UNIX-like operating system for the
 NU-LB_002 board (NUC140VE3CN).
 
-Created 2026-10-15. Status: **M4 done** (2026-10-16); M5 next.
+Created 2026-10-15. Status: **M4 done; M5 in progress** (2026-10-16).
+The first M5 part adds shell scripts, variables, text tools and HTTP file transfer;
+pipes/jobs, editing, network configuration/DHCP and RTC remain pending.
 
 ## 1. Goals
 
@@ -257,6 +259,52 @@ larger allocations.
 - RTC: `date`, optional NTP.
 
 **Acceptance**: `/etc/rc` configures the network and starts telnetd at boot; a file uploaded from the NanoPi lands in `/home`.
+
+**First part (2026-10-16)**: `make test` 70/70; `make host-test` 1326 checks pass.
+This is not the full M5 acceptance.
+- `nsh` now has a bounded, host-tested parser for single/double quotes, escapes,
+  comments, `< > >>` with or without adjacent spaces, and `$NAME`, `${NAME}`, `$?`.
+  Syntax and argument overflow errors are rejected before executing a command.
+- Eight variables per shell (`set`, `unset`, `env`), `sh`/`source`/`.` scripts,
+  up to three nested scripts, LF/CRLF and a final unterminated line. Script state
+  lives in a small heap context rather than recursive task stacks. Oversized or
+  binary lines stop the script before a truncated command can run.
+- An `init` task runs an optional `/etc/rc` once, then exits. LCD and telnet
+  shells start afterwards. `/etc` is created if missing; existing boot scripts
+  are not overwritten, and no default boot script is installed.
+- Streaming `wc`, `head`, `tail`, literal `grep` and `hexdump`; `tail` requires
+  seekable input and `grep` explicitly rejects lines over its 192-byte limit.
+- The existing spare W5500 socket 4 serves HTTP GET/PUT on port 8080 under
+  `/home`. A worker, 128-byte receive buffer and bounded parser storage are
+  allocated only for an active transfer. PUT streams to a littlefs temporary
+  file and atomically renames it after a successful close; an incomplete upload
+  preserves the previous file. Requests need Content-Length for PUT (1 MiB max);
+  Expect: 100-continue is supported, chunked upload is not.
+- TCP half-close fix: buffered input in CLOSE_WAIT reaches the listener, and
+  SEND/flush waits for completion even after a peer FIN. Previously a client
+  closing only its sending direction could lose the server's response.
+- `tools/nncp.py`: Python-standard-library upload/download client, optional
+  temporary test network namespace, and atomic host-side downloads.
+- Added alloc/free system calls for shell-owned state. kmalloc rejects sizes
+  that could overflow its aligned header calculation. Shell parse buffers exist
+  only during a command; waiting shells retain about 200 bytes of extra state.
+- Board checks cover scripts and variables in independent sessions, the new
+  text tools, `/etc/rc` after a reboot, 32 KiB binary upload/download with CRC,
+  the host client, atomic replacement and aborted uploads, invalid paths and
+  framing, Expect: 100-continue, TCP half-close and heap reclamation. A shell
+  answered in 4 ms while HTTP waited for an unfinished request. An additional
+  20 consecutive telnet connect/command/logout cycles passed.
+- RAM/code: 5784 bytes heap free while `free` executes with the LCD shell and
+  one telnet session (5500-byte floor); all three telnet sessions still fit.
+  Code is about 62.0 KiB, static RAM including crash records 3372 bytes, heap
+  12216 bytes. Shell stack use measured at 760/1280 bytes; no persistent heap
+  loss was seen after scripts, file transfers and reconnects.
+
+Usage and deliberate limits: [USER_ENV.md](USER_ENV.md).
+Remaining M5 work: pipes and background jobs with bounded task/stack use,
+jobs/kill, `ed`, network diagnostics/configuration, DHCP, RTC/date and optional
+NTP. `/etc/rc` currently runs commands but does not configure the static network
+or control telnetd; those parts of the final M5 acceptance remain open.
 
 ### M6 Loadable programs
 - Executable format `NXE`: header + position-independent code (clang `-fropi -frwpi`, R9 as the data base) + relocations.

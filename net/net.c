@@ -25,7 +25,7 @@ int net_send(int sn, const void *buf, uint32_t n)
         uint16_t room = w5500_tx_room(sn);
         if (!room) {
             /* Space comes back as the peer acknowledges; there is no event for that. */
-            if (w5500_status(sn) != W5500_SOCK_ESTABLISHED || jiffies - last > 10000u) return -1;
+            if (!w5500_can_send(sn) || jiffies - last > 10000u) return -1;
             w5500_wait(sn, 5);
             continue;
         }
@@ -72,6 +72,9 @@ int listener_poll(struct listener *l)
         }
         return 0;
     case W5500_SOCK_CLOSE_WAIT:
+        /* The peer may have sent a complete request and then shutdown(SHUT_WR)
+         * before kd's next poll. Hand buffered input to the server first. */
+        if (w5500_rx_available(l->sn)) return 1;
         w5500_disconnect(l->sn, 500);
         relisten(l);
         return 0;

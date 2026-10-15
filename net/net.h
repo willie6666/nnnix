@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* Socket layer over the W5500. One hardware socket is one TCP connection.
- * Socket plan: 0 diag (8 KiB), 1-3 telnet (2 KiB each), 4 spare (2 KiB). */
+ * Socket plan: 0 diag (8 KiB), 1-3 telnet (2 KiB each), 4 HTTP (2 KiB). */
 #define NET_SOCK_DIAG   0
 #define NET_SOCK_TELNET 1             /* 1, 2, 3 */
 #define NET_TELNET_SOCKS 3

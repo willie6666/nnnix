@@ -8,23 +8,35 @@ flash and a USB drive, and later stand-alone loadable programs. The full plan is
 
 ## Status
 
-**M3 local console: done** (M0 foundation, M1 kernel core and M2 telnet console done before it).
+**M4 file systems: done** (M0 foundation, M1 kernel core, M2 telnet console, M3 local console and a RAM diet
+done before it).
 
-nnnix runs a shell on the board's own LCD with a USB keyboard, and up to three more over telnet. All system
-services run inside one kernel daemon (`kd`), so an idle system has three tasks:
+nnnix runs a shell on the board's own LCD with a USB keyboard, and up to three more over telnet. Files live on
+the onboard 2 MiB SPI flash (littlefs) and on a USB drive:
 
 ```
-$ telnet 198.18.0.2
-nnnix m3 NUC140VE3CN
-Type 'help' for a list of commands.
-nnnix$ ps
-  PID NAME     PRI STATE  STACK USED/SIZE   CPU MS
-    1 idle       7 run            80/384      39204
-    2 kd         2 wait          716/1024        16
-    3 nsh        5 wait          672/1152         8
-    4 nsh        5 run           808/1152        11
-nnnix$ free
-heap: total 13144 B, free 9216 B, largest block 9216 B, 1 free blocks
+nnnix$ ls /
+dev/
+hello.txt          12
+home/
+proc/
+usb/
+nnnix$ mkfile /home/big.bin 32k
+32768 bytes in 593 ms (55200 B/s)
+nnnix$ cp /home/big.bin /usb
+nnnix$ sum /home/big.bin /usb/big.bin
+31782b52 32768 /home/big.bin 128 ms
+31782b52 32768 /usb/big.bin 225 ms
+nnnix$ df
+FS      KiB   used   free
+/       2048     48   2000
+/usb 15343968      8 15343960
+nnnix$ cat /proc/tasks
+pid name prio state stack_used stack_size cpu_ms
+1 idle 7 1 80 384 43374
+2 fsd 4 3 1028 1536 780
+3 kd 2 3 716 1024 1060
+4 nsh 5 3 696 1152 10
 ```
 
 - Preemptive multitasking: fixed priorities with round-robin among equals (10 ms slice; a preempted task resumes its slice), PendSV switching, 1 ms tick, sleep and timeouts
@@ -33,24 +45,29 @@ heap: total 13144 B, free 9216 B, largest block 9216 B, 1 free blocks
 - Terminals: canonical line editing (backspace, Ctrl-U, Ctrl-C, Ctrl-D, arrow keys ignored) over a byte backend
 - Console tty0: onboard 128x64 LCD as a 21x8 text terminal plus the USB keyboard (Shift, Caps Lock, Ctrl, arrows, auto-repeat); the shell restarts after logout
 - Kernel daemon `kd`: one event loop for the network, keyboard, telnet and diag listeners, console shell restart and module supervision
+- File systems: VFS with `/` (littlefs on the SPI flash), `/usb` (CH376S FAT drive), `/dev`, `/proc`; per-task file descriptors and working directory; littlefs and CH376S work runs in the `fsd` task
 - Network: interrupt-driven W5500, socket layer with self re-arming listeners, telnet server with three sessions
-- Shell `nsh`: `help echo ps free uptime dmesg uname sleep clear reboot exit`, using only system calls
+- Shell `nsh`: `help echo ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir touch pwd cd df mkfile sum`, redirection `< > >>`, using only system calls
 - Memory: first-fit kmalloc with coalescing; task stacks get red-zone and canary checks and an overflow panics
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 35 checks) | Result |
+| On-target tests (`make test`, 45 checks) | Result |
 | --- | --- |
+| Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
+| Two sessions reading two different files on the single-file CH376S at once | pass |
+| Files survive a reboot | pass |
+| littlefs write / read (32 KiB) | 50 KiB/s / 256 KiB/s |
 | Console: banner, typing, line editing, clear, scrolling, shell restart after `exit` | pass |
-| Two telnet sessions: one runs `sleep 2`, the other answers | in 4 ms |
+| Two telnet sessions: one runs `sleep 2`, the other answers | in 5 ms |
 | Line editing, Ctrl-C, Ctrl-D, three sessions, log-out and reconnect, heap leak check | pass |
-| W5500 send / receive (SPI 12.5 MHz, 8 KiB socket buffer) | 604 KiB/s / 586 KiB/s, verified byte by byte |
-| CH376S write / read 256 KiB (SPI 12.5 MHz) | 118 kB/s / 229 kB/s, 0 errors |
+| W5500 send / receive (SPI 12.5 MHz, 8 KiB socket buffer) | 627 KiB/s / 580 KiB/s, verified byte by byte |
+| CH376S raw write / read 256 KiB (SPI 12.5 MHz) | 114 kB/s / 229 kB/s, 0 errors |
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
-| Stack overflow detection, HardFault capture, reported after reboot | pass |
-| Free RAM floor: heap free with the console shell and one telnet session | 9.2 KiB (test limit 8.5 KiB) |
-| Code size / static RAM / heap | 24.2 KiB / 2.4 KiB / 13.1 KiB (10.4 KiB free after boot) |
+| Stack overflow detection, HardFault capture, crash report kept after reboot | pass |
+| Free RAM floor: heap free with the console shell and one telnet session | 6.5 KiB (test limit 5.5 KiB) |
+| Code size / static RAM / heap | 55.4 KiB / 3.3 KiB / 12.0 KiB |
 
 ## Hardware
 
@@ -63,6 +80,7 @@ NU-LB_002 Rev 2.1 (NUC140VE3CN). The external modules run from an MB-102 5 V sup
 | CH376S (SPI; P_S jumper removed, RD/WR tied to GND) | SCK PC9, MISO PC10, MOSI PC11, CS PC8, INT PB14 |
 | W5500 | SCK PC9, MISO PC10, MOSI PC11, CS PB10, INT PB2, RST PB8 |
 | Onboard LCD | SPI3: CS PD8, CLK PD9, MOSI PD11 |
+| Onboard SPI flash (W25Q16, 2 MiB) | SPI2: CS PD0, CLK PD1, MISO PD2, MOSI PD3 |
 
 Board details and constraints (LIN sharing, byte-only CH376S transfers and more) are in [docs/PLAN.md](docs/PLAN.md), section 2.
 
@@ -93,9 +111,11 @@ OpenOCD lookup order: `$NNNIX_OPENOCD_ROOT` (an extracted Debian openocd package
 arch/nuc140/   startup, vector table, clock, pins, context switch, HardFault, linker script
 kernel/        scheduler, synchronisation, system calls, kmalloc, klog, panic, kd (kernel daemon), tty, line editor, vt, console, input, module supervision, diag service
 net/           socket layer, telnet filter, telnetd
-drivers/       uart spi ch376 w5500 ch9350 hidkey kbd lcd font5x7
+drivers/       uart spi ch376 w5500 ch9350 hidkey kbd lcd font5x7 spiflash
+fs/            vfs and fsd, rootfs (littlefs), usbfs (CH376S), devfs, procfs, littlefs port
 lib/           printf subset, string functions, EABI division (no divide instruction on M0), system-call stubs (sys.h), user stdio
-user/          nsh shell, scheduler demo programs
+user/          nsh shell and file commands, scheduler demo programs
+third_party/   littlefs v2.11.3 (BSD-3-Clause), unmodified
 tests/host/    host unit tests (including a recorded CH9350 capture)
 tools/         flash.py, console.py, nntest.py
 docs/          development plan
@@ -103,4 +123,4 @@ docs/          development plan
 
 ## License
 
-GPL-3.0-or-later; see [LICENSE](LICENSE).
+GPL-3.0-or-later; see [LICENSE](LICENSE). `third_party/littlefs` is BSD-3-Clause; see its `LICENSE.md`.

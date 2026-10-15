@@ -16,10 +16,11 @@ VERSION := $(shell git describe --always --dirty --tags 2>/dev/null || echo unkn
 
 CFLAGS  = --target=arm-none-eabi -mcpu=cortex-m0 -mthumb -Os -g \
           -ffreestanding -fno-builtin -ffunction-sections -fdata-sections \
-          -Wall -Wextra -Werror -std=c11 -DNNNIX_VERSION='"$(VERSION)"'
+          -Wall -Wextra -Werror -std=c11 -DNNNIX_VERSION='"$(VERSION)"' \
+          -DLFS_CONFIG=lfs_port.h -DLFS_NAME_MAX=31 -Ifs -Ithird_party/littlefs
 LDFLAGS = -nostdlib -fuse-ld=lld -Wl,-T,arch/nuc140/link.ld,--gc-sections,-Map,build/nnnix.map
 
-SRCS = $(wildcard arch/nuc140/*.c kernel/*.c drivers/*.c lib/*.c net/*.c user/*.c)
+SRCS = $(wildcard arch/nuc140/*.c kernel/*.c drivers/*.c lib/*.c net/*.c fs/*.c user/*.c) third_party/littlefs/lfs.c
 OBJS = $(SRCS:%.c=build/%.o)
 
 .PHONY: all flash test host-test size clean
@@ -28,6 +29,11 @@ all: build/nnnix.bin
 build/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CLANG) $(CFLAGS) -MMD -MP -c $< -o $@
+
+# Upstream code is kept unmodified, so its warnings are not errors here.
+build/third_party/%.o: third_party/%.c
+	@mkdir -p $(dir $@)
+	$(CLANG) $(CFLAGS) -Wno-error -w -MMD -MP -c $< -o $@
 
 build/nnnix.elf: $(OBJS) arch/nuc140/link.ld
 	$(CLANG) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $@

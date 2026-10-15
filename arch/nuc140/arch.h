@@ -18,10 +18,12 @@ int  board_modules_powered(void);    /* MB-102 rail sensed through CH376S/W5500 
 void board_spi_pins(int on);
 void board_w5500_reset(int asserted);   /* PB8 */
 void board_led_toggle(void);
+void board_led_set(int on);         /* PC12, active low */
 void board_w5500_irq(int enable);   /* PB2 falling edge -> w5500_isr() */
 uint32_t board_reset_cause(void);    /* SYS_RSTSRC captured at boot */
 
 void fault_report_last(void);        /* print the crash record left by a previous HardFault */
+const char *fault_last_report(void); /* that report as text, "" if the last boot was clean */
 void fault_trigger(void) __attribute__((noreturn));
 void arch_reboot(void) __attribute__((noreturn));
 

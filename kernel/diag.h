@@ -14,6 +14,7 @@
  *       higher-priority 10 ms ticker, text reply
  *   'I' type length payload bytes into tty0 (keyboard injection)
  *   'V' tty0 screen text
+ *   'M' SPI flash: send 64 KiB block number length (read only)
  *   'O' stack overflow test (the kernel panics and reboots)
  *   'F' HardFault (fault capture test)   'X' reboot
  * Pattern byte i = ((i * 0x9e3779b1) >> 24) ^ i. */

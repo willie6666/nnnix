@@ -3,7 +3,7 @@
 **nnnix**: NuvotoN NUC UNIX (NuvotoN Nuc NIX), a small UNIX-like operating system for the
 NU-LB_002 board (NUC140VE3CN).
 
-Created 2026-10-15. Status: **M3 done** (2026-10-16), followed by a RAM diet; M4 next.
+Created 2026-10-15. Status: **M4 done** (2026-10-16); M5 next.
 
 ## 1. Goals
 
@@ -28,7 +28,7 @@ Out of scope: memory protection (the Cortex-M0 has no MMU or MPU), secure multi-
 | CH9350 | USB keyboard/mouse to UART1 PB4 (receive only) | Keyboard input, mouse events |
 | CP2102 | UART0 PB1 TX | Kernel log; two-way use needs the PB0 conflict solved (R3) |
 | Onboard LCD | 128x64 monochrome, SPI3 (PD8-PD11, PD14) | Text console, about 21x8 characters |
-| Onboard SPI flash | W25X16 2 MiB, SPI2 (PD0-PD5) | Root file system `/` |
+| Onboard SPI flash | W25Q16 2 MiB, SPI2 (PD0-PD3) | Root file system `/` |
 | Other onboard parts | LED (PC12), buzzer, keys, I2C EEPROM 24C64, RTC | `/dev/led`, `/dev/beep`, settings, time |
 
 Known hardware constraints (from the bring-up tests):
@@ -89,7 +89,7 @@ Flash 128 KiB targets: kernel + drivers <= 45 KiB, file systems <= 20 KiB, shell
 | SPI1 CLK/MISO/MOSI | PC9/PC10/PC11 | Verified |
 | CH376S CS/INT | PC8/PB14 | Verified |
 | W5500 CS/INT/RST | PB10/PB2/PB8 | Verified |
-| SPI2 -> W25X16 | PD0-PD5 (onboard) | To verify (R2) |
+| SPI2 -> W25Q16 (CS PD0 as GPIO, CLK PD1, MISO PD2, MOSI PD3) | onboard | Verified |
 | SPI3 -> LCD (CS PD8 as GPIO, CLK PD9, MOSI PD11) | PD8-PD11 (onboard); PD14 left alone | Verified |
 | LED | PC12 | Verified |
 | Buzzer, keys, EEPROM, RTC crystal | Per board documentation | To verify (R4) |
@@ -225,6 +225,31 @@ larger allocations.
 
 **Acceptance**: copy files between the USB drive and `/`, and they survive a power cycle; two sessions read different USB files at the same time.
 
+**Result (2026-10-16)**: `make test` 45/45 (10 file-system checks), `make host-test` passes.
+- R2: the onboard flash is a Winbond W25Q16 (JEDEC ef4015, 2 MiB) on SPI2 at 6.3 MHz. It was blank; a full
+  image was saved on the development host before first use.
+- R5: littlefs v2.11.3 (BSD-3-Clause, vendored unmodified in `third_party/littlefs`) is 19.5 KiB of code. nnnix
+  supplies its utility header (`fs/lfs_port.h`: no libc, no CLZ/CTZ on the M0), static 64-byte read/program caches,
+  a 16-byte lookahead and `LFS_NAME_MAX` 31. It formats an empty flash on first boot.
+- VFS: mount table (`/` littlefs, `/usb` CH376S, `/dev`, `/proc`), per-task file descriptors (fd 0-2 fall back to
+  the terminal) and working directory, path normalisation. littlefs and CH376S operations run in the `fsd` task
+  on its own 1.5 KiB stack (about 1 KiB used), one at a time, so shells keep small stacks and neither file
+  system needs locking of its own.
+- usbfs: the CH376S keeps one file open, so every file remembers its 8.3 path and position and the chip is
+  switched over (reopen and seek) when another file is used. Directory listings enumerate from the start.
+  FILE_ERASE removes whatever is currently open: opening a file's parent and naming the file removes the parent.
+  This was caught by testing `rm` in a subdirectory and is fixed (the target itself is opened first).
+- System calls: open, close, lseek, stat, readdir, mkdir, unlink, rename, chdir, getcwd, statfs, dup2; read/write
+  go to files when fd 0-2 are redirected.
+- Commands: `ls cat cp mv rm mkdir rmdir touch pwd cd df`, test helpers `mkfile` and `sum` (CRC-32), and shell
+  redirection `<`, `>`, `>>`.
+- Measured: littlefs writes about 50 KiB/s (including erases) and reads 256 KiB/s; the USB drive writes about
+  45 KiB/s and reads 145 KiB/s through the file layer.
+- The last crash report is also kept in a 96-byte buffer (`/proc/crash`, diag `S`), since the longer boot log now
+  pushes it out of the 512-byte log ring.
+- RAM: fsd and littlefs cost about 2.2 KiB; shells grew to 1280 B stacks (file commands reached 1004 of 1152 B).
+  Heap free with the console shell is about 8 KiB, with one telnet session 6.5 KiB.
+
 ### M5 User environment and network tools
 - Shell: pipes (kernel ring buffers), `&` background jobs, `jobs/kill`, environment variables, scripts, `/etc/rc` at boot.
 - Commands: `ed` (a line editor suits a 21x8 LCD), `hexdump wc head tail grep sleep date kill`.
@@ -269,10 +294,10 @@ Repository: <https://github.com/willie6666/nnnix>; at least one commit and tag p
 | ID | Item | Needed by |
 | --- | --- | --- |
 | R1 | LCD controller initialisation sequence and SPI3 framing. Done in M3; PD14 (backlight on this board revision) is left at its reset state | M3 |
-| R2 | Whether the W25X16 is fitted, its JEDEC ID, SPI2 pins (BSP `SampleCode/Nu-LB-NUC140/SPI_Flash`) | M4 |
+| R2 | Onboard SPI flash: W25Q16 (ef4015, 2 MiB) on SPI2. Done in M4 | M4 |
 | R3 | The RS-232 transceiver on PB0 and how to isolate it; fallback: software UART RX or another pin | M7 |
 | R4 | RTC 32.768 kHz crystal, buzzer, keys, EEPROM pins | M5 |
-| R5 | littlefs code size and RAM use on the Cortex-M0; a simpler custom FS if it does not fit | M4 |
+| R5 | littlefs on the Cortex-M0: 19.5 KiB code, about 2.2 KiB RAM with fsd. Done in M4 | M4 |
 | R6 | Whether clang's ROPI/RWPI works for thumbv6m | M6 |
 | R7 | W5500 interrupts (Sn_IMR/SIMR) with the PB2 GPIO interrupt, measured | M2 |
 

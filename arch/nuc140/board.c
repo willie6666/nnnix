@@ -64,6 +64,7 @@ void board_spi_pins(int on)
 }
 
 void board_led_toggle(void) { GPIO_DOUT(PORTC) ^= BIT(12); }
+void board_led_set(int on) { if (on) GPIO_DOUT(PORTC) &= ~BIT(12); else GPIO_DOUT(PORTC) |= BIT(12); }
 
 void board_w5500_reset(int asserted)
 {

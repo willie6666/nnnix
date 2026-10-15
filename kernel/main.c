@@ -8,8 +8,10 @@
 #include "../arch/nuc140/regs.h"
 #include "../drivers/uart.h"
 #include "../drivers/spi.h"
+#include "../drivers/spiflash.h"
 #include "console.h"
 #include "kd.h"
+#include "../fs/vfs.h"
 #include "panic.h"
 #include "../net/telnetd.h"
 
@@ -65,6 +67,9 @@ void kmain(void)
     sched_init();
     telnetd_init();
     console_init();
+    spiflash_init();
+    kprintf("spiflash: jedec id %06x, %u KiB\n", spiflash_jedec_id(), spiflash_size() / 1024u);
+    vfs_init();
     kd_init();
     struct kmem_stats m;
     kmem_stats(&m);

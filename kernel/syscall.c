@@ -6,6 +6,7 @@
 #include "klog.h"
 #include "kmem.h"
 #include "../lib/fmt.h"
+#include "../fs/vfs.h"
 #include "../lib/sys.h"
 #include "../arch/nuc140/arch.h"
 
@@ -15,9 +16,11 @@ static int32_t sys_sleep_k(uint32_t ms) { task_sleep(ms); return 0; }
 static int32_t sys_getpid_k(void) { return task_self()->pid; }
 static int32_t sys_uptime_k(void) { return (int32_t)jiffies; }
 
+/* fd 0-2 use the terminal (or the kernel log) until a file is dup2'd onto them. */
 static int32_t sys_write_k(int32_t fd, const char *buf, uint32_t len)
 {
-    if (fd != 1 && fd != 2) return SYS_EBADF;   /* until the VFS exists (M4) */
+    if (vfs_fd_is_open(fd)) return vfs_write(fd, buf, len);
+    if (fd != 1 && fd != 2) return SYS_EBADF;
     struct tty *t = task_self()->tty;
     if (t) tty_write(t, buf, len);
     else klog_write(buf, len);
@@ -26,6 +29,7 @@ static int32_t sys_write_k(int32_t fd, const char *buf, uint32_t len)
 
 static int32_t sys_read_k(int32_t fd, char *buf, uint32_t len)
 {
+    if (vfs_fd_is_open(fd)) return vfs_read(fd, buf, len);
     struct tty *t = task_self()->tty;
     if (fd != 0 || !t) return SYS_EBADF;
     return tty_read(t, buf, len);
@@ -51,6 +55,19 @@ static int32_t sys_uname_k(char *buf, uint32_t len)
     return nn_snprintf(buf, len, "nnnix %s NUC140VE3CN", nnnix_version);
 }
 
+static int32_t sys_open_k(const char *path, int32_t flags) { return vfs_open(path, flags); }
+static int32_t sys_close_k(int32_t fd) { return vfs_close(fd); }
+static int32_t sys_lseek_k(int32_t fd, int32_t off, int32_t whence) { return vfs_lseek(fd, off, whence); }
+static int32_t sys_stat_k(const char *path, struct nn_stat *st) { return vfs_stat(path, st); }
+static int32_t sys_readdir_k(int32_t fd, struct nn_dirent *d) { return vfs_readdir(fd, d); }
+static int32_t sys_mkdir_k(const char *path) { return vfs_mkdir(path); }
+static int32_t sys_unlink_k(const char *path) { return vfs_unlink(path); }
+static int32_t sys_rename_k(const char *from, const char *to) { return vfs_rename(from, to); }
+static int32_t sys_chdir_k(const char *path) { return vfs_chdir(path); }
+static int32_t sys_getcwd_k(char *buf, uint32_t n) { return vfs_getcwd(buf, n); }
+static int32_t sys_statfs_k(const char *path, struct nn_statfs *s) { return vfs_statfs(path, s); }
+static int32_t sys_dup2_k(int32_t fd, int32_t target) { return vfs_dup2(fd, target); }
+
 static int32_t sys_invalid_k(void) { return SYS_ENOSYS; }
 
 static const uintptr_t table[SYS_COUNT] = {
@@ -66,6 +83,18 @@ static const uintptr_t table[SYS_COUNT] = {
     [SYS_KLOG] = (uintptr_t)sys_klog_k,
     [SYS_REBOOT] = (uintptr_t)sys_reboot_k,
     [SYS_UNAME] = (uintptr_t)sys_uname_k,
+    [SYS_OPEN] = (uintptr_t)sys_open_k,
+    [SYS_CLOSE] = (uintptr_t)sys_close_k,
+    [SYS_LSEEK] = (uintptr_t)sys_lseek_k,
+    [SYS_STAT] = (uintptr_t)sys_stat_k,
+    [SYS_READDIR] = (uintptr_t)sys_readdir_k,
+    [SYS_MKDIR] = (uintptr_t)sys_mkdir_k,
+    [SYS_UNLINK] = (uintptr_t)sys_unlink_k,
+    [SYS_RENAME] = (uintptr_t)sys_rename_k,
+    [SYS_CHDIR] = (uintptr_t)sys_chdir_k,
+    [SYS_GETCWD] = (uintptr_t)sys_getcwd_k,
+    [SYS_STATFS] = (uintptr_t)sys_statfs_k,
+    [SYS_DUP2] = (uintptr_t)sys_dup2_k,
 };
 
 /* Called from SVC_Handler with the caller's exception frame:

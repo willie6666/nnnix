@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "nsh.h"
+#include "cmds.h"
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../lib/sys.h"
 #include "../kernel/task.h"          /* struct task_info layout */
 #include "../kernel/kmem.h"          /* struct kmem_stats layout */
 
-#define MAX_ARGS 8
+#define MAX_ARGS 10
 
 struct command {
     const char *name;
@@ -108,6 +109,19 @@ static const struct command commands[] = {
     { "dmesg", cmd_dmesg, "kernel log" },
     { "uname", cmd_uname, "system name and version" },
     { "sleep", cmd_sleep, "sleep SECONDS" },
+    { "ls", cmd_ls, "list directory" },
+    { "cat", cmd_cat, "print files" },
+    { "cp", cmd_cp, "copy a file" },
+    { "mv", cmd_mv, "move or rename" },
+    { "rm", cmd_rm, "remove files" },
+    { "mkdir", cmd_mkdir, "make directories" },
+    { "rmdir", cmd_rmdir, "remove empty dirs" },
+    { "touch", cmd_touch, "create empty files" },
+    { "pwd", cmd_pwd, "working directory" },
+    { "cd", cmd_cd, "change directory" },
+    { "df", cmd_df, "file system space" },
+    { "mkfile", cmd_mkfile, "NAME SIZE test file" },
+    { "sum", cmd_sum, "CRC-32 of files" },
     { "clear", cmd_clear, "clear the screen" },
     { "reboot", cmd_reboot, "restart the board" },
     { "exit", 0, "leave the shell" },
@@ -141,6 +155,32 @@ static int split(char *line, char **argv)
     return argc;
 }
 
+/* Apply "< file", "> file" and ">> file" (also written without the space):
+ * the files are opened and dup2'd onto fd 0/1, and the tokens are removed. */
+static int redirect(int argc, char **argv, int *in, int *out)
+{
+    int kept = 0;
+    for (int i = 0; i < argc; ++i) {
+        char *a = argv[i];
+        if (a[0] != '<' && a[0] != '>') { argv[kept++] = a; continue; }
+        int append = a[0] == '>' && a[1] == '>';
+        char *name = a + 1 + append;
+        if (!*name) {
+            if (i + 1 >= argc) { printf("nsh: missing file name after %s\n", a); return -1; }
+            name = argv[++i];
+        }
+        int flags = a[0] == '<' ? O_RDONLY : O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC);
+        int fd = sys_open(name, flags);
+        if (fd < 0) { printf("nsh: %s: %s\n", name, errstr(fd)); return -1; }
+        int *slot = a[0] == '<' ? in : out;
+        if (*slot >= 0) sys_close(*slot);
+        *slot = fd;
+        sys_dup2(fd, a[0] == '<' ? 0 : 1);
+    }
+    argv[kept] = 0;
+    return kept;
+}
+
 void nsh_main(void)
 {
     char line[96], *argv[MAX_ARGS];
@@ -160,8 +200,12 @@ void nsh_main(void)
         const struct command *c = 0;
         for (unsigned i = 0; i < sizeof commands / sizeof commands[0]; ++i)
             if (!strcmp(argv[0], commands[i].name)) c = &commands[i];
-        if (c && c->run) c->run(argc, argv);
-        else printf("nsh: %s: command not found\n", argv[0]);
+        if (!c || !c->run) { printf("nsh: %s: command not found\n", argv[0]); continue; }
+        int in = -1, out = -1;
+        argc = redirect(argc, argv, &in, &out);
+        if (argc > 0) c->run(argc, argv);
+        if (in >= 0) { sys_dup2(-1, 0); sys_close(in); }
+        if (out >= 0) { sys_dup2(-1, 1); sys_close(out); }
     }
     printf("logout\n");
 }

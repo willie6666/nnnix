@@ -6,6 +6,7 @@
 #include "regs.h"
 #include "arch.h"
 #include "../../kernel/klog.h"
+#include "../../lib/fmt.h"
 
 #define CRASH_MAGIC 0x4352534au      /* "CRSJ" */
 
@@ -86,6 +87,10 @@ void arch_panic(const char *msg, uint32_t pc)
     arch_reboot();
 }
 
+/* The last report stays readable after the boot log has scrolled past it. */
+static char last_report[96];
+const char *fault_last_report(void) { return last_report; }
+
 void fault_report_last(void)
 {
     if (crash.magic != CRASH_MAGIC || crash.check != ~(crash.magic ^ crash.pc ^ crash.count)) {
@@ -94,11 +99,12 @@ void fault_report_last(void)
     }
     crash.panic[sizeof crash.panic - 1] = 0;
     if (crash.panic[0])
-        kprintf("last crash #%u: panic: %s (pc=%08x sp=%08x at %u ms)\n",
-                crash.count, crash.panic, crash.pc, crash.sp, crash.jiffies);
+        nn_snprintf(last_report, sizeof last_report, "panic: %s (pc=%08x sp=%08x at %u ms)",
+                    crash.panic, crash.pc, crash.sp, crash.jiffies);
     else
-    kprintf("last crash #%u: pc=%08x lr=%08x sp=%08x xpsr=%08x r0=%08x r1=%08x at %u ms\n",
-            crash.count, crash.pc, crash.lr, crash.sp, crash.xpsr, crash.r0, crash.r1, crash.jiffies);
+        nn_snprintf(last_report, sizeof last_report, "pc=%08x lr=%08x sp=%08x xpsr=%08x at %u ms",
+                    crash.pc, crash.lr, crash.sp, crash.xpsr, crash.jiffies);
+    kprintf("last crash #%u: %s\n", crash.count, last_report);
     crash.magic = 0;     /* report once; count restarts at the next fault */
 }
 

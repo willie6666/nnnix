@@ -1,0 +1,163 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* "/": littlefs on the onboard SPI flash (power-loss safe, wear levelled). */
+#include "vfs.h"
+#include "../third_party/littlefs/lfs.h"
+#include "../drivers/spiflash.h"
+#include "../kernel/klog.h"
+#include "../kernel/kmem.h"
+#include "../lib/string.h"
+
+#define CACHE 64u
+
+int lfs_port_read(const struct lfs_config *c, lfs_block_t block, lfs_off_t off, void *buffer, lfs_size_t size);
+int lfs_port_prog(const struct lfs_config *c, lfs_block_t block, lfs_off_t off, const void *buffer, lfs_size_t size);
+int lfs_port_erase(const struct lfs_config *c, lfs_block_t block);
+int lfs_port_sync(const struct lfs_config *c);
+
+static lfs_t lfs;
+static uint8_t read_cache[CACHE], prog_cache[CACHE], lookahead[16];
+static int mounted;
+static struct lfs_config cfg = {
+    .read = lfs_port_read, .prog = lfs_port_prog, .erase = lfs_port_erase, .sync = lfs_port_sync,
+    .read_size = 16, .prog_size = 16, .block_size = SPIFLASH_SECTOR,
+    .cache_size = CACHE, .lookahead_size = sizeof lookahead, .block_cycles = 500,
+    .read_buffer = read_cache, .prog_buffer = prog_cache, .lookahead_buffer = lookahead,
+};
+
+/* An open file or directory; the per-file cache follows the littlefs state. */
+struct lfile {
+    uint8_t dir;
+    union { lfs_file_t file; lfs_dir_t d; };
+    struct lfs_file_config fcfg;
+    uint8_t cache[CACHE];
+};
+
+int rootfs_mount(struct mount *m)
+{
+    (void)m;
+    uint32_t size = spiflash_size();
+    if (!size) { kprintf("rootfs: no SPI flash\n"); return SYS_ENODEV; }
+    cfg.block_count = size / SPIFLASH_SECTOR;
+    int e = lfs_mount(&lfs, &cfg);
+    if (e) {
+        kprintf("rootfs: no file system (%d), formatting %u KiB\n", e, size / 1024u);
+        e = lfs_format(&lfs, &cfg);
+        if (!e) e = lfs_mount(&lfs, &cfg);
+        if (e) { kprintf("rootfs: format failed (%d)\n", e); return e; }
+    }
+    /* Directories that the other mounts appear in, so "ls /" shows them. */
+    static const char *const dirs[] = { "/usb", "/dev", "/proc", "/home" };
+    for (unsigned i = 0; i < sizeof dirs / sizeof dirs[0]; ++i) lfs_mkdir(&lfs, dirs[i]);
+    mounted = 1;
+    lfs_ssize_t used = lfs_fs_size(&lfs);
+    kprintf("rootfs: littlefs, %u KiB, %u KiB used\n", size / 1024u,
+            used < 0 ? 0u : (uint32_t)used * SPIFLASH_SECTOR / 1024u);
+    return 0;
+}
+
+static int rfs_open(struct mount *m, const char *path, int flags, struct file *f)
+{
+    (void)m;
+    if (!mounted) return SYS_ENODEV;
+    struct lfile *lf = kmalloc(sizeof *lf);
+    if (!lf) return SYS_ENOMEM;
+    memset(lf, 0, sizeof *lf);
+    struct lfs_info info;
+    int e = lfs_stat(&lfs, path, &info);
+    if (!e && info.type == LFS_TYPE_DIR) {
+        if ((flags & O_ACCMODE) != O_RDONLY) e = SYS_EISDIR;
+        else { lf->dir = 1; e = lfs_dir_open(&lfs, &lf->d, path); }
+    } else if (flags & O_DIRECTORY) {
+        e = e ? e : SYS_ENOTDIR;
+    } else {
+        lf->fcfg.buffer = lf->cache;
+        int lflags = ((flags & O_ACCMODE) + 1) | (flags & (O_CREAT | O_EXCL | O_TRUNC | O_APPEND));
+        e = lfs_file_opencfg(&lfs, &lf->file, path, lflags, &lf->fcfg);   /* same flag bits */
+    }
+    if (e) { kfree(lf); return e; }
+    f->priv = lf;
+    return 0;
+}
+
+static int rfs_close(struct file *f)
+{
+    struct lfile *lf = f->priv;
+    int e = lf->dir ? lfs_dir_close(&lfs, &lf->d) : lfs_file_close(&lfs, &lf->file);
+    kfree(lf);
+    return e;
+}
+
+static int rfs_read(struct file *f, void *buf, uint32_t n)
+{
+    struct lfile *lf = f->priv;
+    return lf->dir ? SYS_EISDIR : lfs_file_read(&lfs, &lf->file, buf, n);
+}
+
+static int rfs_write(struct file *f, const void *buf, uint32_t n)
+{
+    struct lfile *lf = f->priv;
+    return lf->dir ? SYS_EISDIR : lfs_file_write(&lfs, &lf->file, buf, n);
+}
+
+static int rfs_lseek(struct file *f, int32_t off, int whence)
+{
+    struct lfile *lf = f->priv;
+    return lf->dir ? SYS_EISDIR : lfs_file_seek(&lfs, &lf->file, off, whence);   /* same SEEK_* values */
+}
+
+static int rfs_readdir(struct file *f, struct nn_dirent *d)
+{
+    struct lfile *lf = f->priv;
+    struct lfs_info info;
+    if (!lf->dir) return SYS_ENOTDIR;
+    for (;;) {
+        int e = lfs_dir_read(&lfs, &lf->d, &info);
+        if (e <= 0) return e;
+        if (!strcmp(info.name, ".") || !strcmp(info.name, "..")) continue;
+        uint32_t n = (uint32_t)strlen(info.name);
+        if (n > NN_NAME_MAX - 1) n = NN_NAME_MAX - 1;
+        memcpy(d->name, info.name, n);
+        d->name[n] = 0;
+        d->size = info.size;
+        d->type = info.type == LFS_TYPE_DIR ? NN_TYPE_DIR : NN_TYPE_FILE;
+        return 1;
+    }
+}
+
+static int rfs_stat(struct mount *m, const char *path, struct nn_stat *st)
+{
+    (void)m;
+    struct lfs_info info;
+    if (!mounted) return SYS_ENODEV;
+    int e = lfs_stat(&lfs, path, &info);
+    if (e) return e;
+    st->size = info.size;
+    st->type = info.type == LFS_TYPE_DIR ? NN_TYPE_DIR : NN_TYPE_FILE;
+    return 0;
+}
+
+static int rfs_mkdir(struct mount *m, const char *path) { (void)m; return mounted ? lfs_mkdir(&lfs, path) : SYS_ENODEV; }
+static int rfs_remove(struct mount *m, const char *path) { (void)m; return mounted ? lfs_remove(&lfs, path) : SYS_ENODEV; }
+static int rfs_rename(struct mount *m, const char *from, const char *to)
+{
+    (void)m;
+    return mounted ? lfs_rename(&lfs, from, to) : SYS_ENODEV;
+}
+
+static int rfs_statfs(struct mount *m, struct nn_statfs *s)
+{
+    (void)m;
+    if (!mounted) return SYS_ENODEV;
+    lfs_ssize_t used = lfs_fs_size(&lfs);
+    if (used < 0) return (int)used;
+    s->block_size = cfg.block_size;
+    s->blocks = cfg.block_count;
+    s->free_blocks = cfg.block_count - (uint32_t)used;
+    return 0;
+}
+
+const struct fs_ops lfs_ops = {
+    .open = rfs_open, .close = rfs_close, .read = rfs_read, .write = rfs_write, .lseek = rfs_lseek,
+    .readdir = rfs_readdir, .stat = rfs_stat, .mkdir = rfs_mkdir, .remove = rfs_remove,
+    .rename = rfs_rename, .statfs = rfs_statfs,
+};

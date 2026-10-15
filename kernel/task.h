@@ -14,6 +14,8 @@ enum task_state { TASK_UNUSED, TASK_READY, TASK_SLEEPING, TASK_BLOCKED, TASK_ZOM
 
 struct task;
 struct tty;
+struct file;
+#define TASK_FDS 8                   /* per-task file descriptors */
 struct waitq { struct task *head, *tail; };
 
 struct task {
@@ -31,6 +33,8 @@ struct task {
     struct task *wait_next;
     struct waitq exit_wq;
     struct tty *tty;                 /* controlling terminal: fd 0/1/2; inherited by children */
+    struct file *fds[TASK_FDS];      /* open files; unset 0-2 mean the terminal */
+    char *cwd;                       /* kmalloc'd; 0 means "/"; inherited by children */
 };
 
 struct task_info {

@@ -165,3 +165,47 @@ uint8_t ch376_read(void *buf, uint32_t len, uint32_t *got)
     }
     return CH376_OK;
 }
+
+uint8_t ch376_byte_locate(uint32_t offset)
+{
+    uint8_t arg[4] = { (uint8_t)offset, (uint8_t)(offset >> 8), (uint8_t)(offset >> 16), (uint8_t)(offset >> 24) };
+    return op(0x39, arg, 4);                           /* BYTE_LOCATE */
+}
+
+uint8_t ch376_dir_create(const char *name) { set_name(name); return op(0x40, 0, 0); }
+
+/* FILE_ERASE removes whatever is currently open: open the target itself first.
+ * (Opening only its parent directory and naming the target removes the parent.) */
+uint8_t ch376_erase_open(void) { return op(0x35, 0, 0); }
+
+/* Directory listing: open the directory first, then ch376_enum_first("*"). Each
+ * CH376_ENTRY_READY status leaves one 32-byte FAT entry to fetch with
+ * ch376_read_entry(); ch376_enum_next() moves on until CH376_MISS_FILE. */
+uint8_t ch376_enum_first(const char *pattern) { set_name(pattern); return op(0x32, 0, 0); }
+uint8_t ch376_enum_next(void) { return op(0x33, 0, 0); }
+
+int ch376_read_entry(uint8_t entry[32])
+{
+    begin(0x27);                                       /* RD_USB_DATA0 */
+    uint32_t n = spi_xfer8(0);
+    for (uint32_t i = 0; i < n; ++i) {
+        uint8_t v = spi_xfer8(0);
+        if (i < 32) entry[i] = v;
+    }
+    end();
+    return (int)n;
+}
+
+uint8_t ch376_disk_query(uint32_t *total_sectors, uint32_t *free_sectors)
+{
+    uint8_t s = op(0x3f, 0, 0);                        /* DISK_QUERY */
+    if (s != CH376_OK) return s;
+    uint8_t d[9] = { 0 };
+    begin(0x27);
+    uint32_t n = spi_xfer8(0);
+    for (uint32_t i = 0; i < n; ++i) { uint8_t v = spi_xfer8(0); if (i < sizeof d) d[i] = v; }
+    end();
+    *total_sectors = d[0] | (uint32_t)d[1] << 8 | (uint32_t)d[2] << 16 | (uint32_t)d[3] << 24;
+    *free_sectors = d[4] | (uint32_t)d[5] << 8 | (uint32_t)d[6] << 16 | (uint32_t)d[7] << 24;
+    return CH376_OK;
+}

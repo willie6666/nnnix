@@ -15,6 +15,8 @@
 #include "../user/demo.h"
 #include "../net/net.h"
 #include "console.h"
+#include "../fs/vfs.h"
+#include "../drivers/spiflash.h"
 
 #define SOCK 0
 #define PORT 5000
@@ -139,6 +141,7 @@ void diag_ch376_bench(uint32_t size)
     if (!data) { report(" out of memory FAIL\n"); return; }
     ch376_lock();
     ch376_bench_locked(size, data);
+    usbfs_invalidate();              /* the bench remounted the drive behind usbfs */
     ch376_unlock();
     kfree(data);
 }
@@ -170,6 +173,7 @@ static void status_text(void)
            board_reset_cause(), stack_used(), stack_size(), ram_static(), m.free);
     report("modules power %u ch376 %u w5500 %u link 0x%x\n", modules.powered, modules.ch376, modules.w5500, modules.link);
     report("uart1 %u B err %u drop %u spi timeouts %u\n", u.bytes, u.errors, u.drops, spi_timeouts());
+    if (fault_last_report()[0]) report("last crash: %s\n", fault_last_report());
 }
 
 static void demo(uint32_t ms)
@@ -254,6 +258,15 @@ static void session(void)
         }
         console_input(buf, (int)got);
         report("injected %u bytes\n", got);
+        break;
+    }
+    case 'M': {
+        /* Read-only SPI flash dump: 64 KiB block number `length`. */
+        uint32_t base = length * 65536u, size = spiflash_size();
+        for (uint32_t off = 0; base < size && off < 65536u; off += CHUNK) {
+            spiflash_read(base + off, buf, CHUNK);
+            if (w5500_send(SOCK, buf, CHUNK, 5000)) break;
+        }
         break;
     }
     case 'V':

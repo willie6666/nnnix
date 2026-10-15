@@ -12,7 +12,7 @@
 #include "../user/nsh.h"
 
 #define PORT 23
-#define SESSION_STACK 1152u
+#define SESSION_STACK 1280u
 #define SESSION_PRIO 5
 
 struct session {

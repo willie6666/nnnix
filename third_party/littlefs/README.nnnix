@@ -1,0 +1,6 @@
+littlefs v2.11.3 (https://github.com/littlefs-project/littlefs), BSD-3-Clause, see LICENSE.md.
+
+lfs.c, lfs.h and lfs_util.h are unmodified upstream files. nnnix builds lfs.c with
+-DLFS_CONFIG=lfs_port.h, so fs/lfs_port.h replaces the utility definitions of
+lfs_util.h (no libc headers, no CLZ/CTZ instructions on the Cortex-M0) and
+fs/lfs_port.c provides lfs_crc and the SPI flash block device.

@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import zlib
 from pathlib import Path
 import socket
 import struct
@@ -214,6 +215,83 @@ def console_tests(ns, report):
                'getty started a new shell after exit')
 
 
+def fs_tests(ns, serial, report):
+    """File systems: littlefs on the SPI flash ("/"), the CH376S drive ("/usb"), /dev, /proc."""
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    for f in ('/hello.txt', '/home/big.bin', '/home/back.bin', '/usb/big.bin', '/usb/a.bin', '/usb/b.bin',
+              '/usb/sub/x.txt'):
+        t.cmd(f'rm {f}')                              # leftovers from an interrupted run
+    t.cmd('rmdir /usb/sub')
+
+    t.cmd('echo hello flash > /hello.txt')
+    out = t.cmd('cat /hello.txt')
+    report.add('flash write/read', out.strip() == 'hello flash', out.strip())
+
+    def crc_of(text):
+        m = re.match(r'([0-9a-f]{8}) (\d+) ', text.strip())
+        return (int(m[1], 16), int(m[2])) if m else (None, None)
+
+    expected = (zlib.crc32(pattern(32768)), 32768)
+    out = t.cmd('mkfile /home/big.bin 32k', 30)
+    rate = re.search(r'\((\d+) B/s\)', out)
+    got = crc_of(t.cmd('sum /home/big.bin', 30))
+    report.add('flash 32 KiB file', got == expected, f'write {int(rate[1]) // 1024 if rate else "?"} KiB/s, crc {got[0]:08x}' if got[0] else out)
+
+    t.cmd('cp /home/big.bin /usb/big.bin', 30)
+    got = crc_of(t.cmd('sum /usb/big.bin', 30))
+    report.add('copy flash -> usb', got == expected, '')
+    t.cmd('cp /usb/big.bin /home/back.bin', 30)
+    got = crc_of(t.cmd('sum /home/back.bin', 30))
+    report.add('copy usb -> flash', got == expected, '')
+
+    t.cmd('mkdir /usb/sub')
+    t.cmd('echo in sub > /usb/sub/x.txt')
+    out = t.cmd('cat /usb/sub/x.txt') + t.cmd('ls /usb/sub')
+    t.cmd('rm /usb/sub/x.txt')
+    gone = t.cmd('rmdir /usb/sub') == '' and 'sub/' not in t.cmd('ls /usb')
+    report.add('usb directories', 'in sub' in out and 'x.txt' in out and gone, '')
+
+    t.cmd('echo more >> /hello.txt')
+    out = t.cmd('cat < /hello.txt')
+    report.add('redirection', out.split() == ['hello', 'flash', 'more'], repr(out))
+    t.cmd('mv /home/back.bin /usb/back.bin', 30)
+    out = t.cmd('ls /usb') + t.cmd('ls /home')
+    report.add('mv across file systems', 'back.bin' in out.split('\r\n', 1)[0] or 'back.bin' in out, '')
+    t.cmd('rm /usb/back.bin')
+
+    df = t.cmd('df')
+    proc = t.cmd('cat /proc/version') + t.cmd('ls /dev') + t.cmd('echo x > /dev/null')
+    report.add('df, /proc, /dev', '/usb' in df and 'nnnix' in proc and 'null@' in proc, df.splitlines()[1].strip())
+
+    # Two sessions read two different files on the single-file CH376S at the same time.
+    t.cmd('mkfile /usb/a.bin 24k', 30)
+    t.cmd('mkfile /usb/b.bin 40k', 30)
+    t2 = Telnet(ns)
+    t2.read_until(Telnet.PROMPT)
+    t.send('sum /usb/a.bin\r\n')
+    t2.send('sum /usb/b.bin\r\n')
+    a = crc_of(t.read_until(Telnet.PROMPT, 30).split('\r\n', 1)[-1])
+    b = crc_of(t2.read_until(Telnet.PROMPT, 30).split('\r\n', 1)[-1])
+    report.add('concurrent usb reads', a == (zlib.crc32(pattern(24576)), 24576) and b == (zlib.crc32(pattern(40960)), 40960), '')
+    t.cmd('rm /usb/a.bin /usb/b.bin /usb/big.bin')
+    for s_ in (t, t2):
+        s_.send('exit\r\n'); s_.wait_closed(); s_.close()
+
+    # Survives a reboot.
+    mark = len(serial.lines)
+    ns.call(request, b'X')
+    serial.wait_for(r'w5500: link up', 20, mark)
+    time.sleep(0.5)
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT, 10)
+    out = t.cmd('cat /hello.txt')
+    got = crc_of(t.cmd('sum /home/big.bin', 30))
+    report.add('persists across reboot', out.split() == ['hello', 'flash', 'more'] and got == expected, '')
+    t.cmd('rm /hello.txt /home/big.bin')
+    t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
 def telnet_tests(ns, report):
     time.sleep(0.3)                                   # let kd reap the previous diag worker
     t1 = Telnet(ns)
@@ -221,8 +299,8 @@ def telnet_tests(ns, report):
     free_before = t1.cmd('free')
     m = re.search(r'free (\d+) B', free_before)
     free_bytes = int(m[1]) if m else 0
-    report.add('free ram', free_bytes >= 8500,
-               f'{free_bytes} B heap free with the console shell and one telnet session (limit 8500)')
+    report.add('free ram', free_bytes >= 5500,
+               f'{free_bytes} B heap free with the console shell and one telnet session (limit 5500)')
     out = t1.cmd('uname')
     report.add('telnet login', 'nnnix' in out, out.strip())
 
@@ -367,6 +445,11 @@ def main():
             except (OSError, TimeoutError, ConnectionError) as exc:
                 report.add('telnet', False, repr(exc))
 
+            try:
+                fs_tests(ns, serial, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                report.add('file systems', False, repr(exc))
+
             if args.usb_bytes:
                 text, _ = ns.call(request, b'U', 1, args.usb_bytes, b'', None, 180)
                 line = text.decode(errors='replace').strip()
@@ -382,9 +465,9 @@ def main():
                 report.add('fault capture', None not in (dump, rebooted, cause, crash),
                            serial.lines[crash] if crash is not None else 'missing crash report')
                 back = serial.wait_for(r'w5500: link up', 15, rebooted or mark)
-                text, _ = ns.call(request, b'L')
-                report.add('klog after reboot', back is not None and b'last crash' in text,
-                           f'{len(text)} B log ring')
+                text, _ = ns.call(request, b'S')
+                report.add('crash report kept', back is not None and b'last crash: pc=' in text,
+                           'diag S / /proc/crash after the boot log scrolled')
 
                 mark = len(serial.lines)
                 ns.call(request, b'O')

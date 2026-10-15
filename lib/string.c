@@ -54,6 +54,35 @@ int strncmp(const char *a, const char *b, size_t n)
     return 0;
 }
 
+char *strcpy(char *dst, const char *src)
+{
+    char *d = dst;
+    while ((*d++ = *src++)) { }
+    return dst;
+}
+
+char *strchr(const char *s, int c)
+{
+    for (;; ++s) {
+        if (*s == (char)c) return (char *)s;
+        if (!*s) return 0;
+    }
+}
+
+size_t strspn(const char *s, const char *accept)
+{
+    size_t n = 0;
+    while (s[n] && strchr(accept, s[n])) ++n;
+    return n;
+}
+
+size_t strcspn(const char *s, const char *reject)
+{
+    size_t n = 0;
+    while (s[n] && !strchr(reject, s[n])) ++n;
+    return n;
+}
+
 #ifndef NNNIX_HOST
 /* ARM EABI aliases; note __aeabi_memset takes (dest, n, c). */
 void __aeabi_memcpy(void *d, const void *s, size_t n) { memcpy(d, s, n); }

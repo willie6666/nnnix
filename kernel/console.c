@@ -71,7 +71,7 @@ void console_poll(void)
         task_join(shell_task, 0);
         shell_task = 0;
     }
-    if (!shell_task) shell_task = task_spawn("nsh", shell, 0, 1152, 5, 0);
+    if (!shell_task) shell_task = task_spawn("nsh", shell, 0, 1280, 5, 0);
 }
 
 void console_init(void)

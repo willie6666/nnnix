@@ -2,6 +2,8 @@
 #include "task.h"
 #include "kmem.h"
 #include "panic.h"
+#include "../fs/vfs.h"
+#include "../lib/string.h"
 #include "../arch/nuc140/arch.h"
 
 #define SLICE_MS   10u
@@ -158,6 +160,10 @@ struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
                         .prio = prio, .detached = (uint8_t)detached, .slice = SLICE_MS };
     t->sp = arch_task_stack_init(stack + stack_bytes / 4u, entry, arg, task_return);
     t->tty = running ? cur()->tty : 0;
+    if (running && cur()->cwd) {                 /* inherit the working directory */
+        t->cwd = kmalloc(strlen(cur()->cwd) + 1);
+        if (t->cwd) strcpy(t->cwd, cur()->cwd);
+    }
     t->state = TASK_READY;
     if (running && prio < cur()->prio) arch_pend_switch();
     irq_restore(s);
@@ -166,6 +172,7 @@ struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
 
 void task_exit(int code)
 {
+    vfs_task_exit();                 /* close files while this task can still block */
     uint32_t s = irq_save();
     struct task *t = cur();
     t->exit_code = code;
@@ -180,9 +187,12 @@ void task_exit(int code)
 static void task_free(struct task *t)
 {
     uint32_t *stack = t->stack;
+    char *cwd = t->cwd;
     t->state = TASK_UNUSED;
     t->stack = 0;
+    t->cwd = 0;
     kfree(stack);
+    kfree(cwd);
 }
 
 int task_join(struct task *t, uint32_t *cpu_ms)

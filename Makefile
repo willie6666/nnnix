@@ -19,7 +19,7 @@ CFLAGS  = --target=arm-none-eabi -mcpu=cortex-m0 -mthumb -Os -g \
           -Wall -Wextra -Werror -std=c11 -DNNNIX_VERSION='"$(VERSION)"'
 LDFLAGS = -nostdlib -fuse-ld=lld -Wl,-T,arch/nuc140/link.ld,--gc-sections,-Map,build/nnnix.map
 
-SRCS = $(wildcard arch/nuc140/*.c kernel/*.c drivers/*.c lib/*.c user/*.c)
+SRCS = $(wildcard arch/nuc140/*.c kernel/*.c drivers/*.c lib/*.c net/*.c user/*.c)
 OBJS = $(SRCS:%.c=build/%.o)
 
 .PHONY: all flash test host-test size clean
@@ -49,7 +49,7 @@ flash: build/nnnix.bin
 test: build/nnnix.bin
 	sudo $(PYTHON) tools/nntest.py --flash build/nnnix.bin
 
-HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem
+HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty
 build/host/test_lib: tests/host/test_lib.c lib/fmt.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin $^ -o $@
@@ -57,6 +57,9 @@ build/host/test_input: tests/host/test_input.c drivers/ch9350.c drivers/hidkey.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST $^ -o $@
 build/host/test_kmem: tests/host/test_kmem.c kernel/kmem.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_tty: tests/host/test_tty.c kernel/ledit.c net/telnet.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 host-test: $(HOST_TESTS)

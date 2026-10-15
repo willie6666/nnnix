@@ -13,6 +13,7 @@
 #include "../drivers/ch376.h"
 #include "../drivers/w5500.h"
 #include "../user/demo.h"
+#include "../net/net.h"
 
 #define SOCK 0
 #define PORT 5000
@@ -38,12 +39,6 @@ static void report(const char *fmt, ...)
     if (task_self() == reply_owner)
         for (int i = 0; i < n && reply_len < sizeof reply; ++i) reply[reply_len++] = line[i];
     kprintf("%s", line);
-}
-
-static void listen(void)
-{
-    if (w5500_tcp_listen(SOCK, PORT) == 0) kprintf("diag: listening on tcp port %u\n", PORT);
-    else kprintf("diag: listen failed\n");
 }
 
 static int tx_pattern(uint32_t length)
@@ -257,38 +252,16 @@ static void session(void)
     w5500_flush(SOCK, 2000);
     spi_set_divider(SPI_W5500, SPI_DEFAULT_DIVIDER);
     spi_set_divider(SPI_CH376, SPI_DEFAULT_DIVIDER);
-    w5500_disconnect(SOCK, 1000);
-    listen();
-}
-
-static void poll_socket(void)
-{
-    static uint8_t last_sr;
-    static uint32_t since;
-    uint8_t sr = w5500_status(SOCK);
-    if (sr != last_sr) { last_sr = sr; since = jiffies; }
-    if (sr == W5500_SOCK_SYNRECV && jiffies - since > 2000u) {
-        /* A SYN that arrived while the peer's link was still coming up leaves the
-         * only listening socket in SYN_RECV for ~32 s (measured after reboots). */
-        kprintf("diag: dropping stale half-open connection\n");
-        listen();
-        return;
-    }
-    if (sr == W5500_SOCK_ESTABLISHED) {
-        if (w5500_rx_available(SOCK) >= 6) session();
-    } else if (sr == W5500_SOCK_CLOSE_WAIT) {
-        w5500_disconnect(SOCK, 500);
-        listen();
-    } else if (sr == W5500_SOCK_CLOSED) {
-        listen();
-    }
+    w5500_disconnect(SOCK, 1000);    /* the listener re-arms the socket */
 }
 
 void diag_task(void *arg)
 {
+    struct listener l = { .sn = SOCK, .port = PORT, .name = "diag", .last_sr = 0xff };
     (void)arg;
     for (;;) {
-        if (modules.w5500) poll_socket();
-        task_sleep(modules.w5500 ? 1 : 100);
+        if (!modules.w5500) { l.announced = 0; task_sleep(100); continue; }
+        if (listener_poll(&l) && w5500_rx_available(SOCK) >= 6) session();
+        else w5500_wait(SOCK, 50);
     }
 }

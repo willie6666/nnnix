@@ -2,6 +2,7 @@
 #include "w5500.h"
 #include "spi.h"
 #include "../arch/nuc140/arch.h"
+#include "../kernel/sync.h"
 
 /* Block select: 0 common, socket n: registers 1+4n, TX buffer 2+4n, RX buffer 3+4n. */
 #define SREG(sn) ((uint8_t)(1u + 4u * (unsigned)(sn)))
@@ -9,7 +10,8 @@
 #define SRX(sn)  ((uint8_t)(3u + 4u * (unsigned)(sn)))
 enum { Sn_MR = 0x00, Sn_CR = 0x01, Sn_IR = 0x02, Sn_SR = 0x03, Sn_PORT = 0x04,
        Sn_RXBUF = 0x1e, Sn_TXBUF = 0x1f, Sn_TX_FSR = 0x20, Sn_TX_WR = 0x24,
-       Sn_RX_RSR = 0x26, Sn_RX_RD = 0x28 };
+       Sn_RX_RSR = 0x26, Sn_RX_RD = 0x28, Sn_IMR = 0x2c };
+enum { SIR = 0x0017, SIMR = 0x0018 };
 enum { CR_OPEN = 0x01, CR_LISTEN = 0x02, CR_DISCON = 0x08, CR_CLOSE = 0x10,
        CR_SEND = 0x20, CR_RECV = 0x40 };
 enum { IR_DISCON = 0x02, IR_TIMEOUT = 0x08, IR_SEND_OK = 0x10 };
@@ -17,6 +19,9 @@ enum { IR_DISCON = 0x02, IR_TIMEOUT = 0x08, IR_SEND_OK = 0x10 };
 static uint16_t tx_size[8];
 static uint16_t queued[8];           /* bytes written since the last SEND */
 static uint8_t send_pending;         /* bit per socket: a SEND awaits SEND_OK */
+static uint8_t events[8];            /* Sn_IR bits read (and cleared on the chip) but not consumed */
+static struct sem irq_sem;           /* INTn fell */
+static struct sem sock_ev[8];        /* something happened on socket n */
 
 static void header(uint16_t address, uint8_t control)
 {
@@ -56,6 +61,45 @@ static void command(int sn, uint8_t cmd)
 }
 
 int w5500_present(void) { return r8(0x0039, 0) == 0x04; }
+
+/* ---- interrupts: INTn -> w5500_isr -> netd -> w5500_collect -> per-socket wakeups ---- */
+void w5500_isr(void) { if (irq_sem.count <= 0) sem_give(&irq_sem); }
+int w5500_irq_wait(uint32_t timeout_ms) { return sem_take(&irq_sem, timeout_ms); }
+
+static uint8_t read_events(int sn)
+{
+    uint8_t v = r8(Sn_IR, SREG(sn));
+    if (v) w8(Sn_IR, SREG(sn), v);                  /* acknowledge on the chip */
+    uint32_t s = irq_save();
+    events[sn] |= v;
+    v = events[sn];
+    irq_restore(s);
+    return v;
+}
+
+static void consume(int sn, uint8_t bits)
+{
+    uint32_t s = irq_save();
+    events[sn] &= (uint8_t)~bits;
+    irq_restore(s);
+}
+
+static void wake(int sn) { if (sock_ev[sn].count <= 0) sem_give(&sock_ev[sn]); }
+
+uint8_t w5500_collect(void)
+{
+    uint8_t all = 0;
+    for (int round = 0; round < 4; ++round) {       /* INTn stays low until SIR reads 0 */
+        uint8_t sir = r8(SIR, 0);
+        if (!sir) break;
+        all |= sir;
+        for (int sn = 0; sn < 8; ++sn)
+            if (sir & (1u << sn)) { read_events(sn); wake(sn); }
+    }
+    return all;
+}
+
+int w5500_wait(int sn, uint32_t timeout_ms) { return sem_take(&sock_ev[sn], timeout_ms); }
 uint8_t w5500_phy(void) { return r8(0x002e, 0); }
 
 void w5500_configure(const struct w5500_netcfg *cfg, const uint8_t buffer_kib[8])
@@ -71,7 +115,12 @@ void w5500_configure(const struct w5500_netcfg *cfg, const uint8_t buffer_kib[8]
         w8(Sn_TXBUF, SREG(sn), buffer_kib[sn]);
         tx_size[sn] = (uint16_t)(buffer_kib[sn] * 1024u);
         queued[sn] = 0;
+        events[sn] = 0;
+        w8(Sn_IMR, SREG(sn), buffer_kib[sn] ? 0x1f : 0);   /* SEND_OK TIMEOUT RECV DISCON CON */
     }
+    uint8_t simr = 0;
+    for (int sn = 0; sn < 8; ++sn) if (buffer_kib[sn]) simr |= (uint8_t)(1u << sn);
+    w8(SIMR, 0, simr);
     send_pending = 0;
 }
 
@@ -83,6 +132,7 @@ int w5500_tcp_listen(int sn, uint16_t port)
     w8(Sn_IR, SREG(sn), 0x1f);
     send_pending &= (uint8_t)~(1u << sn);
     queued[sn] = 0;
+    consume(sn, 0xff);
     command(sn, CR_OPEN);
     if (r8(Sn_SR, SREG(sn)) != W5500_SOCK_INIT) return -1;
     command(sn, CR_LISTEN);
@@ -90,6 +140,12 @@ int w5500_tcp_listen(int sn, uint16_t port)
 }
 
 uint8_t w5500_status(int sn) { return r8(Sn_SR, SREG(sn)); }
+
+void w5500_peer(int sn, uint8_t ip[4], uint16_t *port)
+{
+    rd(0x0c, SREG(sn), ip, 4);                      /* Sn_DIPR */
+    *port = r16(0x10, SREG(sn));                    /* Sn_DPORT */
+}
 uint16_t w5500_rx_available(int sn) { return r16_stable(Sn_RX_RSR, SREG(sn)); }
 uint16_t w5500_tx_free(int sn) { return r16_stable(Sn_TX_FSR, SREG(sn)); }
 
@@ -129,13 +185,14 @@ static int wait_send_ok(int sn, uint32_t timeout_ms)
     if (!(send_pending & (1u << sn))) return 0;
     uint32_t start = jiffies;
     for (;;) {
-        uint8_t ir = r8(Sn_IR, SREG(sn));
+        uint8_t ir = read_events(sn);
         if (ir & IR_SEND_OK) {
-            w8(Sn_IR, SREG(sn), IR_SEND_OK);
+            consume(sn, IR_SEND_OK);
             send_pending &= (uint8_t)~(1u << sn);
             return 0;
         }
         if ((ir & (IR_TIMEOUT | IR_DISCON)) || jiffies - start > timeout_ms) return -1;
+        w5500_wait(sn, 1);
     }
 }
 
@@ -178,4 +235,5 @@ void w5500_disconnect(int sn, uint32_t timeout_ms)
     command(sn, CR_CLOSE);
     send_pending &= (uint8_t)~(1u << sn);
     queued[sn] = 0;
+    consume(sn, 0xff);
 }

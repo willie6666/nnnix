@@ -59,3 +59,12 @@ size_t klog_read(char *buf, size_t size)
     for (uint32_t i = 0; i < count; ++i) buf[i] = ring[(start + i) % KLOG_RING];
     return count;
 }
+
+size_t klog_read_from(uint32_t *pos, char *buf, size_t size)
+{
+    uint32_t head = ring_head, oldest = head > KLOG_RING ? head - KLOG_RING : 0;
+    if (*pos < oldest || *pos > head) *pos = oldest;
+    size_t n = 0;
+    while (n < size && *pos < head) buf[n++] = ring[(*pos)++ % KLOG_RING];
+    return n;
+}

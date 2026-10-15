@@ -17,6 +17,7 @@ void board_init(void);
 int  board_modules_powered(void);    /* MB-102 rail sensed through CH376S/W5500 INT lines */
 void board_spi_pins(int on);
 void board_led_toggle(void);
+void board_w5500_irq(int enable);   /* PB2 falling edge -> w5500_isr() */
 uint32_t board_reset_cause(void);    /* SYS_RSTSRC captured at boot */
 
 void fault_report_last(void);        /* print the crash record left by a previous HardFault */

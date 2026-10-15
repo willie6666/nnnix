@@ -13,7 +13,8 @@ static const struct w5500_netcfg netcfg = {
     .mac = { 0x02, 0x37, 0x65, 0x55, 0x00, 0x01 },     /* locally administered */
     .ip = { 198, 18, 0, 2 }, .mask = { 255, 255, 255, 252 }, .gateway = { 0, 0, 0, 0 },
 };
-static const uint8_t buffers_kib[8] = { 16, 0, 0, 0, 0, 0, 0, 0 };
+/* Socket plan (net.h): 0 diag, 1-3 telnet, 4 spare. 16 KiB per direction in total. */
+static const uint8_t buffers_kib[8] = { 8, 2, 2, 2, 2, 0, 0, 0 };
 
 void modules_poll(void)
 {
@@ -22,6 +23,7 @@ void modules_poll(void)
         if (powered) delay_ms(200);                    /* let the rail settle */
         powered = board_modules_powered();
         if (powered != modules.powered) {
+            board_w5500_irq(0);
             modules = (struct modules_state){ .powered = (uint8_t)powered };
             kprintf(powered ? "modules: power on\n" : "modules: power off, SPI pins released\n");
             board_spi_pins(powered);
@@ -42,7 +44,8 @@ void modules_poll(void)
     if (w != modules.w5500) {
         modules.w5500 = (uint8_t)w;
         if (w) {
-            w5500_configure(&netcfg, buffers_kib);    /* sockets closed: diag re-listens */
+            w5500_configure(&netcfg, buffers_kib);    /* sockets closed: servers re-listen */
+            board_w5500_irq(1);
             kprintf("w5500: present, ip %u.%u.%u.%u/30\n", netcfg.ip[0], netcfg.ip[1], netcfg.ip[2], netcfg.ip[3]);
         } else kprintf("w5500: not responding\n");
     }

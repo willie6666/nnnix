@@ -13,6 +13,8 @@
 #include "../drivers/ch9350.h"
 #include "../drivers/hidkey.h"
 #include "panic.h"
+#include "../net/net.h"
+#include "../net/telnetd.h"
 
 #ifndef NNNIX_VERSION
 #define NNNIX_VERSION "unknown"
@@ -148,6 +150,8 @@ void kmain(void)
     uart1_init();
     spi_init();
     sched_init();
+    net_init();
+    telnetd_init();
     if (!task_spawn("input", input_main, 0, 768, 2, 1) ||
         !task_spawn("diag", diag_task, 0, 1280, 3, 1) ||
         !task_spawn("mon", mon_main, 0, 896, 4, 1))

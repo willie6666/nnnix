@@ -3,7 +3,7 @@
 **nnnix**: NuvotoN NUC UNIX (NuvotoN Nuc NIX), a small UNIX-like operating system for the
 NU-LB_002 board (NUC140VE3CN).
 
-Created 2026-10-15. Status: **M1 done** (2026-10-15); M2 in progress.
+Created 2026-10-15. Status: **M2 done** (2026-10-16); M3 next.
 
 ## 1. Goals
 
@@ -147,6 +147,20 @@ Hardware behaviour found on the way:
 - Network settings stay static at 198.18.0.2/30; DHCP comes in M5.
 
 **Acceptance**: the NanoPi runs commands in two telnet sessions at the same time; the automated tests pass.
+
+**Result (2026-10-16)**: `make test` 28/28, `make host-test` 109 checks pass.
+- W5500 INTn on PB2 raises a falling-edge GPIO interrupt; the `netd` task (priority 1) collects and acknowledges
+  socket events and wakes the tasks blocked on those sockets. It also polls every 100 ms in case an edge is lost.
+- Socket plan: 0 diag (8 KiB), 1-3 telnet (2 KiB each), 4 spare (2 KiB). A shared listener re-arms server sockets
+  and drops half-open connections stuck in SYN_RECV.
+- telnetd: three sessions on port 23, one `nsh` task each (1280 B stack, about 700 B used). The line editor and the
+  telnet filter are pure code with host tests.
+- New system calls: read (terminal line), ps, meminfo, klog, reboot, uname. `nsh` uses only system calls.
+- Measured: a second session answers in 8 ms while the first runs `sleep 2`; three sessions at once; no heap leak after
+  log-out/reconnect cycles; 5.5 KiB heap free with one session.
+- Round-robin fix: more high-priority wakeups (netd, diag) made equal-priority sharing unfair (440/560 ms). A task
+  preempted by a higher priority now resumes its remaining slice before its peers; the demo shows 500/500 ms.
+- W5500 send rate dropped from 1030 to 834 KiB/s because the diag socket buffer went from 16 to 8 KiB.
 
 ### M3 Local console: LCD + keyboard
 - LCD driver: initialisation, 5x7 font, 21x8 text, scrolling, cursor.

@@ -82,13 +82,17 @@ static int stack_ok(const struct task *t)
     return 1;
 }
 
+/* Highest priority first. Among equals, a task that a higher priority took the
+ * CPU from resumes its slice; otherwise the one that waited longest runs. */
 static struct task *pick(void)
 {
     struct task *best = 0;
     for (int i = 0; i < TASK_MAX; ++i) {
         struct task *t = &tasks[i];
         if (t->state != TASK_READY) continue;
-        if (!best || t->prio < best->prio || (t->prio == best->prio && t->last_run < best->last_run))
+        if (!best || t->prio < best->prio ||
+            (t->prio == best->prio && (t->preempted > best->preempted ||
+                                       (t->preempted == best->preempted && t->last_run < best->last_run))))
             best = t;
     }
     return best;
@@ -102,8 +106,12 @@ void sched_switch(void)
     if (!stack_ok(prev)) panic("stack overflow in %s", prev->name);
     struct task *next = pick();
     if (next != prev) {
+        /* Still runnable with slice left and not yielding: it was preempted. */
+        prev->preempted = prev->state == TASK_READY && prev->slice && !prev->yielded;
+        prev->yielded = 0;
+        if (!next->preempted) next->slice = SLICE_MS;
+        next->preempted = 0;
         next->last_run = ++switch_seq;
-        next->slice = SLICE_MS;
         switches++;
         sched_current = next;
     }
@@ -124,9 +132,9 @@ void sched_tick(void)
         }
     }
     if (c->slice && --c->slice == 0) {
-        c->slice = SLICE_MS;
         for (int i = 0; i < TASK_MAX; ++i)
             if (&tasks[i] != c && tasks[i].state == TASK_READY && tasks[i].prio == c->prio) resched = 1;
+        if (!resched) c->slice = SLICE_MS;          /* nobody to share with: keep going */
     }
     if (resched) arch_pend_switch();
 }
@@ -149,6 +157,7 @@ struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
     *t = (struct task){ .stack = stack, .stack_size = stack_bytes, .name = name, .pid = next_pid++,
                         .prio = prio, .detached = (uint8_t)detached, .slice = SLICE_MS };
     t->sp = arch_task_stack_init(stack + stack_bytes / 4u, entry, arg, task_return);
+    t->tty = running ? cur()->tty : 0;
     t->state = TASK_READY;
     if (running && prio < cur()->prio) arch_pend_switch();
     irq_restore(s);
@@ -194,6 +203,7 @@ void task_yield(void)
 {
     uint32_t s = irq_save();
     cur()->last_run = ++switch_seq;  /* go behind equal-priority peers */
+    cur()->yielded = 1;
     arch_pend_switch();
     irq_restore(s);
 }

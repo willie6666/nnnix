@@ -68,6 +68,27 @@ void board_spi_pins(int on)
 }
 
 void board_led_toggle(void) { GPIO_DOUT(PORTC) ^= BIT(12); }
+
+void w5500_isr(void);
+
+void board_w5500_irq(int enable)
+{
+    GPIO_IMD(PORTB) &= ~BIT(2);                     /* edge triggered */
+    GPIO_ISRC(PORTB) = BIT(2);
+    if (enable) GPIO_IEN(PORTB) |= BIT(2);         /* INTn falling edge */
+    else GPIO_IEN(PORTB) &= ~BIT(2);
+    NVIC_IPR(IRQ_GPAB) = (NVIC_IPR(IRQ_GPAB) & ~(0xffu << (8 * (IRQ_GPAB % 4))))
+                       | (0x40u << (8 * (IRQ_GPAB % 4)));
+    if (enable) NVIC_ISER = BIT(IRQ_GPAB);
+}
+
+void GPAB_IRQHandler(void)
+{
+    uint32_t pending = GPIO_ISRC(PORTB);
+    GPIO_ISRC(PORTB) = pending;
+    GPIO_ISRC(PORTA) = GPIO_ISRC(PORTA);
+    if (pending & BIT(2)) w5500_isr();
+}
 uint32_t board_reset_cause(void) { return reset_cause; }
 
 void arch_reboot(void)

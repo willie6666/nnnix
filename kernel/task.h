@@ -13,6 +13,7 @@
 enum task_state { TASK_UNUSED, TASK_READY, TASK_SLEEPING, TASK_BLOCKED, TASK_ZOMBIE };
 
 struct task;
+struct tty;
 struct waitq { struct task *head, *tail; };
 
 struct task {
@@ -22,12 +23,14 @@ struct task {
     const char *name;
     uint16_t pid;
     uint8_t prio, state, detached, slice;
+    uint8_t preempted, yielded;      /* round-robin bookkeeping */
     int32_t wait_result, exit_code;
     uint32_t wake_at;                /* 0: no timeout */
     uint32_t last_run, cpu_ms;
     struct waitq *waitq;             /* queue the task is blocked on */
     struct task *wait_next;
     struct waitq exit_wq;
+    struct tty *tty;                 /* controlling terminal: fd 0/1/2; inherited by children */
 };
 
 struct task_info {

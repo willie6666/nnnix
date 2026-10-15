@@ -124,6 +124,129 @@ def request(cmd, div=4, length=0, payload=b'', expect=None, timeout=60):
     return bytes(data), elapsed
 
 
+class Telnet:
+    """Minimal telnet client: drops option negotiation, reads up to the shell prompt."""
+    PROMPT = 'nnnix$ '
+
+    def __init__(self, ns, timeout=5):
+        self.sock = ns.call(lambda: socket.create_connection((TARGET[0], 23), timeout=timeout))
+        self.state = 0
+        self.text = ''
+
+    def _feed(self, data):
+        out = bytearray()
+        for b in data:
+            if self.state == 0:
+                if b == 255: self.state = 1
+                else: out.append(b)
+            elif self.state == 1:
+                self.state = 2 if b in (251, 252, 253, 254) else (3 if b == 250 else 0)
+                if b == 255: out.append(255); self.state = 0
+            elif self.state == 2: self.state = 0
+            elif self.state == 3: self.state = 4 if b == 255 else 3
+            else: self.state = 0 if b == 240 else 3
+        self.text += out.decode(errors='replace')
+
+    def read_until(self, token, timeout=5):
+        deadline = time.monotonic() + timeout
+        while token not in self.text:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError(f'waiting for {token!r}, got {self.text[-80:]!r}')
+            self.sock.settimeout(left)
+            data = self.sock.recv(4096)
+            if not data:
+                raise ConnectionError(f'closed while waiting for {token!r}')
+            self._feed(data)
+        head, _, self.text = self.text.partition(token)
+        return head
+
+    def send(self, raw):
+        self.sock.sendall(raw.encode() if isinstance(raw, str) else raw)
+
+    def cmd(self, line, timeout=5):
+        """Run a command; return its output without the echoed line."""
+        self.send(line + '\r\n')
+        out = self.read_until(self.PROMPT, timeout)
+        return out.split('\r\n', 1)[1] if '\r\n' in out else out
+
+    def wait_closed(self, timeout=3):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            self.sock.settimeout(deadline - time.monotonic())
+            try:
+                data = self.sock.recv(4096)
+            except socket.timeout:
+                break
+            if not data:
+                return True
+            self._feed(data)
+        return False
+
+    def close(self):
+        self.sock.close()
+
+
+def telnet_tests(ns, report):
+    t1 = Telnet(ns)
+    t1.read_until(Telnet.PROMPT)
+    free_before = t1.cmd('free')
+    out = t1.cmd('uname')
+    report.add('telnet login', 'nnnix' in out, out.strip())
+
+    t2 = Telnet(ns)
+    t2.read_until(Telnet.PROMPT)
+    out = t2.cmd('echo hello   "big world"')
+    report.add('telnet 2nd session', out.strip() == 'hello big world', out.strip())
+    ps = t1.cmd('ps')
+    names = [line.split()[1] for line in ps.splitlines()[1:] if line.split() and line.split()[0].isdigit()]
+    report.add('telnet ps', names.count('nsh') == 2 and {'netd', 'telnetd'} <= set(names), ' '.join(names))
+
+    t1.send('sleep 2\r\n')
+    started = time.monotonic()
+    out = t2.cmd('uptime')
+    other = time.monotonic() - started
+    t1.read_until(Telnet.PROMPT, 5)
+    slept = time.monotonic() - started
+    report.add('telnet concurrency', other < 0.5 and slept >= 1.9,
+               f'session 2 answered in {other * 1000:.0f} ms while session 1 slept {slept:.2f} s')
+
+    t2.send('ecxo\x7f\x7fho ed\x1b[Dited\r\n')       # backspaces and an arrow key
+    out = t2.read_until(Telnet.PROMPT)
+    report.add('line editing', out.splitlines()[-1].strip() == 'edited', repr(out.splitlines()[-1]))
+    t1.send('abc\x03')
+    out = t1.read_until(Telnet.PROMPT)
+    report.add('ctrl-c', '^C' in out, repr(out))
+    out = t1.cmd('nosuch')
+    report.add('unknown command', 'command not found' in out, out.strip())
+    out = t1.cmd('dmesg')
+    report.add('dmesg', 'telnetd: session' in out, f'{len(out)} chars')
+
+    t3 = Telnet(ns)
+    t3.read_until(Telnet.PROMPT)
+    out = t3.cmd('ps')
+    report.add('three sessions', sum(line.split()[1:2] == ['nsh'] for line in out.splitlines()) == 3, '')
+    for t in (t2, t3):
+        t.send('exit\r\n')
+    closed = all(t.wait_closed() for t in (t2, t3))
+    report.add('logout', closed, 'both sessions closed by the server')
+    for t in (t2, t3):
+        t.close()
+
+    time.sleep(0.3)                                   # telnetd reaps finished sessions every 50 ms
+    t4 = Telnet(ns)
+    t4.read_until(Telnet.PROMPT)
+    t4.send('exit\r\n')
+    report.add('reconnect', t4.wait_closed(), 'socket re-armed after logout')
+    t4.close()
+    time.sleep(0.3)
+    free_after = t1.cmd('free')
+    report.add('no leak', free_before == free_after, free_after.strip())
+    t1.send('\x04')                                  # Ctrl-D on an empty line logs out
+    report.add('ctrl-d logout', t1.wait_closed(), '')
+    t1.close()
+
+
 class Report:
     def __init__(self):
         self.rows = []
@@ -200,6 +323,12 @@ def main():
                            f'equal-priority hogs {a_ms}/{b_ms} ms cpu (ratio {fair:.2f})')
             else:
                 report.add('scheduler demo (D)', False, demo.strip())
+
+            serial.wait_for(r'telnetd: listening', 5, 0)
+            try:
+                telnet_tests(ns, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                report.add('telnet', False, repr(exc))
 
             if args.usb_bytes:
                 text, _ = ns.call(request, b'U', 1, args.usb_bytes, b'', None, 180)

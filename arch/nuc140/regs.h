@@ -32,6 +32,9 @@ enum { PORTA, PORTB, PORTC, PORTD, PORTE };
 #define GPIO_PMD(p)    REG(0x50004000u + 0x40u * (p))   /* 2 bits/pin: 0 in 1 out 2 OD 3 quasi */
 #define GPIO_DOUT(p)   REG(0x50004008u + 0x40u * (p))
 #define GPIO_PIN(p)    REG(0x50004010u + 0x40u * (p))
+#define GPIO_IMD(p)    REG(0x50004018u + 0x40u * (p))   /* 0 edge, 1 level */
+#define GPIO_IEN(p)    REG(0x5000401cu + 0x40u * (p))   /* [15:0] falling/low, [31:16] rising/high */
+#define GPIO_ISRC(p)   REG(0x50004020u + 0x40u * (p))   /* write 1 to clear */
 enum { GPIO_INPUT, GPIO_OUTPUT, GPIO_OPEN_DRAIN, GPIO_QUASI };
 
 /* UART (UA_RBR/THR 0x00, IER 0x04, FCR 0x08, LCR 0x0C, FSR 0x18, BAUD 0x24, FUN_SEL 0x30) */
@@ -71,6 +74,7 @@ enum { GPIO_INPUT, GPIO_OUTPUT, GPIO_OPEN_DRAIN, GPIO_QUASI };
 #define SCB_SHPR3      REG(0xe000ed20u)   /* [23:16] PendSV, [31:24] SysTick */
 #define NVIC_IPR(n)    REG(0xe000e400u + 4u * ((n) / 4u))
 
+#define IRQ_GPAB       4
 #define IRQ_UART1      13
 
 static inline void regs_unlock(void)

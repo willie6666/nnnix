@@ -187,6 +187,33 @@ class Telnet:
         self.sock.close()
 
 
+def console_tests(ns, report):
+    """tty0 = LCD + keyboard. Keys are injected with diag 'I'; the screen is read back with 'V'."""
+    def screen():
+        return ns.call(request, b'V')[0].decode(errors='replace')
+
+    def type_keys(keys, settle=0.6):
+        ns.call(request, b'I', 4, len(keys), keys)
+        time.sleep(settle)
+        return screen()
+
+    text = screen()
+    report.add('console banner', 'nnnix$' in text and 'Type' in text, text.strip().replace('\n', ' | '))
+    text = type_keys(b'echo lcd works\r')
+    report.add('console echo', 'lcd works' in text.splitlines()[-3:-1] or 'lcd works' in text, '')
+    text = type_keys(b'xx\x7f\x7funame\r')
+    report.add('console line edit', 'NUC140' in text and 'xx' not in text, '')
+    text = type_keys(b'clear\r')
+    report.add('console clear', text.startswith('nnnix$') and text.count('nnnix$') == 1, repr(text[:30]))
+    text = type_keys(b'help\r')
+    report.add('console scroll', text.splitlines()[-1].startswith('nnnix$') and 'exit' in text,
+               'help output scrolled the 8-line screen')
+    type_keys(b'exit\r', 1.0)
+    text = screen()
+    report.add('console respawn', 'Type' in text and text.rstrip().endswith('nnnix$'),
+               'getty started a new shell after exit')
+
+
 def telnet_tests(ns, report):
     t1 = Telnet(ns)
     t1.read_until(Telnet.PROMPT)
@@ -200,7 +227,7 @@ def telnet_tests(ns, report):
     report.add('telnet 2nd session', out.strip() == 'hello big world', out.strip())
     ps = t1.cmd('ps')
     names = [line.split()[1] for line in ps.splitlines()[1:] if line.split() and line.split()[0].isdigit()]
-    report.add('telnet ps', names.count('nsh') == 2 and {'netd', 'telnetd'} <= set(names), ' '.join(names))
+    report.add('telnet ps', names.count('nsh') == 3 and {'netd', 'telnetd', 'getty'} <= set(names), ' '.join(names))
 
     t1.send('sleep 2\r\n')
     started = time.monotonic()
@@ -225,7 +252,8 @@ def telnet_tests(ns, report):
     t3 = Telnet(ns)
     t3.read_until(Telnet.PROMPT)
     out = t3.cmd('ps')
-    report.add('three sessions', sum(line.split()[1:2] == ['nsh'] for line in out.splitlines()) == 3, '')
+    report.add('three sessions', sum(line.split()[1:2] == ['nsh'] for line in out.splitlines()) == 4,
+               'three telnet shells plus the console shell')
     for t in (t2, t3):
         t.send('exit\r\n')
     closed = all(t.wait_closed() for t in (t2, t3))
@@ -298,12 +326,12 @@ def main():
             report.add('status (S)', b'uptime' in text, text.decode(errors='replace').strip().replace('\n', ' | '))
 
             expected = pattern(args.net_bytes)
-            data, seconds = ns.call(request, b'T', 0, args.net_bytes, b'', args.net_bytes)
-            report.add('w5500 tx 25MHz', data == expected,
+            data, seconds = ns.call(request, b'T', 1, args.net_bytes, b'', args.net_bytes)
+            report.add('w5500 tx 12.5MHz', data == expected,
                        f'{len(data)} B {len(data) / seconds / 1024:.0f} KiB/s')
-            reply, seconds = ns.call(request, b'R', 0, args.net_bytes, expected, 12)
+            reply, seconds = ns.call(request, b'R', 1, args.net_bytes, expected, 12)
             fields = struct.unpack('>III', reply) if len(reply) == 12 else (0, -1, 0)
-            report.add('w5500 rx 25MHz', fields[0] == args.net_bytes and fields[1] == 0,
+            report.add('w5500 rx 12.5MHz', fields[0] == args.net_bytes and fields[1] == 0,
                        f'errors {fields[1]} {args.net_bytes / seconds / 1024:.0f} KiB/s')
 
             text, _ = ns.call(request, b'K')
@@ -324,6 +352,10 @@ def main():
             else:
                 report.add('scheduler demo (D)', False, demo.strip())
 
+            try:
+                console_tests(ns, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                report.add('console', False, repr(exc))
             serial.wait_for(r'telnetd: listening', 5, 0)
             try:
                 telnet_tests(ns, report)

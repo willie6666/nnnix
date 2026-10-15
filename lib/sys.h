@@ -16,7 +16,7 @@ enum {
     SYS_UPTIME  = 4,   /* uptime() -> ms             */
     SYS_WRITE   = 5,   /* write(fd, buf, len) -> len; fd 1/2: terminal, or the kernel log without one */
     SYS_READ    = 6,   /* read(fd, buf, len) -> len; fd 0: terminal line; 0 at end of file, -EINTR on Ctrl-C */
-    SYS_PS      = 7,   /* ps(struct task_info *, max) -> count */
+    SYS_PS      = 7,   /* ps(struct task_info *, max, skip) -> count; skip pages through the list */
     SYS_MEMINFO = 8,   /* meminfo(struct kmem_stats *) */
     SYS_KLOG    = 9,   /* klog(uint32_t *pos, buf, len) -> len; stream the kernel log */
     SYS_REBOOT  = 10,  /* reboot(SYS_REBOOT_MAGIC) */
@@ -66,7 +66,10 @@ static inline int sys_read(int fd, void *buf, size_t len)
 {
     return NN_SYSCALL3(SYS_READ, fd, (uintptr_t)buf, len);
 }
-static inline int sys_ps(struct task_info *out, int max) { return NN_SYSCALL2(SYS_PS, (uintptr_t)out, max); }
+static inline int sys_ps(struct task_info *out, int max, int skip)
+{
+    return NN_SYSCALL3(SYS_PS, (uintptr_t)out, max, skip);
+}
 static inline void sys_meminfo(struct kmem_stats *out) { (void)NN_SYSCALL1(SYS_MEMINFO, (uintptr_t)out); }
 static inline int sys_klog(uint32_t *pos, char *buf, size_t len)
 {

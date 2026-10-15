@@ -26,14 +26,14 @@ static int cmd_echo(int argc, char **argv)
 static int cmd_ps(int argc, char **argv)
 {
     static const char *const states[] = { "-", "run", "sleep", "wait", "zombie" };
-    struct task_info info[TASK_MAX];
+    struct task_info info[4];        /* paged: the shell stack is small */
     (void)argc; (void)argv;
-    int n = sys_ps(info, TASK_MAX);
     printf("  PID NAME     PRI STATE  STACK USED/SIZE   CPU MS\n");
-    for (int i = 0; i < n; ++i)
-        printf("%5u %-8s %3u %-6s %10u/%-5u %8u\n", info[i].pid, info[i].name, info[i].prio,
-               info[i].state < 5 ? states[info[i].state] : "?", info[i].stack_used, info[i].stack_size,
-               info[i].cpu_ms);
+    for (int skip = 0, n; (n = sys_ps(info, 4, skip)) > 0; skip += n)
+        for (int i = 0; i < n; ++i)
+            printf("%5u %-8s %3u %-6s %10u/%-5u %8u\n", info[i].pid, info[i].name, info[i].prio,
+                   info[i].state < 5 ? states[info[i].state] : "?", info[i].stack_used, info[i].stack_size,
+                   info[i].cpu_ms);
     return 0;
 }
 

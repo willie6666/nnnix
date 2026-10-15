@@ -3,7 +3,7 @@
 **nnnix**: NuvotoN NUC UNIX (NuvotoN Nuc NIX), a small UNIX-like operating system for the
 NU-LB_002 board (NUC140VE3CN).
 
-Created 2026-10-15. Status: **M2 done** (2026-10-16); M3 next.
+Created 2026-10-15. Status: **M3 done** (2026-10-16); M4 next.
 
 ## 1. Goals
 
@@ -88,7 +88,7 @@ Flash 128 KiB targets: kernel + drivers <= 45 KiB, file systems <= 20 KiB, shell
 | CH376S CS/INT | PC8/PB14 | Verified |
 | W5500 CS/INT/RST | PB10/PB2/PB8 | Verified |
 | SPI2 -> W25X16 | PD0-PD5 (onboard) | To verify (R2) |
-| SPI3 -> LCD, LCD power | PD8-PD11, PD14 (onboard) | To verify (R1) |
+| SPI3 -> LCD (CS PD8 as GPIO, CLK PD9, MOSI PD11) | PD8-PD11 (onboard); PD14 left alone | Verified |
 | LED | PC12 | Verified |
 | Buzzer, keys, EEPROM, RTC crystal | Per board documentation | To verify (R4) |
 
@@ -169,6 +169,22 @@ Hardware behaviour found on the way:
 
 **Acceptance**: typing on the keyboard shows on the LCD and runs commands while telnet sessions keep working.
 
+**Result (2026-10-16)**: `make test` 34/34, `make host-test` 1224 checks pass; the owner confirmed the LCD and
+keyboard on the board.
+- LCD (R1): initialisation sequence from the vendor sample (bias, contrast, mapping, display on); 9-bit SPI3 frames
+  at 3.1 MHz with bit 8 selecting data; logical x maps to controller column 129 - x, so each character is written
+  as one 6-byte run. The terminal keeps only a 21x8 character grid (168 B), no framebuffer.
+- Font: a classic 5x7 ASCII table written for nnnix (the vendor font is not used).
+- `vt` (character grid, wrap, scroll, CR/LF/BS/TAB, ESC [ H / 2J / K) and `kbd` (Shift, Caps Lock, Ctrl+letter,
+  arrows, Home/End/Delete, auto-repeat 500 ms then every 50 ms) are pure code with host tests.
+- tty0 = LCD + keyboard; a `getty` task starts a new `nsh` after each logout.
+- Tests type on tty0 through diag `I` and read the screen back with diag `V`.
+- Findings: W5500 reads at 25 MHz gave about 6 bad bytes per 10 MiB on the breadboard wiring and none at 12.5 MHz,
+  so the W5500 now runs at 12.5 MHz (636/623 KiB/s send/receive). The console shell raised the task count to 8, so
+  `TASK_MAX` went from 10 to 14; the larger `ps` buffer then overflowed a 1024 B shell stack and the overflow
+  detector caught it. `ps` now pages through the task list four entries at a time and shells get 1152 B stacks.
+- RAM: 5.3 KiB heap free after boot, 4.0 KiB with one telnet session; three telnet sessions still fit.
+
 ### M4 File systems
 - VFS: path lookup, mount table, per-process fd tables, `open/read/write/lseek/close/stat/readdir/mkdir/unlink/rename`.
 - devfs; W25X16 driver + littlefs as `/`; CH376S usbfs mounted at `/usb`; procfs.
@@ -219,7 +235,7 @@ Repository: <https://github.com/willie6666/nnnix>; at least one commit and tag p
 
 | ID | Item | Needed by |
 | --- | --- | --- |
-| R1 | LCD controller model, initialisation sequence, PD14 power control (BSP `Library/Nu-LB-NUC140/Source/LCD.c`) | M3 |
+| R1 | LCD controller initialisation sequence and SPI3 framing. Done in M3; PD14 (backlight on this board revision) is left at its reset state | M3 |
 | R2 | Whether the W25X16 is fitted, its JEDEC ID, SPI2 pins (BSP `SampleCode/Nu-LB-NUC140/SPI_Flash`) | M4 |
 | R3 | The RS-232 transceiver on PB0 and how to isolate it; fallback: software UART RX or another pin | M7 |
 | R4 | RTC 32.768 kHz crystal, buzzer, keys, EEPROM pins | M5 |

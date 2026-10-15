@@ -6,9 +6,12 @@
 
 /* SPI1, mode 0, MSB first. Clock = HCLK / ((divider + 1) * 2):
  * 0 -> 25.1 MHz, 1 -> 12.5 MHz, 2 -> 8.4 MHz, 4 -> 5.0 MHz.
- * CH376S works up to 12.5 MHz and only with byte transfers; W5500 works at 25 MHz. */
+ * CH376S works up to 12.5 MHz and only with byte transfers. W5500 reads at
+ * 25 MHz showed about 6 bad bytes per 10 MiB on the breadboard wiring and none
+ * at 12.5 MHz, so 12.5 MHz is its default. */
 enum { SPI_NONE = -1, SPI_CH376 = 0, SPI_W5500 = 1 };
-#define SPI_DEFAULT_DIVIDER 4u
+#define SPI_DEFAULT_DIVIDER 4u        /* CH376S */
+#define SPI_W5500_DIVIDER   1u
 
 void spi_init(void);
 /* Each device keeps its own clock; it is applied when the device is selected. */

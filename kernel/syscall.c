@@ -31,9 +31,9 @@ static int32_t sys_read_k(int32_t fd, char *buf, uint32_t len)
     return tty_read(t, buf, len);
 }
 
-static int32_t sys_ps_k(struct task_info *out, int32_t max)
+static int32_t sys_ps_k(struct task_info *out, int32_t max, int32_t skip)
 {
-    return task_list(out, max > TASK_MAX ? TASK_MAX : max);
+    return task_list(out, max > TASK_MAX ? TASK_MAX : max, skip);
 }
 
 static int32_t sys_meminfo_k(struct kmem_stats *out) { kmem_stats(out); return 0; }

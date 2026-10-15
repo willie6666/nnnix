@@ -1,0 +1,83 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+#include "console.h"
+#include "panic.h"
+#include "sync.h"
+#include "task.h"
+#include "tty.h"
+#include "vt.h"
+#include "../arch/nuc140/arch.h"
+#include "../drivers/lcd.h"
+#include "../user/nsh.h"
+
+#define INPUT_QUEUE 64u
+
+static struct vt vt;
+static struct tty tty0;
+static uint8_t queue[INPUT_QUEUE];
+static uint32_t head, tail;          /* protected by irq_save */
+static struct sem input_ready;
+
+static void draw(void *ctx, int col, int row, char c, int cursor)
+{
+    (void)ctx;
+    lcd_char(col, row, c, cursor);
+}
+
+void console_input(const uint8_t *bytes, int n)
+{
+    uint32_t s = irq_save();
+    for (int i = 0; i < n; ++i)
+        if (head - tail < INPUT_QUEUE) queue[head++ % INPUT_QUEUE] = bytes[i];
+    irq_restore(s);
+    if (n) sem_give(&input_ready);
+}
+
+static int console_getc(void *ctx)
+{
+    (void)ctx;
+    for (;;) {
+        uint32_t s = irq_save();
+        if (tail != head) {
+            int c = queue[tail++ % INPUT_QUEUE];
+            irq_restore(s);
+            return c;
+        }
+        irq_restore(s);
+        sem_take(&input_ready, SEM_FOREVER);
+    }
+}
+
+static void console_write(void *ctx, const char *s, size_t n)
+{
+    (void)ctx;
+    vt_write(&vt, s, n);
+}
+
+static const struct tty_ops console_ops = { console_getc, console_write };
+
+size_t console_snapshot(char *buf, size_t size) { return vt_snapshot(&vt, buf, size); }
+
+static void shell(void *arg)
+{
+    (void)arg;
+    nsh_main();
+}
+
+static void getty_main(void *arg)
+{
+    (void)arg;
+    task_self()->tty = &tty0;        /* inherited by each shell */
+    for (;;) {
+        struct task *t = task_spawn("nsh", shell, 0, 1152, 5, 0);
+        if (!t) { task_sleep(1000); continue; }
+        task_join(t, 0);
+    }
+}
+
+void console_init(void)
+{
+    lcd_init();
+    vt_init(&vt, draw, 0);
+    tty_init(&tty0, &console_ops, 0);
+    if (!task_spawn("getty", getty_main, 0, 384, 4, 1)) panic("cannot start getty");
+}

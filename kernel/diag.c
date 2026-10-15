@@ -14,6 +14,7 @@
 #include "../drivers/w5500.h"
 #include "../user/demo.h"
 #include "../net/net.h"
+#include "console.h"
 
 #define SOCK 0
 #define PORT 5000
@@ -145,7 +146,7 @@ static void ps_text(void)
 {
     struct task_info info[TASK_MAX];
     struct kmem_stats m;
-    int n = task_list(info, TASK_MAX);
+    int n = task_list(info, TASK_MAX, 0);
     report("  pid name     pri state  stack used/size  cpu ms\n");
     for (int i = 0; i < n; ++i)
         report("%5u %-8s %3u %-6s %5u/%-5u %9u\n", info[i].pid, info[i].name, info[i].prio,
@@ -175,7 +176,14 @@ static void demo(uint32_t ms)
     struct task *a = task_spawn("hog_a", demo_hog, (void *)(uintptr_t)until, 512, 5, 0);
     struct task *b = task_spawn("hog_b", demo_hog, (void *)(uintptr_t)until, 512, 5, 0);
     struct task *t = task_spawn("ticker", demo_ticker, (void *)(uintptr_t)(ms / 10u), 512, 4, 0);
-    if (!a || !b || !t) { report("demo: spawn failed\n"); return; }
+    if (!a || !b || !t) {
+        /* Whatever did start runs out its time; reap it so nothing leaks. */
+        if (a) task_join(a, 0);
+        if (b) task_join(b, 0);
+        if (t) task_join(t, 0);
+        report("demo: spawn failed (task slots or memory)\n");
+        return;
+    }
     uint32_t cpu_t, cpu_a, cpu_b;
     int late = task_join(t, &cpu_t);
     int loops_a = task_join(a, &cpu_a), loops_b = task_join(b, &cpu_b);
@@ -232,6 +240,22 @@ static void session(void)
     case 'D':
         demo(length);
         break;
+    case 'I': {
+        /* Keyboard injection for tests: the payload goes to tty0 as if typed. */
+        uint32_t got = 0;
+        if (length > sizeof buf) length = sizeof buf;
+        while (got < length) {
+            int n = net_recv(SOCK, buf + got, (uint16_t)(length - got), 2000);
+            if (n <= 0) break;
+            got += (uint32_t)n;
+        }
+        console_input(buf, (int)got);
+        report("injected %u bytes\n", got);
+        break;
+    }
+    case 'V':
+        reply_len = (unsigned)console_snapshot(reply, sizeof reply);
+        break;
     case 'O':
         report(task_spawn("ovf", demo_overflow, 0, 512, 4, 1) ? "overflow task started\n" : "spawn failed\n");
         break;
@@ -250,7 +274,7 @@ static void session(void)
     reply_owner = 0;
     if (reply_len) w5500_send(SOCK, reply, (uint16_t)reply_len, 2000);
     w5500_flush(SOCK, 2000);
-    spi_set_divider(SPI_W5500, SPI_DEFAULT_DIVIDER);
+    spi_set_divider(SPI_W5500, SPI_W5500_DIVIDER);
     spi_set_divider(SPI_CH376, SPI_DEFAULT_DIVIDER);
     w5500_disconnect(SOCK, 1000);    /* the listener re-arms the socket */
 }

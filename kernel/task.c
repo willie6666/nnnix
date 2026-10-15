@@ -214,13 +214,13 @@ void task_sleep(uint32_t ms)
     sched_block(0, ms ? ms : 1, s);
 }
 
-int task_list(struct task_info *out, int max)
+int task_list(struct task_info *out, int max, int skip)
 {
     int n = 0;
     uint32_t s = irq_save();
     for (int i = 0; i < TASK_MAX && n < max; ++i) {
         struct task *t = &tasks[i];
-        if (t->state == TASK_UNUSED) continue;
+        if (t->state == TASK_UNUSED || skip-- > 0) continue;
         uint32_t untouched = 0;
         if (t->stack) while (untouched < t->stack_size / 4u && t->stack[untouched] == STACK_FILL) untouched++;
         out[n++] = (struct task_info){ t->name, t->pid, t->prio, t->state, t->stack_size,

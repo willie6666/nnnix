@@ -20,7 +20,7 @@ static void netd_main(void *arg)
 
 void net_init(void)
 {
-    if (!task_spawn("netd", netd_main, 0, 512, 1, 1)) panic("cannot start netd");
+    if (!task_spawn("netd", netd_main, 0, 384, 1, 1)) panic("cannot start netd");
 }
 
 int net_recv(int sn, void *buf, uint16_t n, uint32_t timeout_ms)

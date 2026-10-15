@@ -5,7 +5,7 @@
 
 /* Preemptive scheduler: fixed priorities (0 = highest, 7 = idle), round-robin
  * between equal priorities with a 10 ms time slice, 1 ms tick. */
-#define TASK_MAX        10
+#define TASK_MAX        14           /* 8 system tasks + 3 telnet shells + room for children */
 #define TASK_PRIO_IDLE  7
 #define TASK_REDZONE    128u         /* a saved sp this close to the stack bottom is an overflow */
 #define ETIMEDOUT       110
@@ -52,7 +52,7 @@ void task_yield(void);
 void task_sleep(uint32_t ms);
 void task_exit(int code) __attribute__((noreturn));
 int  task_join(struct task *t, uint32_t *cpu_ms);   /* wait for exit, free it, return the exit code */
-int  task_list(struct task_info *out, int max);
+int  task_list(struct task_info *out, int max, int skip);   /* skip the first `skip` tasks */
 uint32_t sched_switches(void);
 
 /* Low-level blocking used by sync.c. Call with interrupts saved by irq_save();

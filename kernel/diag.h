@@ -12,10 +12,12 @@
  *   'U' CH376S write/read/verify/delete of length bytes, text reply
  *   'D' scheduler demo for length ms: two equal-priority CPU hogs plus a
  *       higher-priority 10 ms ticker, text reply
+ *   'I' type length payload bytes into tty0 (keyboard injection)
+ *   'V' tty0 screen text
  *   'O' stack overflow test (the kernel panics and reboots)
  *   'F' HardFault (fault capture test)   'X' reboot
- * Pattern byte i = ((i * 0x9e3779b1) >> 24) ^ i. Replaced by telnetd in M2. */
+ * Pattern byte i = ((i * 0x9e3779b1) >> 24) ^ i. */
 void diag_task(void *arg);
-void diag_ch376_bench(uint32_t length);   /* also run by the F1 key */
+void diag_ch376_bench(uint32_t length);
 
 #endif

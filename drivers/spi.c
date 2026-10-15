@@ -6,7 +6,7 @@
 #define MODE0 BIT(2)                 /* TX_NEG: drive on falling edge, sample on rising */
 static uint32_t timeouts;
 static struct mutex bus;
-static uint8_t divider[2] = { SPI_DEFAULT_DIVIDER, SPI_DEFAULT_DIVIDER };
+static uint8_t divider[2] = { SPI_DEFAULT_DIVIDER, SPI_W5500_DIVIDER };
 
 void spi_init(void)
 {

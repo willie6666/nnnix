@@ -2,6 +2,7 @@
 #ifndef NNNIX_TELNETD_H
 #define NNNIX_TELNETD_H
 
-void telnetd_init(void);              /* start the telnet server task (port 23) */
+void telnetd_init(void);              /* set up the port 23 listeners */
+void telnetd_poll(void);              /* accept and reap sessions (kernel daemon) */
 
 #endif

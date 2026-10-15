@@ -20,7 +20,7 @@ static uint16_t tx_size[8];
 static uint16_t queued[8];           /* bytes written since the last SEND */
 static uint8_t send_pending;         /* bit per socket: a SEND awaits SEND_OK */
 static uint8_t events[8];            /* Sn_IR bits read (and cleared on the chip) but not consumed */
-static struct sem irq_sem;           /* INTn fell */
+static void (*notify)(void);         /* INTn fell */
 static struct sem sock_ev[8];        /* something happened on socket n */
 
 static void header(uint16_t address, uint8_t control)
@@ -63,8 +63,8 @@ static void command(int sn, uint8_t cmd)
 int w5500_present(void) { return r8(0x0039, 0) == 0x04; }
 
 /* ---- interrupts: INTn -> w5500_isr -> netd -> w5500_collect -> per-socket wakeups ---- */
-void w5500_isr(void) { if (irq_sem.count <= 0) sem_give(&irq_sem); }
-int w5500_irq_wait(uint32_t timeout_ms) { return sem_take(&irq_sem, timeout_ms); }
+void w5500_isr(void) { if (notify) notify(); }
+void w5500_set_notify(void (*fn)(void)) { notify = fn; }
 
 static uint8_t read_events(int sn)
 {

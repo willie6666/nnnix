@@ -16,6 +16,7 @@ void delay_us(uint32_t us);
 void board_init(void);
 int  board_modules_powered(void);    /* MB-102 rail sensed through CH376S/W5500 INT lines */
 void board_spi_pins(int on);
+void board_w5500_reset(int asserted);   /* PB8 */
 void board_led_toggle(void);
 void board_w5500_irq(int enable);   /* PB2 falling edge -> w5500_isr() */
 uint32_t board_reset_cause(void);    /* SYS_RSTSRC captured at boot */

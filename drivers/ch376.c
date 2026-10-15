@@ -6,6 +6,7 @@
 #include "../arch/nuc140/regs.h"
 #include "../arch/nuc140/arch.h"
 #include "../kernel/sync.h"
+#include "../kernel/task.h"
 
 static struct mutex device;
 void ch376_lock(void) { mutex_lock(&device); }
@@ -77,16 +78,16 @@ uint8_t ch376_version(void) { return cmd_read(0x01); }
 int ch376_mount(void)
 {
     begin(0x05); end();              /* RESET_ALL */
-    delay_ms(100);
+    msleep(100);
     if (!set_mode(5)) return 1;
     if (wait_status(2000) != 0x15) return 2;   /* no disk attached */
-    set_mode(7); delay_ms(50);
-    set_mode(6); delay_ms(50);
+    set_mode(7); msleep(50);
+    set_mode(6); msleep(50);
     for (int i = 0; i < 8 && INT_ACTIVE(); ++i) cmd_read(0x22);
     if (op(0x30, 0, 0) != CH376_OK) return 3;  /* DISK_CONNECT */
     for (int i = 0; i < 5; ++i) {
         if (op(0x31, 0, 0) == CH376_OK) return 0;  /* DISK_MOUNT */
-        delay_ms(200);
+        msleep(200);
     }
     return 4;
 }

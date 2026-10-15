@@ -54,10 +54,6 @@ void board_spi_pins(int on)
         gpio_mode(PORTC, 9, GPIO_OUTPUT);
         gpio_mode(PORTC, 10, GPIO_INPUT);
         gpio_mode(PORTC, 11, GPIO_OUTPUT);
-        GPIO_DOUT(PORTB) &= ~BIT(8);                /* W5500 hardware reset */
-        delay_ms(2);
-        GPIO_DOUT(PORTB) |= BIT(8);
-        delay_ms(60);
     } else {
         /* Released while the modules are unpowered so nothing back-powers them. */
         SYS_GPC_MFP &= ~(BIT(9) | BIT(10) | BIT(11));
@@ -68,6 +64,12 @@ void board_spi_pins(int on)
 }
 
 void board_led_toggle(void) { GPIO_DOUT(PORTC) ^= BIT(12); }
+
+void board_w5500_reset(int asserted)
+{
+    if (asserted) GPIO_DOUT(PORTB) &= ~BIT(8);
+    else GPIO_DOUT(PORTB) |= BIT(8);
+}
 
 void w5500_isr(void);
 

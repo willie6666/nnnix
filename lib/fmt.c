@@ -2,11 +2,11 @@
 #include "fmt.h"
 #include <stdint.h>
 
-struct out { char *buf; size_t size, len; };
+struct out { void (*sink)(void *ctx, char c); void *ctx; size_t len; };
 
 static void put(struct out *o, char c)
 {
-    if (o->len + 1 < o->size) o->buf[o->len] = c;
+    o->sink(o->ctx, c);
     o->len++;
 }
 
@@ -27,9 +27,9 @@ static void number(struct out *o, uint32_t v, unsigned base, int upper, int nega
     if (left) pad(o, ' ', width - len);
 }
 
-int nn_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
+int nn_vformat(void (*sink)(void *ctx, char c), void *ctx, const char *fmt, va_list ap)
 {
-    struct out o = { buf, size, 0 };
+    struct out o = { sink, ctx, 0 };
     for (; *fmt; ++fmt) {
         if (*fmt != '%') { put(&o, *fmt); continue; }
         int left = 0, zero = 0, width = 0;
@@ -76,8 +76,24 @@ int nn_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
         default: put(&o, '%'); put(&o, *fmt); break;
         }
     }
-    if (size) buf[o.len < size ? o.len : size - 1] = '\0';
     return (int)o.len;
+}
+
+struct bounded { char *buf; size_t size, len; };
+
+static void to_buffer(void *ctx, char c)
+{
+    struct bounded *b = ctx;
+    if (b->len + 1 < b->size) b->buf[b->len] = c;
+    b->len++;
+}
+
+int nn_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
+{
+    struct bounded b = { buf, size, 0 };
+    int n = nn_vformat(to_buffer, &b, fmt, ap);
+    if (size) buf[b.len < size ? b.len : size - 1] = '\0';
+    return n;
 }
 
 int nn_snprintf(char *buf, size_t size, const char *fmt, ...)

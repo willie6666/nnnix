@@ -7,6 +7,8 @@
 /* printf subset: %d %i %u %x %X %p %s %c %%, flags '-' '0', width (or '*'), 'l' accepted.
  * Always NUL-terminates when size > 0; returns the length that would have been written. */
 int nn_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
+/* Streaming form: every output character goes to put(ctx, c). Returns the count. */
+int nn_vformat(void (*put)(void *ctx, char c), void *ctx, const char *fmt, va_list ap);
 int nn_snprintf(char *buf, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 
 #endif

@@ -208,6 +208,12 @@ void task_yield(void)
     irq_restore(s);
 }
 
+void msleep(uint32_t ms)
+{
+    if (running && !in_interrupt()) task_sleep(ms);
+    else delay_ms(ms);
+}
+
 void task_sleep(uint32_t ms)
 {
     uint32_t s = irq_save();

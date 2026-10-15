@@ -1,12 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* telnet server: three listening sockets on port 23, one nsh task per connection. */
+/* telnet server: three listening sockets on port 23, one nsh task per connection.
+ * Polled by the kernel daemon. */
 #include "net.h"
 #include "telnet.h"
 #include "telnetd.h"
 #include "../kernel/klog.h"
 #include "../kernel/kmem.h"
-#include "../kernel/modules.h"
-#include "../kernel/panic.h"
 #include "../kernel/task.h"
 #include "../kernel/tty.h"
 #include "../lib/string.h"
@@ -87,31 +86,25 @@ static void start(int i)
 static void finish(int i)
 {
     struct session *s = sessions[i];
-    task_join(s->task, 0);
+    task_join(s->task, 0);           /* already a zombie: returns at once */
     net_close(s->sn);
     kfree(s);
     sessions[i] = 0;
     kprintf("telnetd: session %d closed\n", i);
 }
 
-static void telnetd_main(void *arg)
+void telnetd_poll(void)
 {
-    (void)arg;
-    for (int i = 0; i < NET_TELNET_SOCKS; ++i)
-        listeners[i] = (struct listener){ .sn = (uint8_t)(NET_SOCK_TELNET + i), .port = PORT, .name = "telnetd",
-                                          .last_sr = 0xff, .announced = (uint8_t)(i != 0) };
-    for (;;) {
-        if (modules.w5500) {
-            for (int i = 0; i < NET_TELNET_SOCKS; ++i) {
-                if (sessions[i]) { if (sessions[i]->done) finish(i); }
-                else if (listener_poll(&listeners[i])) start(i);
-            }
-        }
-        task_sleep(50);
+    for (int i = 0; i < NET_TELNET_SOCKS; ++i) {
+        struct session *s = sessions[i];
+        if (s) { if (s->done && s->task->state == TASK_ZOMBIE) finish(i); }
+        else if (listener_poll(&listeners[i])) start(i);
     }
 }
 
 void telnetd_init(void)
 {
-    if (!task_spawn("telnetd", telnetd_main, 0, 768, 3, 1)) panic("cannot start telnetd");
+    for (int i = 0; i < NET_TELNET_SOCKS; ++i)
+        listeners[i] = (struct listener){ .sn = (uint8_t)(NET_SOCK_TELNET + i), .port = PORT, .name = "telnetd",
+                                          .last_sr = 0xff, .announced = (uint8_t)(i != 0) };
 }

@@ -7,8 +7,8 @@ MEMORY {
     RAM (rwx)  : ORIGIN = 0x20000000, LENGTH = 16K
 }
 __stack_top   = ORIGIN(RAM) + LENGTH(RAM);
-__stack_limit = __stack_top - 1024;   /* MSP: boot, then interrupts and exceptions only */
-__noinit_base = __stack_limit - 512;
+__stack_limit = __stack_top - 768;    /* MSP: boot, then interrupts and exceptions only */
+__noinit_base = __stack_limit - 384;
 
 SECTIONS {
     .vectors : { KEEP(*(.vectors)) } > FLASH

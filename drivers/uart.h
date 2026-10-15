@@ -13,7 +13,7 @@ void uart0_write(const char *s, size_t n);
 struct uart1_stats { uint32_t bytes, errors, drops; };
 void uart1_init(void);
 int  uart1_getc(void);                       /* -1 when empty */
-int  uart1_wait(uint32_t timeout_ms);        /* block until data arrives: 0 or -ETIMEDOUT */
+void uart1_set_notify(void (*fn)(void));     /* called from the interrupt when bytes arrive */
 void uart1_stats(struct uart1_stats *out);
 
 #endif

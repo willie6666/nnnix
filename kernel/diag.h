@@ -17,7 +17,7 @@
  *   'O' stack overflow test (the kernel panics and reboots)
  *   'F' HardFault (fault capture test)   'X' reboot
  * Pattern byte i = ((i * 0x9e3779b1) >> 24) ^ i. */
-void diag_task(void *arg);
+void diag_poll(void);                 /* kernel daemon: start a worker per connection */
 void diag_ch376_bench(uint32_t length);
 
 #endif

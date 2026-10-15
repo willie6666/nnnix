@@ -10,7 +10,8 @@ flash and a USB drive, and later stand-alone loadable programs. The full plan is
 
 **M3 local console: done** (M0 foundation, M1 kernel core and M2 telnet console done before it).
 
-nnnix runs a shell on the board's own LCD with a USB keyboard, and up to three more over telnet:
+nnnix runs a shell on the board's own LCD with a USB keyboard, and up to three more over telnet. All system
+services run inside one kernel daemon (`kd`), so an idle system has three tasks:
 
 ```
 $ telnet 198.18.0.2
@@ -18,39 +19,38 @@ nnnix m3 NUC140VE3CN
 Type 'help' for a list of commands.
 nnnix$ ps
   PID NAME     PRI STATE  STACK USED/SIZE   CPU MS
-    1 idle       7 run            80/384      36935
-    2 netd       1 wait          208/384          6
-    3 telnetd    3 sleep         540/768          3
-    4 getty      4 wait          120/384          0
-    5 input      2 wait          176/512          0
-    6 diag       3 wait          876/1280         0
-    7 mon        4 sleep         532/768        266
-    8 nsh        5 wait          640/1152         8
-    9 nsh        5 run           776/1152        12
+    1 idle       7 run            80/384      39204
+    2 kd         2 wait          716/1024        16
+    3 nsh        5 wait          672/1152         8
+    4 nsh        5 run           808/1152        11
+nnnix$ free
+heap: total 13144 B, free 9216 B, largest block 9216 B, 1 free blocks
 ```
 
 - Preemptive multitasking: fixed priorities with round-robin among equals (10 ms slice; a preempted task resumes its slice), PendSV switching, 1 ms tick, sleep and timeouts
 - Synchronisation: wait queues, mutexes, semaphores (can be given from interrupts); SPI bus lock and CH376S device lock
 - System calls: entered with `svc`; the kernel function runs in the caller's own task context, so it may block; user-side interface in `lib/sys.h`
 - Terminals: canonical line editing (backspace, Ctrl-U, Ctrl-C, Ctrl-D, arrow keys ignored) over a byte backend
-- Console tty0: onboard 128x64 LCD as a 21x8 text terminal plus the USB keyboard (Shift, Caps Lock, Ctrl, arrows, auto-repeat); `getty` restarts the shell after logout
-- Network: interrupt-driven W5500 (`netd` task), socket layer with self re-arming listeners, telnet server with three sessions
+- Console tty0: onboard 128x64 LCD as a 21x8 text terminal plus the USB keyboard (Shift, Caps Lock, Ctrl, arrows, auto-repeat); the shell restarts after logout
+- Kernel daemon `kd`: one event loop for the network, keyboard, telnet and diag listeners, console shell restart and module supervision
+- Network: interrupt-driven W5500, socket layer with self re-arming listeners, telnet server with three sessions
 - Shell `nsh`: `help echo ps free uptime dmesg uname sleep clear reboot exit`, using only system calls
 - Memory: first-fit kmalloc with coalescing; task stacks get red-zone and canary checks and an overflow panics
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 34 checks) | Result |
+| On-target tests (`make test`, 35 checks) | Result |
 | --- | --- |
 | Console: banner, typing, line editing, clear, scrolling, shell restart after `exit` | pass |
 | Two telnet sessions: one runs `sleep 2`, the other answers | in 4 ms |
 | Line editing, Ctrl-C, Ctrl-D, three sessions, log-out and reconnect, heap leak check | pass |
-| W5500 send / receive (SPI 12.5 MHz, 8 KiB socket buffer) | 636 KiB/s / 623 KiB/s, verified byte by byte |
+| W5500 send / receive (SPI 12.5 MHz, 8 KiB socket buffer) | 604 KiB/s / 586 KiB/s, verified byte by byte |
 | CH376S write / read 256 KiB (SPI 12.5 MHz) | 118 kB/s / 229 kB/s, 0 errors |
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, reported after reboot | pass |
-| Code size / static RAM / heap | 23.9 KiB / 4.3 KiB / 10.7 KiB (5.3 KiB free after boot) |
+| Free RAM floor: heap free with the console shell and one telnet session | 9.2 KiB (test limit 8.5 KiB) |
+| Code size / static RAM / heap | 24.2 KiB / 2.4 KiB / 13.1 KiB (10.4 KiB free after boot) |
 
 ## Hardware
 
@@ -91,8 +91,8 @@ OpenOCD lookup order: `$NNNIX_OPENOCD_ROOT` (an extracted Debian openocd package
 
 ```
 arch/nuc140/   startup, vector table, clock, pins, context switch, HardFault, linker script
-kernel/        scheduler, synchronisation, system calls, kmalloc, klog, panic, tty, line editor, vt, console, module supervision, diag service
-net/           netd (W5500 interrupts), socket layer, telnet filter, telnetd
+kernel/        scheduler, synchronisation, system calls, kmalloc, klog, panic, kd (kernel daemon), tty, line editor, vt, console, input, module supervision, diag service
+net/           socket layer, telnet filter, telnetd
 drivers/       uart spi ch376 w5500 ch9350 hidkey kbd lcd font5x7
 lib/           printf subset, string functions, EABI division (no divide instruction on M0), system-call stubs (sys.h), user stdio
 user/          nsh shell, scheduler demo programs

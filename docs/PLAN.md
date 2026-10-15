@@ -3,7 +3,7 @@
 **nnnix**: NuvotoN NUC UNIX (NuvotoN Nuc NIX), a small UNIX-like operating system for the
 NU-LB_002 board (NUC140VE3CN).
 
-Created 2026-10-15. Status: **M3 done** (2026-10-16); M4 next.
+Created 2026-10-15. Status: **M3 done** (2026-10-16), followed by a RAM diet; M4 next.
 
 ## 1. Goals
 
@@ -63,7 +63,9 @@ Design points:
 
 ## 4. Memory budget
 
-SRAM 16 KiB (initial estimate, corrected with M1 measurements):
+SRAM 16 KiB. Measured after the RAM diet: static 2.4 KiB, `.noinit` 384 B, MSP 768 B, heap 13.1 KiB
+(idle 384 B and kd 1024 B stacks, console shell 1152 B; 10.4 KiB free; each telnet session about 1.3 KiB).
+The original estimate:
 
 | Item | Size |
 | --- | --- |
@@ -184,6 +186,37 @@ keyboard on the board.
   `TASK_MAX` went from 10 to 14; the larger `ps` buffer then overflowed a 1024 B shell stack and the overflow
   detector caught it. `ps` now pages through the task list four entries at a time and shells get 1152 B stacks.
 - RAM: 5.3 KiB heap free after boot, 4.0 KiB with one telnet session; three telnet sessions still fit.
+
+### RAM diet (between M3 and M4)
+
+Before the file systems, the system already used about 11 KiB of the 16 KiB before any user program ran. The goal
+was to double the free RAM without hardware changes.
+
+**Result (2026-10-16)**: `make test` 35/35 (adds a free-RAM floor check).
+- One kernel daemon task (`kd`) replaces netd, telnetd, mon, input and getty: an event loop woken by the W5500 and
+  UART1 interrupts and by timers (key repeat, 50 ms listener poll, 1 s module supervision). Shells and diag sessions
+  still run in their own tasks.
+- The diag service only listens in `kd`; each connection gets a worker task, and its 1.4 KiB of buffers are
+  allocated for that session only.
+- Busy waits outside start-up became `msleep()` (module power-up, W5500 reset, CH376S mount).
+- `printf` and `kprintf` stream through 32-byte chunks instead of formatting into 128/160-byte stack buffers.
+- MSP 1024 -> 768 B, HardFault stack 384 -> 256 B, UART1 ring 256 -> 128 B, `TASK_MAX` 14 -> 10.
+
+| | Before | After |
+| --- | --- | --- |
+| Static RAM (.data + .bss) | 4.3 KiB | 2.4 KiB |
+| Heap | 11.0 KiB | 13.1 KiB |
+| Free after boot (console shell running) | 5.3 KiB | 10.4 KiB |
+| Free with one telnet session | 4.0 KiB | 9.2 KiB |
+| Tasks at idle | 8 | 3 (idle, kd, console nsh) |
+
+Swap and zram were considered and rejected for now: without an MMU a swapped-out task must come back to the same
+address, compression costs RAM and time on every switch, and the only wear-free backing store on hand (W5500 buffer
+memory) is shared with the network. External SPI flash (for example a W25Q64) adds storage, not RAM. The NUC140 EBI
+could map a parallel SRAM, but it needs about 20 pins including PB6/PB7, which hold the LIN transceiver idle for the
+CH9350. An SPI SRAM such as a 23LC1024 remains an option for buffers or rolled-out idle shells if M6 needs more.
+Free blocks can fragment after shells come and go (seen: 9216 B free as 6504 + 2712); worth watching when M4 adds
+larger allocations.
 
 ### M4 File systems
 - VFS: path lookup, mount table, per-process fd tables, `open/read/write/lseek/close/stat/readdir/mkdir/unlink/rename`.

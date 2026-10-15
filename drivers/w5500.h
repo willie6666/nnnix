@@ -15,11 +15,11 @@ struct w5500_netcfg { uint8_t mac[6], ip[4], mask[4], gateway[4]; };
 
 int      w5500_present(void);                       /* VERSIONR == 0x04 */
 /* Interrupts: sockets with a buffer get SEND_OK/TIMEOUT/RECV/DISCON/CON enabled.
- * w5500_isr() runs from the PB2 GPIO interrupt; the netd task waits with
- * w5500_irq_wait() and calls w5500_collect(), which acknowledges the chip and
+ * w5500_isr() runs from the PB2 GPIO interrupt and calls the notify hook; the
+ * kernel daemon then calls w5500_collect(), which acknowledges the chip and
  * wakes tasks blocked in w5500_wait() on the affected sockets. */
 void     w5500_isr(void);
-int      w5500_irq_wait(uint32_t timeout_ms);
+void     w5500_set_notify(void (*fn)(void));
 uint8_t  w5500_collect(void);                       /* mask of sockets that had events */
 int      w5500_wait(int sn, uint32_t timeout_ms);   /* 0 on an event, -ETIMEDOUT otherwise */
 uint8_t  w5500_phy(void);                           /* PHYCFGR: bit0 link, bit1 100M, bit2 full */

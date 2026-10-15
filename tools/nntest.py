@@ -215,9 +215,14 @@ def console_tests(ns, report):
 
 
 def telnet_tests(ns, report):
+    time.sleep(0.3)                                   # let kd reap the previous diag worker
     t1 = Telnet(ns)
     t1.read_until(Telnet.PROMPT)
     free_before = t1.cmd('free')
+    m = re.search(r'free (\d+) B', free_before)
+    free_bytes = int(m[1]) if m else 0
+    report.add('free ram', free_bytes >= 8500,
+               f'{free_bytes} B heap free with the console shell and one telnet session (limit 8500)')
     out = t1.cmd('uname')
     report.add('telnet login', 'nnnix' in out, out.strip())
 
@@ -227,7 +232,7 @@ def telnet_tests(ns, report):
     report.add('telnet 2nd session', out.strip() == 'hello big world', out.strip())
     ps = t1.cmd('ps')
     names = [line.split()[1] for line in ps.splitlines()[1:] if line.split() and line.split()[0].isdigit()]
-    report.add('telnet ps', names.count('nsh') == 3 and {'netd', 'telnetd', 'getty'} <= set(names), ' '.join(names))
+    report.add('telnet ps', names.count('nsh') == 3 and 'kd' in names, ' '.join(names))
 
     t1.send('sleep 2\r\n')
     started = time.monotonic()
@@ -337,7 +342,7 @@ def main():
             text, _ = ns.call(request, b'K')
             ps = text.decode(errors='replace')
             names = [line.split()[1] for line in ps.splitlines()[1:] if line[:5].strip().isdigit()]
-            report.add('tasks (K)', {'idle', 'input', 'diag', 'mon'} <= set(names), ' '.join(names))
+            report.add('tasks (K)', {'idle', 'kd', 'diag', 'nsh'} <= set(names), ' '.join(names))
 
             text, _ = ns.call(request, b'D', 4, 1000, b'', None, 30)
             demo = text.decode(errors='replace')

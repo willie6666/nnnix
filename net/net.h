@@ -9,8 +9,6 @@
 #define NET_SOCK_TELNET 1             /* 1, 2, 3 */
 #define NET_TELNET_SOCKS 3
 
-void net_init(void);                  /* start the netd interrupt task */
-
 /* Blocking stream calls for an established socket. */
 int  net_recv(int sn, void *buf, uint16_t n, uint32_t timeout_ms); /* bytes; 0 when closed; -ETIMEDOUT */
 int  net_send(int sn, const void *buf, uint32_t n);                /* n, or -1 when the connection failed */

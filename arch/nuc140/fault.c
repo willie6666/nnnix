@@ -16,7 +16,7 @@ struct crash {
     char panic[48];                 /* empty for a HardFault */
 } __attribute__((aligned(4)));
 __attribute__((section(".noinit"))) static struct crash crash;
-__attribute__((section(".noinit"), used)) static uint32_t fault_stack[96];
+__attribute__((section(".noinit"), used)) static uint32_t fault_stack[64];
 
 static void raw_putc(char c)
 {
@@ -63,7 +63,7 @@ __attribute__((naked)) void HardFault_Handler(void)
         "1:\n"
         "mrs  r0, msp\n"
         "2:\n"
-        "ldr  r2, =fault_stack + 384\n"
+        "ldr  r2, =fault_stack + 256\n"
         "mov  sp, r2\n"
         "ldr  r2, =fault_handler_c\n"
         "bx   r2\n");

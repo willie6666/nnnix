@@ -17,13 +17,12 @@ static void emit(const char *s, size_t n)
     for (size_t i = 0; i < n; ++i) ring[ring_head++ % KLOG_RING] = s[i];
 }
 
-/* Serialises whole writes between tasks; a no-op before the scheduler runs. */
+/* Serialises whole messages between tasks; a no-op before the scheduler runs. */
 static struct mutex lock;
 
-void klog_write(const char *buf, size_t n)
+static void put_locked(const char *buf, size_t n)
 {
     const char *p = buf, *endp = buf + n;
-    mutex_lock(&lock);
     while (p < endp) {
         if (line_start) {
             char stamp[16];
@@ -37,18 +36,34 @@ void klog_write(const char *buf, size_t n)
         if (nl < endp) { emit(p, (size_t)(nl - p + 1)); line_start = 1; p = nl + 1; }
         else { emit(p, (size_t)(endp - p)); p = endp; }
     }
+}
+
+void klog_write(const char *buf, size_t n)
+{
+    mutex_lock(&lock);
+    put_locked(buf, n);
     mutex_unlock(&lock);
+}
+
+struct chunk { char buf[32]; size_t len; };
+
+static void chunk_put(void *ctx, char c)
+{
+    struct chunk *k = ctx;
+    k->buf[k->len++] = c;
+    if (k->len == sizeof k->buf) { put_locked(k->buf, k->len); k->len = 0; }
 }
 
 void kprintf(const char *fmt, ...)
 {
-    char buf[160];
+    struct chunk k = { .len = 0 };
     va_list ap;
+    mutex_lock(&lock);
     va_start(ap, fmt);
-    int n = nn_vsnprintf(buf, sizeof buf, fmt, ap);
+    nn_vformat(chunk_put, &k, fmt, ap);
     va_end(ap);
-    if (n > (int)sizeof buf - 1) n = sizeof buf - 1;
-    klog_write(buf, (size_t)n);
+    put_locked(k.buf, k.len);
+    mutex_unlock(&lock);
 }
 
 size_t klog_read(char *buf, size_t size)

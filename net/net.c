@@ -1,27 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "net.h"
 #include "../kernel/klog.h"
-#include "../kernel/modules.h"
-#include "../kernel/panic.h"
 #include "../kernel/task.h"
 #include "../arch/nuc140/arch.h"
 #include "../drivers/w5500.h"
-
-/* netd: turns W5500 interrupts into per-socket wakeups. It also polls every
- * 100 ms, so a lost edge only delays events. */
-static void netd_main(void *arg)
-{
-    (void)arg;
-    for (;;) {
-        w5500_irq_wait(100);
-        if (modules.w5500) w5500_collect();
-    }
-}
-
-void net_init(void)
-{
-    if (!task_spawn("netd", netd_main, 0, 384, 1, 1)) panic("cannot start netd");
-}
 
 int net_recv(int sn, void *buf, uint16_t n, uint32_t timeout_ms)
 {

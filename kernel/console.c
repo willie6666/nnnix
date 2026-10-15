@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "console.h"
-#include "panic.h"
 #include "sync.h"
 #include "task.h"
 #include "tty.h"
@@ -57,21 +56,22 @@ static const struct tty_ops console_ops = { console_getc, console_write };
 
 size_t console_snapshot(char *buf, size_t size) { return vt_snapshot(&vt, buf, size); }
 
+static struct task *shell_task;
+
 static void shell(void *arg)
 {
     (void)arg;
+    task_self()->tty = &tty0;
     nsh_main();
 }
 
-static void getty_main(void *arg)
+void console_poll(void)
 {
-    (void)arg;
-    task_self()->tty = &tty0;        /* inherited by each shell */
-    for (;;) {
-        struct task *t = task_spawn("nsh", shell, 0, 1152, 5, 0);
-        if (!t) { task_sleep(1000); continue; }
-        task_join(t, 0);
+    if (shell_task && shell_task->state == TASK_ZOMBIE) {
+        task_join(shell_task, 0);
+        shell_task = 0;
     }
+    if (!shell_task) shell_task = task_spawn("nsh", shell, 0, 1152, 5, 0);
 }
 
 void console_init(void)
@@ -79,5 +79,4 @@ void console_init(void)
     lcd_init();
     vt_init(&vt, draw, 0);
     tty_init(&tty0, &console_ops, 0);
-    if (!task_spawn("getty", getty_main, 0, 384, 4, 1)) panic("cannot start getty");
 }

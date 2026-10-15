@@ -20,10 +20,13 @@
 #define PORT 5000
 #define CHUNK 1024u
 
-static uint8_t buf[CHUNK];           /* network transfers of the diag task */
-static char reply[384];
+#define REPLY 384u
+
+/* Allocated by the worker for the length of one session. */
+static uint8_t *buf;                 /* network transfers */
+static char *reply;
 static unsigned reply_len;
-static struct task *reply_owner;     /* only the diag task appends to the TCP reply */
+static struct task *reply_owner;     /* only the worker appends to the TCP reply */
 
 static uint8_t pattern(uint32_t i) { return (uint8_t)(((i * 0x9e3779b1u) >> 24) ^ i); }
 
@@ -38,7 +41,7 @@ static void report(const char *fmt, ...)
     va_end(ap);
     if (n > (int)sizeof line - 1) n = sizeof line - 1;
     if (task_self() == reply_owner)
-        for (int i = 0; i < n && reply_len < sizeof reply; ++i) reply[reply_len++] = line[i];
+        for (int i = 0; i < n && reply_len < REPLY; ++i) reply[reply_len++] = line[i];
     kprintf("%s", line);
 }
 
@@ -212,7 +215,7 @@ static void session(void)
         ps_text();
         break;
     case 'L': {
-        uint16_t n = (uint16_t)klog_read((char *)buf, sizeof buf);
+        uint16_t n = (uint16_t)klog_read((char *)buf, CHUNK);
         w5500_send(SOCK, buf, n, 2000);
         break;
     }
@@ -243,7 +246,7 @@ static void session(void)
     case 'I': {
         /* Keyboard injection for tests: the payload goes to tty0 as if typed. */
         uint32_t got = 0;
-        if (length > sizeof buf) length = sizeof buf;
+        if (length > CHUNK) length = CHUNK;
         while (got < length) {
             int n = net_recv(SOCK, buf + got, (uint16_t)(length - got), 2000);
             if (n <= 0) break;
@@ -254,7 +257,7 @@ static void session(void)
         break;
     }
     case 'V':
-        reply_len = (unsigned)console_snapshot(reply, sizeof reply);
+        reply_len = (unsigned)console_snapshot(reply, REPLY);
         break;
     case 'O':
         report(task_spawn("ovf", demo_overflow, 0, 512, 4, 1) ? "overflow task started\n" : "spawn failed\n");
@@ -279,13 +282,32 @@ static void session(void)
     w5500_disconnect(SOCK, 1000);    /* the listener re-arms the socket */
 }
 
-void diag_task(void *arg)
+/* One worker task per connection; kd only watches the listener. */
+static struct listener listener = { .sn = SOCK, .port = PORT, .name = "diag", .last_sr = 0xff };
+static struct task *worker;
+
+static void diag_worker(void *arg)
 {
-    struct listener l = { .sn = SOCK, .port = PORT, .name = "diag", .last_sr = 0xff };
     (void)arg;
-    for (;;) {
-        if (!modules.w5500) { l.announced = 0; task_sleep(100); continue; }
-        if (listener_poll(&l) && w5500_rx_available(SOCK) >= 6) session();
-        else w5500_wait(SOCK, 50);
+    buf = kmalloc(CHUNK);
+    reply = kmalloc(REPLY);
+    if (buf && reply) session();
+    else { kprintf("diag: out of memory\n"); w5500_disconnect(SOCK, 500); }
+    kfree(buf);
+    kfree(reply);
+    buf = 0;
+    reply = 0;
+}
+
+void diag_poll(void)
+{
+    if (worker) {
+        if (worker->state != TASK_ZOMBIE) return;
+        task_join(worker, 0);
+        worker = 0;
+    }
+    if (listener_poll(&listener) && w5500_rx_available(SOCK) >= 6) {
+        worker = task_spawn("diag", diag_worker, 0, 1280, 3, 0);
+        if (!worker) { kprintf("diag: no task slot\n"); w5500_disconnect(SOCK, 500); }
     }
 }

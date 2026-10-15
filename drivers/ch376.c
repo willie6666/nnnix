@@ -5,6 +5,12 @@
 #include "spi.h"
 #include "../arch/nuc140/regs.h"
 #include "../arch/nuc140/arch.h"
+#include "../kernel/sync.h"
+
+static struct mutex device;
+void ch376_lock(void) { mutex_lock(&device); }
+int ch376_trylock(void) { return mutex_trylock(&device); }
+void ch376_unlock(void) { mutex_unlock(&device); }
 
 #define INT_ACTIVE() (!(GPIO_PIN(PORTB) & BIT(14)))
 

@@ -17,6 +17,8 @@ void Reset_Handler(void)
 
 void Default_Handler(void) { for (;;) { } }
 void HardFault_Handler(void);
+void SVC_Handler(void);
+void PendSV_Handler(void);
 void SysTick_Handler(void);
 void UART1_IRQHandler(void);
 
@@ -26,7 +28,10 @@ __attribute__((section(".vectors"), used)) const uintptr_t vectors[48] = {
     (uintptr_t)Reset_Handler,
     DEFAULT,                          /* NMI */
     (uintptr_t)HardFault_Handler,
-    [4 ... 14] = DEFAULT,
+    [4 ... 10] = DEFAULT,
+    [11] = (uintptr_t)SVC_Handler,
+    [12 ... 13] = DEFAULT,
+    [14] = (uintptr_t)PendSV_Handler,
     [15] = (uintptr_t)SysTick_Handler,
     [16 ... 28] = DEFAULT,
     [16 + 13] = (uintptr_t)UART1_IRQHandler,

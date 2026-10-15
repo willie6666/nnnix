@@ -4,6 +4,7 @@
 #include "../lib/fmt.h"
 #include "../drivers/uart.h"
 #include "../arch/nuc140/arch.h"
+#include "sync.h"
 
 #define KLOG_RING 512u
 static char ring[KLOG_RING];
@@ -16,15 +17,13 @@ static void emit(const char *s, size_t n)
     for (size_t i = 0; i < n; ++i) ring[ring_head++ % KLOG_RING] = s[i];
 }
 
-void kprintf(const char *fmt, ...)
+/* Serialises whole writes between tasks; a no-op before the scheduler runs. */
+static struct mutex lock;
+
+void klog_write(const char *buf, size_t n)
 {
-    char buf[160];
-    va_list ap;
-    va_start(ap, fmt);
-    int n = nn_vsnprintf(buf, sizeof buf, fmt, ap);
-    va_end(ap);
-    if (n > (int)sizeof buf - 1) n = sizeof buf - 1;
     const char *p = buf, *endp = buf + n;
+    mutex_lock(&lock);
     while (p < endp) {
         if (line_start) {
             char stamp[16];
@@ -38,6 +37,18 @@ void kprintf(const char *fmt, ...)
         if (nl < endp) { emit(p, (size_t)(nl - p + 1)); line_start = 1; p = nl + 1; }
         else { emit(p, (size_t)(endp - p)); p = endp; }
     }
+    mutex_unlock(&lock);
+}
+
+void kprintf(const char *fmt, ...)
+{
+    char buf[160];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = nn_vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    if (n > (int)sizeof buf - 1) n = sizeof buf - 1;
+    klog_write(buf, (size_t)n);
 }
 
 size_t klog_read(char *buf, size_t size)

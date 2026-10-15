@@ -5,7 +5,13 @@
 
 volatile uint32_t jiffies;
 
-void SysTick_Handler(void) { jiffies++; }
+void sched_tick(void);
+
+void SysTick_Handler(void)
+{
+    jiffies++;
+    sched_tick();
+}
 
 void clock_init(void)
 {

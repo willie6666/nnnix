@@ -65,7 +65,11 @@ enum { GPIO_INPUT, GPIO_OUTPUT, GPIO_OPEN_DRAIN, GPIO_QUASI };
 #define SYST_CVR       REG(0xe000e018u)
 #define NVIC_ISER      REG(0xe000e100u)
 #define NVIC_ICER      REG(0xe000e180u)
+#define SCB_ICSR       REG(0xe000ed04u)   /* bit 28 PENDSVSET */
 #define SCB_AIRCR      REG(0xe000ed0cu)
+#define SCB_SHPR2      REG(0xe000ed1cu)   /* [31:24] SVCall priority */
+#define SCB_SHPR3      REG(0xe000ed20u)   /* [23:16] PendSV, [31:24] SysTick */
+#define NVIC_IPR(n)    REG(0xe000e400u + 4u * ((n) / 4u))
 
 #define IRQ_UART1      13
 

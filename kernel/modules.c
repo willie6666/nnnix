@@ -29,19 +29,21 @@ void modules_poll(void)
     }
     if (!modules.powered) return;
 
+    if (!ch376_trylock()) return;    /* a file operation is in progress: it is present */
     int ch = ch376_present();
+    uint8_t version = ch ? ch376_version() : 0;
+    ch376_unlock();
     if (ch != modules.ch376) {
         modules.ch376 = (uint8_t)ch;
-        if (ch) kprintf("ch376: present, version 0x%02x\n", ch376_version());
+        if (ch) kprintf("ch376: present, version 0x%02x\n", version);
         else kprintf("ch376: not responding\n");
     }
     int w = w5500_present();
     if (w != modules.w5500) {
         modules.w5500 = (uint8_t)w;
         if (w) {
-            w5500_configure(&netcfg, buffers_kib);
+            w5500_configure(&netcfg, buffers_kib);    /* sockets closed: diag re-listens */
             kprintf("w5500: present, ip %u.%u.%u.%u/30\n", netcfg.ip[0], netcfg.ip[1], netcfg.ip[2], netcfg.ip[3]);
-            diag_start();
         } else kprintf("w5500: not responding\n");
     }
     uint8_t link = w ? (uint8_t)((w5500_phy() & 7u) | 8u) : 0;

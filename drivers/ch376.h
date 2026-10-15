@@ -10,6 +10,10 @@
 #define CH376_MISS_FILE   0x42
 #define CH376_TIMEOUT     0xff
 
+/* Multi-step operations (mount, open, read/write, close) must hold the device lock. */
+void     ch376_lock(void);
+int      ch376_trylock(void);
+void     ch376_unlock(void);
 int      ch376_present(void);                 /* CHECK_EXIST round trip */
 uint8_t  ch376_version(void);
 int      ch376_mount(void);                   /* 0 or error stage 1..4 */

@@ -26,4 +26,31 @@ void arch_reboot(void) __attribute__((noreturn));
 static inline void irq_disable(void) { __asm volatile("cpsid i" ::: "memory"); }
 static inline void irq_enable(void) { __asm volatile("cpsie i" ::: "memory"); }
 
+/* Nestable critical section: returns the previous PRIMASK. */
+static inline uint32_t irq_save(void)
+{
+    uint32_t primask;
+    __asm volatile("mrs %0, primask\n cpsid i" : "=r"(primask) :: "memory");
+    return primask;
+}
+static inline void irq_restore(uint32_t primask)
+{
+    __asm volatile("msr primask, %0" :: "r"(primask) : "memory");
+}
+static inline int in_interrupt(void)
+{
+    uint32_t ipsr;
+    __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
+    return ipsr != 0;
+}
+
+/* Context switching (switch.c). Tasks run in thread mode on PSP; handlers use MSP. */
+void arch_sched_init(void);                       /* exception priorities */
+void arch_pend_switch(void);                      /* request PendSV */
+void arch_start_first_task(uint32_t *sp) __attribute__((noreturn));
+uint32_t *arch_task_stack_init(uint32_t *top, void (*entry)(void *), void *arg, void (*exit)(void));
+
+/* Record a kernel panic like a fault (message kept across reboot), then reboot. */
+void arch_panic(const char *msg, uint32_t pc) __attribute__((noreturn));
+
 #endif

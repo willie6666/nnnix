@@ -1,9 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "spi.h"
 #include "../arch/nuc140/regs.h"
+#include "../kernel/sync.h"
 
 #define MODE0 BIT(2)                 /* TX_NEG: drive on falling edge, sample on rising */
 static uint32_t timeouts;
+static struct mutex bus;
+static uint8_t divider[2] = { SPI_DEFAULT_DIVIDER, SPI_DEFAULT_DIVIDER };
 
 void spi_init(void)
 {
@@ -12,16 +15,21 @@ void spi_init(void)
     SPI_SSR(SPI1_BASE) = 0;          /* chip selects are plain GPIOs */
 }
 
-void spi_set_divider(unsigned divider) { SPI_DIVIDER(SPI1_BASE) = divider & 0xffu; }
-unsigned spi_divider(void) { return SPI_DIVIDER(SPI1_BASE) & 0xffu; }
+void spi_set_divider(int device, unsigned div) { if (device >= 0 && device < 2) divider[device] = (uint8_t)div; }
+unsigned spi_divider(int device) { return device >= 0 && device < 2 ? divider[device] : 0; }
 uint32_t spi_timeouts(void) { return timeouts; }
 
 void spi_select(int device)
 {
+    if (device != SPI_NONE) {
+        mutex_lock(&bus);
+        SPI_DIVIDER(SPI1_BASE) = divider[device];
+    }
     GPIO_DOUT(PORTC) |= BIT(8);
     GPIO_DOUT(PORTB) |= BIT(10);
     if (device == SPI_CH376) GPIO_DOUT(PORTC) &= ~BIT(8);
     if (device == SPI_W5500) GPIO_DOUT(PORTB) &= ~BIT(10);
+    if (device == SPI_NONE) mutex_unlock(&bus);
 }
 
 static uint32_t go(uint32_t cntrl)

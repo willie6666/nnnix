@@ -13,7 +13,8 @@ struct crash {
     uint32_t magic, count;
     uint32_t r0, r1, r2, r3, r12, lr, pc, xpsr, sp, exc_return, jiffies;
     uint32_t check;                 /* ~(magic ^ pc ^ count) */
-};
+    char panic[48];                 /* empty for a HardFault */
+} __attribute__((aligned(4)));
 __attribute__((section(".noinit"))) static struct crash crash;
 __attribute__((section(".noinit"), used)) static uint32_t fault_stack[96];
 
@@ -33,7 +34,7 @@ __attribute__((used)) void fault_handler_c(const uint32_t *frame, uint32_t exc_r
 {
     uint32_t count = crash.magic == CRASH_MAGIC ? crash.count + 1u : 1u;
     crash = (struct crash){ CRASH_MAGIC, count, 0, 0, 0, 0, 0, 0, 0, 0,
-                            (uint32_t)(uintptr_t)frame, exc_return, jiffies, 0 };
+                            (uint32_t)(uintptr_t)frame, exc_return, jiffies, 0, { 0 } };
     /* Only trust the frame when it points into SRAM. */
     if ((uintptr_t)frame >= 0x20000000u && (uintptr_t)frame <= 0x20004000u - 32u) {
         crash.r0 = frame[0]; crash.r1 = frame[1]; crash.r2 = frame[2]; crash.r3 = frame[3];
@@ -68,12 +69,34 @@ __attribute__((naked)) void HardFault_Handler(void)
         "bx   r2\n");
 }
 
+void arch_panic(const char *msg, uint32_t pc)
+{
+    irq_disable();
+    uint32_t sp;
+    __asm volatile("mov %0, sp" : "=r"(sp));
+    uint32_t count = crash.magic == CRASH_MAGIC ? crash.count + 1u : 1u;
+    crash = (struct crash){ CRASH_MAGIC, count, 0, 0, 0, 0, 0, 0, pc, 0, sp, 0, jiffies, 0, { 0 } };
+    for (unsigned i = 0; i + 1 < sizeof crash.panic && msg[i]; ++i) crash.panic[i] = msg[i];
+    crash.check = ~(crash.magic ^ crash.pc ^ crash.count);
+    raw_puts("\r\n*** PANIC: ");
+    raw_puts(crash.panic);
+    raw_hex(" pc=", pc);
+    raw_puts("\r\n*** rebooting\r\n");
+    while (!(UART_FSR(UART0_BASE) & UART_FSR_TE)) { }
+    arch_reboot();
+}
+
 void fault_report_last(void)
 {
     if (crash.magic != CRASH_MAGIC || crash.check != ~(crash.magic ^ crash.pc ^ crash.count)) {
         crash.magic = 0;
         return;
     }
+    crash.panic[sizeof crash.panic - 1] = 0;
+    if (crash.panic[0])
+        kprintf("last crash #%u: panic: %s (pc=%08x sp=%08x at %u ms)\n",
+                crash.count, crash.panic, crash.pc, crash.sp, crash.jiffies);
+    else
     kprintf("last crash #%u: pc=%08x lr=%08x sp=%08x xpsr=%08x r0=%08x r1=%08x at %u ms\n",
             crash.count, crash.pc, crash.lr, crash.sp, crash.xpsr, crash.r0, crash.r1, crash.jiffies);
     crash.magic = 0;     /* report once; count restarts at the next fault */

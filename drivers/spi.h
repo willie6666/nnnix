@@ -11,8 +11,11 @@ enum { SPI_NONE = -1, SPI_CH376 = 0, SPI_W5500 = 1 };
 #define SPI_DEFAULT_DIVIDER 4u
 
 void spi_init(void);
-void spi_set_divider(unsigned divider);
-unsigned spi_divider(void);
+/* Each device keeps its own clock; it is applied when the device is selected. */
+void spi_set_divider(int device, unsigned divider);
+unsigned spi_divider(int device);
+/* Selecting a device takes the bus lock; spi_select(SPI_NONE) releases it.
+ * Keep each select/deselect pair inside one task. */
 void spi_select(int device);
 uint8_t spi_xfer8(uint8_t byte);
 void spi_write(const void *buf, size_t n);   /* 32-bit bursts: W5500 only */

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""On-target test for nnnix M0 (run as root: it creates a temporary network namespace).
+"""On-target test for nnnix (run as root: it creates a temporary network namespace).
 
 Wiring: CP2102 on /dev/ttyUSB0 reads the kernel log; a spare USB Ethernet adapter is
 cabled straight to the W5500. The adapter is moved into a private namespace as
@@ -12,6 +12,7 @@ and must not carry the default route.
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import struct
@@ -27,6 +28,7 @@ import flash as flasher                                       # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 TARGET = ('198.18.0.2', 5000)
+BANNER = r'nnnix \S+ NUC140VE3CN pdid'
 PEER = '198.18.0.1/30'
 
 
@@ -156,7 +158,7 @@ def main():
             report.add('flash', ok, str(args.flash))
             if not ok:
                 return 1
-            banner = serial.wait_for(r'nnnix \S+ \(M0\)', 10, mark)
+            banner = serial.wait_for(BANNER, 10, mark)
             report.add('boot banner', banner is not None, serial.lines[banner] if banner is not None else 'no banner')
         listening = serial.wait_for(r'diag: listening', 15, 0)
         report.add('diag listening', listening is not None)
@@ -181,6 +183,24 @@ def main():
             report.add('w5500 rx 25MHz', fields[0] == args.net_bytes and fields[1] == 0,
                        f'errors {fields[1]} {args.net_bytes / seconds / 1024:.0f} KiB/s')
 
+            text, _ = ns.call(request, b'K')
+            ps = text.decode(errors='replace')
+            names = [line.split()[1] for line in ps.splitlines()[1:] if line[:5].strip().isdigit()]
+            report.add('tasks (K)', {'idle', 'input', 'diag', 'mon'} <= set(names), ' '.join(names))
+
+            text, _ = ns.call(request, b'D', 4, 1000, b'', None, 30)
+            demo = text.decode(errors='replace')
+            m = re.search(r'hog_a cpu (\d+) ms loops (\d+), hog_b cpu (\d+) ms loops (\d+)', demo)
+            late = re.search(r'worst late (-?\d+) ms', demo)
+            if m and late:
+                a_ms, b_ms = int(m[1]), int(m[3])
+                fair = min(a_ms, b_ms) / max(a_ms, b_ms, 1)
+                report.add('preemption', int(late[1]) <= 2, f'10 ms ticker worst late {late[1]} ms while hogs spin')
+                report.add('round robin', fair >= 0.8 and a_ms + b_ms >= 700,
+                           f'equal-priority hogs {a_ms}/{b_ms} ms cpu (ratio {fair:.2f})')
+            else:
+                report.add('scheduler demo (D)', False, demo.strip())
+
             if args.usb_bytes:
                 text, _ = ns.call(request, b'U', 1, args.usb_bytes, b'', None, 180)
                 line = text.decode(errors='replace').strip()
@@ -190,7 +210,7 @@ def main():
                 mark = len(serial.lines)
                 text, _ = ns.call(request, b'F')
                 dump = serial.wait_for(r'\*\*\* HardFault pc=', 5, mark)
-                rebooted = serial.wait_for(r'nnnix \S+ \(M0\)', 10, mark)
+                rebooted = serial.wait_for(BANNER, 10, mark)
                 cause = serial.wait_for(r'reset cause .*system', 5, rebooted or mark)
                 crash = serial.wait_for(r'last crash #\d+: pc=', 5, rebooted or mark)
                 report.add('fault capture', None not in (dump, rebooted, cause, crash),
@@ -199,6 +219,14 @@ def main():
                 text, _ = ns.call(request, b'L')
                 report.add('klog after reboot', back is not None and b'last crash' in text,
                            f'{len(text)} B log ring')
+
+                mark = len(serial.lines)
+                ns.call(request, b'O')
+                rebooted = serial.wait_for(BANNER, 15, mark)
+                crash = serial.wait_for(r'last crash #\d+: panic: stack overflow in ovf', 5, rebooted or mark)
+                report.add('stack overflow', None not in (rebooted, crash),
+                           serial.lines[crash] if crash is not None else 'no overflow panic reported')
+                serial.wait_for(r'w5500: link up', 15, rebooted or mark)
     finally:
         log = REPO / 'build/nntest-serial.log'
         flasher.write_user_file(log, '\n'.join(serial.lines) + '\n')

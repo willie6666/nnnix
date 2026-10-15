@@ -2,7 +2,7 @@
 
 **nnnix**：NuvotoN NUC UNIX（NuvotoN Nuc NIX）。跑在 NU-LB_002（NUC140VE3CN）上的小型類 UNIX 作業系統。
 
-建立：2026-10-15。狀態：**M0 完成**（2026-10-15），下一步 M1。
+建立：2026-10-15。狀態：**M1 完成**（2026-10-15），下一步 M2。
 
 ## 1. 目標
 
@@ -66,8 +66,8 @@ SRAM 16 KB（初估，M1 實測後修正）：
 
 | 項目 | 大小 |
 | --- | --- |
-| kernel .data／.bss（task 表、fd、掛載表、驅動狀態） | ~2.5 KB |
-| 中斷／kernel 堆疊 | 1 KB |
+| kernel .data／.bss（task 表、fd、掛載表、驅動狀態） | ~2.5 KB（M1 實測 3.5 KB） |
+| 中斷／kernel 堆疊 | 1 KB（M1 實測最高 556 B） |
 | idle + 系統 task（telnetd、kbd/tty、服務） | ~2 KB |
 | 使用者行程堆疊：最多 4 個 × 1～1.5 KB | ~5 KB |
 | tty 緩衝（3 console + 行編輯）、pipe（128 B ×2） | ~1 KB |
@@ -130,6 +130,14 @@ Flash 128 KB 目標：kernel + 驅動 ≤ 45 KB、檔案系統 ≤ 20 KB、shell
 - 固定區塊配置器；堆疊 canary；kernel `ps` 輸出（先印到 klog）。
 
 **驗收**：3 個 task 以不同週期執行並互相搶佔；刻意讓堆疊溢位會被偵測；RAM 實測數字回填 §4。
+
+**結果（2026-10-15）**：`make test` 15/15、`make host-test` 82 項通過。
+- 兩個同優先權 CPU hog 分到 509／491 ms（比例 0.96）；同時跑的高優先權 10 ms ticker 最差延遲 0 ms。
+- 堆疊溢位：saved sp 進入堆疊底部 128 B 紅區（或底部 canary 被改）時 panic，訊息存入 `.noinit`，重開後回報。
+- 系統呼叫：SVC handler 只改寫堆疊上的返回位址，kernel 函式在呼叫者自己的 task context 執行，因此可以阻塞。
+- 實測 RAM（16 KB）：靜態 3.5 KB（含 10 個 TCB）、MSP 1 KB（最高 556 B）、`.noinit` 512 B、heap 11.6 KB。
+  系統 task 堆疊用量／配置：idle 80／384、input 160／768、diag 756／1280、mon 524／896；heap 剩 8.5 KB。
+- 主機測試在 64-bit 上抓到 kmem header 大小寫死 8 bytes 的問題，已改成依結構大小計算；M0 上不受影響。
 
 ### M2 telnet console（第一個互動介面）
 - W5500 改成中斷驅動 + socket 層（`socket/bind/listen/accept/send/recv/close`）。

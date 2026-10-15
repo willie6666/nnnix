@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "uart.h"
 #include "../arch/nuc140/regs.h"
+#include "../kernel/sync.h"
 
 /* UART clock is HIRC 22.1184 MHz: DIV_X_EN | DIV_X_ONE, BRD 190 -> 115200 baud. */
 #define BAUD_115200 0x300000beu
@@ -35,6 +36,7 @@ static uint8_t ring[RX_RING];
 static volatile uint32_t head;
 static uint32_t tail;
 static volatile struct uart1_stats stats;
+static struct sem rx_ready;
 
 void UART1_IRQHandler(void)
 {
@@ -49,6 +51,15 @@ void UART1_IRQHandler(void)
         if (head - tail < RX_RING) { ring[head % RX_RING] = byte; head = head + 1u; }
         else stats.drops++;
     }
+    if (rx_ready.count <= 0) sem_give(&rx_ready);
+}
+
+int uart1_wait(uint32_t timeout_ms)
+{
+    if (tail != head) return 0;
+    int r = sem_take(&rx_ready, timeout_ms);
+    rx_ready.count = 0;              /* one wakeup drains everything that arrived */
+    return r;
 }
 
 void uart1_init(void)

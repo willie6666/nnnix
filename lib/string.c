@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Freestanding string/memory functions (the compiler may also emit calls to these). */
 #include "string.h"
 

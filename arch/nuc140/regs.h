@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NUC140VE3CN register map (subset used by nnnix).
  * Addresses and bit positions follow the NUC100 series technical reference manual.
  */

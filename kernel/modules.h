@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef NNNIX_MODULES_H
 #define NNNIX_MODULES_H
 #include <stdint.h>

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Integer division helpers required by the ARM EABI: Cortex-M0 has no divide
  * instruction, so the compiler calls these for '/' and '%'.
  * The *divmod variants return quotient in r0 and remainder in r1, which is how

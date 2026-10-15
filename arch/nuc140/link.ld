@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NUC140VE3CN: 128 KiB APROM at 0, 16 KiB SRAM at 0x20000000.
  * RAM layout: .data .bss | free | .noinit (crash record, fixed) | main stack */
 ENTRY(Reset_Handler)

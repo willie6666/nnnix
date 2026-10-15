@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "modules.h"
 #include "klog.h"
 #include "diag.h"

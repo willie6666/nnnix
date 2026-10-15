@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NU-LB_002 Rev 2.1 pin setup for nnnix.
  *
  * PB1  UART0 TX  -> CP2102 RXD (kernel log)

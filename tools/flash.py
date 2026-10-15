@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Program an image into NUC140VE3CN APROM through Nu-Link (OpenOCD), verify, reset.
 
 Only APROM is written; CONFIG and LDROM are never touched.

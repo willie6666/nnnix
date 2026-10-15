@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* HardFault capture: the stacked registers are saved in RAM that survives a
  * system reset (.noinit), dumped to UART0, and the board reboots. The next boot
  * reports the record through klog.

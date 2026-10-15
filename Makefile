@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 # nnnix build. Targets:
 #   make            build build/nnnix.elf and build/nnnix.bin
 #   make flash      program APROM through Nu-Link (tools/flash.py)

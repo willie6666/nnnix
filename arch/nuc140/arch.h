@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Architecture interface: clock, time, board pins, faults. */
 #ifndef NNNIX_ARCH_H
 #define NNNIX_ARCH_H

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Read the nnnix kernel log from the CP2102 serial port (read only, 115200 8N1).
 
   python3 tools/console.py                       # print until Ctrl-C

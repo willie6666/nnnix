@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "uart.h"
 #include "../arch/nuc140/regs.h"
 

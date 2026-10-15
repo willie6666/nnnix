@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "ch9350.h"
 
 static uint8_t frame_size(uint8_t code)

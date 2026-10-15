@@ -66,3 +66,7 @@ tests/host/    主機單元測試（含實際錄下的 CH9350 資料）
 tools/         flash.py、console.py、nntest.py
 docs/          開發計畫
 ```
+
+## 授權
+
+GPL-3.0-or-later，見 [LICENSE](LICENSE)。

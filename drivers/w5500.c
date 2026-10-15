@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "w5500.h"
 #include "spi.h"
 #include "../arch/nuc140/arch.h"

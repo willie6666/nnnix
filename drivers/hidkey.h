@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef NNNIX_HIDKEY_H
 #define NNNIX_HIDKEY_H
 #include <stdint.h>

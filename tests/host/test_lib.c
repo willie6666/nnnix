@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "../../lib/fmt.h"
 #include "../../lib/string.h"
 #include "check.h"

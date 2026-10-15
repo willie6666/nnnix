@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef NNNIX_CH9350_H
 #define NNNIX_CH9350_H
 #include <stdint.h>

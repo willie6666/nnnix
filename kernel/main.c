@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* nnnix M0: single-threaded bring-up loop. The scheduler arrives in M1. */
 #include "kernel.h"
 #include "klog.h"

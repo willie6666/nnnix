@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Reset entry, vector table and C runtime setup. */
 #include <stdint.h>
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* CH376S driver. Data bytes are sent one SPI transaction at a time: back-to-back
  * 32-bit bursts were measured to corrupt data. INT (PB14) signals completion. */
 #include "ch376.h"

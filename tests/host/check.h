@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Minimal host test helpers. */
 #ifndef NNNIX_CHECK_H
 #define NNNIX_CHECK_H

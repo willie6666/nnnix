@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include <stdarg.h>
 #include "klog.h"
 #include "../lib/fmt.h"

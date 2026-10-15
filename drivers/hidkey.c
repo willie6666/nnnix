@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "hidkey.h"
 
 /* Usages 0x04..0x38, US layout: unshifted and shifted. */

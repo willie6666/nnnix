@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef NNNIX_KLOG_H
 #define NNNIX_KLOG_H
 #include <stddef.h>

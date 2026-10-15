@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef NNNIX_DIAG_H
 #define NNNIX_DIAG_H
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* 50.19 MHz system clock from the internal 22.1184 MHz oscillator, 1 ms SysTick. */
 #include "regs.h"
 #include "arch.h"

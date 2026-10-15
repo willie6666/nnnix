@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef NNNIX_W5500_H
 #define NNNIX_W5500_H
 #include <stdint.h>

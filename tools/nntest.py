@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """On-target test for nnnix M0 (run as root: it creates a temporary network namespace).
 
 Wiring: CP2102 on /dev/ttyUSB0 reads the kernel log; a spare USB Ethernet adapter is

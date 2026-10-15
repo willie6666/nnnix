@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #ifndef NNNIX_UART_H
 #define NNNIX_UART_H
 #include <stddef.h>

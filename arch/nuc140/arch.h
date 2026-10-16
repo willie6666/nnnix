@@ -29,6 +29,9 @@ void arch_reboot(void) __attribute__((noreturn));
 void arch_reboot_bootloader(void) __attribute__((noreturn));   /* through LDROM (fmc.c) */
 void arch_reboot_chip(void) __attribute__((noreturn));         /* like power-on */
 uint32_t fmc_read(uint32_t addr);                              /* LDROM 0x100000, CONFIG 0x300000 */
+int  wdt_set(int seconds);           /* watchdog: 0 off, 2, 7 or 26 s; -1 for other values (wdt.c) */
+int  wdt_seconds(void);
+void wdt_kick(void);
 
 static inline void irq_disable(void) { __asm volatile("cpsid i" ::: "memory"); }
 static inline void irq_enable(void) { __asm volatile("cpsie i" ::: "memory"); }

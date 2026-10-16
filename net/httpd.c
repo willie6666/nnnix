@@ -160,7 +160,7 @@ void httpd_poll(void)
     struct transfer *t = kmalloc(sizeof *t);
     if (t) {
         memset(t, 0, sizeof *t);
-        worker = task_spawn("httpd", serve, t, 1280, 5, 0);
+        worker = task_spawn("httpd", serve, t, 1152, 5, 0);   /* peak below 840 B measured */
     }
     if (!worker) { kfree(t); net_close(HTTP_SOCKET); }
 }

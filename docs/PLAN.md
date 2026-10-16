@@ -431,6 +431,29 @@ firmware.
 | R14 | `nntest`'s network namespace was not undone when its setup failed half-way | setup failures roll back; every cleanup step runs even if one fails |
 | R15 | `nc` with a pipe or file as input sent everything before reading, so an echoing peer stalled it | a child task sends while the parent prints, as in interactive mode (32 KiB through a back-pressured echo server: the old firmware stopped after 3.3 KiB) |
 
+### Third RAM pass, watchdog and soak test (2026-10-17)
+
+- `/proc/stacks` keeps each configured stack size's high-water mark, ended tasks included (24 bytes). It showed two
+  real problems: the diag worker reached 1176 of 1280 bytes, inside the 128-byte red zone (`ps` listed all 12 tasks
+  at once on the stack and `report` had a 160-byte line buffer: now paged, formatted straight into the reply: 764 B),
+  and a shell waiting for a killed program reached 980 bytes (the "freed N blocks" log ran in the reaping task:
+  now the kernel daemon logs it: 592 B).
+- Stacks trimmed to the measured peaks plus the red zone and room: shells, the diag and HTTP workers and init
+  1280 -> 1152 B (peak 848 B over the whole suite and a 90-round soak), pipeline stages 1152 -> 1024 B (peak below
+  740 B). kd stays at 1024 B (peak 740 B). fsd went the other way, 1536 -> 1664 B: its peak kept rising with
+  file system use (1104, 1160, 1228, then 1268 B in the second soak run), and littlefs's deepest metadata paths
+  (compaction, relocation) are hard to reach on purpose, so it keeps 268 B beyond the red zone.
+- The HardFault handler no longer has its own 256-byte stack: it uses the bottom of the main stack, which interrupts
+  never reach (peak 124 of 512 B from the top); `.noinit` is now only the 104-byte crash record.
+- Free heap with the console shell and one telnet session: 5856 -> 6208 B (6344 B before fsd grew); `make test` 133/133.
+- Watchdog: the hardware WDT on the 10 kHz oscillator, restarted by the kernel daemon every second; `sysctl
+  watchdog=0|2|7|26` (default 26 s, long enough for the daemon's slowest legitimate waits). It pauses while a
+  debugger halts the CPU. Tested with diag `W` (a never-yielding task at priority 0): reset 7-9 s after the daemon
+  stopped with `watchdog=7`; the boot log reports "watchdog" (part of `make test`).
+- Soak test (60 + 30 rounds of pipelines, programs, background jobs, `ed`, littlefs and USB file work, HTTP
+  transfers, `nc`, `/proc`, log-in/log-out): the heap was identical at every check (one free block), and no panic,
+  fault or reset occurred.
+
 ### M6 Loadable programs
 - Executable format `NXE`: header + image linked at 0 + a table of words to relocate (see the result below).
 - Loader: read from the file system into RAM and run, about 4 KiB maximum; `exec`/`spawn` system calls.
@@ -461,7 +484,7 @@ firmware.
 ### M7 Optional
 - Two-way serial console (depends on R3).
 - LDROM bootloader: program a new APROM image from the W25X16, enabling `nnupdate` kernel updates over the network and "installing" programs into APROM to execute in place. **This changes the CONFIG0 boot selection and needs the owner's explicit consent first.** Done (consent given 2026-10-16), see below.
-- Watchdog, brown-out handling, simple login (`/etc/passwd`).
+- Watchdog (done 2026-10-17, see the third RAM pass below), brown-out handling, simple login (`/etc/passwd`).
 
 **Firmware update result (2026-10-16)**: `make test` 130/130 (5 new update checks), `make host-test` 1536 checks plus
 the date conversions (28 new bootloader checks against modelled NOR flashes).

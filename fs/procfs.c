@@ -52,6 +52,14 @@ static void gen_tasks(struct gen *g)
                 info[i].stack_used, info[i].stack_size, info[i].cpu_ms);
 }
 
+static void gen_stacks(struct gen *g)
+{
+    uint16_t size[6], used[6];
+    int n = task_stack_peaks(size, used, 6);
+    say(g, "stack_size peak_used\n");
+    for (int i = 0; i < n; ++i) say(g, "%u %u\n", size[i], used[i]);
+}
+
 static void gen_modules(struct gen *g)
 {
     say(g, "power %u\nch376 %u\nw5500 %u\nlink 0x%x\n", modules.powered, modules.ch376, modules.w5500, modules.link);
@@ -62,7 +70,7 @@ static void gen_crash(struct gen *g) { if (fault_last_report()[0]) say(g, "%s\n"
 
 static const struct { const char *name; void (*gen)(struct gen *g); } files[] = {
     { "version", gen_version }, { "uptime", gen_uptime }, { "meminfo", gen_meminfo },
-    { "tasks", gen_tasks }, { "modules", gen_modules }, { "klog", gen_klog }, { "crash", gen_crash },
+    { "tasks", gen_tasks }, { "modules", gen_modules }, { "klog", gen_klog }, { "crash", gen_crash }, { "stacks", gen_stacks },
 };
 #define FILES (sizeof files / sizeof files[0])
 

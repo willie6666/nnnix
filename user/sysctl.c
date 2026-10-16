@@ -17,6 +17,7 @@ static const struct setting settings[] = {
     { "console", KIND_CONSOLE, NN_CTL_CONSOLE, "off|ask|on: LCD shell (1.5 KiB while it runs)" },
     { "idle_logout", KIND_NUMBER, NN_CTL_IDLE_LOGOUT, "seconds without input before logout; 0 never" },
     { "telnet_max", KIND_NUMBER, NN_CTL_TELNET_MAX, "telnet sessions at once, 0-3 (1.5 KiB each)" },
+    { "watchdog", KIND_NUMBER, NN_CTL_WATCHDOG, "reset after 0 (off), 2, 7 or 26 s without the kernel daemon" },
     { "telnetd", KIND_SERVICE, NN_SVC_TELNETD, "on|off: accept telnet logins" },
     { "httpd", KIND_SERVICE, NN_SVC_HTTPD, "on|off: HTTP file transfer on port 8080" },
 };

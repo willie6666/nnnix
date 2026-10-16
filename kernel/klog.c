@@ -54,16 +54,21 @@ static void chunk_put(void *ctx, char c)
     if (k->len == sizeof k->buf) { put_locked(k->buf, k->len); k->len = 0; }
 }
 
-void kprintf(const char *fmt, ...)
+void kvprintf(const char *fmt, va_list ap)
 {
     struct chunk k = { .len = 0 };
-    va_list ap;
     mutex_lock(&lock);
-    va_start(ap, fmt);
     nn_vformat(chunk_put, &k, fmt, ap);
-    va_end(ap);
     put_locked(k.buf, k.len);
     mutex_unlock(&lock);
+}
+
+void kprintf(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    kvprintf(fmt, ap);
+    va_end(ap);
 }
 
 size_t klog_read(char *buf, size_t size)

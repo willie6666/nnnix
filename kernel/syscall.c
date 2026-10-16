@@ -187,6 +187,13 @@ static int32_t sys_sysctl_k(int32_t key, int32_t value)
     case NN_CTL_TELNET_MAX:
         r = telnetd_max_sessions(value);
         break;
+    case NN_CTL_WATCHDOG:
+        if (value >= 0 && value != wdt_seconds()) {
+            if (wdt_set(value)) break;
+            kprintf("watchdog: %s%d s\n", value ? "" : "off, ", (int)value);
+        }
+        r = wdt_seconds();
+        break;
     }
     return r < 0 ? SYS_EINVAL : r;
 }

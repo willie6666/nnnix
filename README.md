@@ -65,7 +65,8 @@ pid name prio state stack_used stack_size cpu_ms
 - System calls: entered with `svc`; the kernel function runs in the caller's own task context, so it may block; user-side interface in `lib/sys.h`
 - Terminals: canonical line editing (backspace, Ctrl-U, Ctrl-C, Ctrl-D, arrow keys ignored) over a byte backend
 - Console tty0: onboard 128x64 LCD as a 21x8 text terminal plus the USB keyboard (Shift, Caps Lock, Ctrl, arrows, auto-repeat); by default the shell starts when Enter is pressed and its RAM is freed at logout
-- Run-time settings (`sysctl`): console off/ask/on, idle logout, telnet session limit, telnetd/httpd on or off
+- Run-time settings (`sysctl`): console off/ask/on, idle logout, telnet session limit, telnetd/httpd on or off,
+  watchdog timeout (a hardware watchdog resets the board if the kernel daemon stops running)
 - Kernel daemon `kd`: one event loop for the network, keyboard, telnet and diag listeners, the console shell and module supervision
 - File systems: VFS with `/` (littlefs on the SPI flash), `/usb` (CH376S FAT drive), `/dev`, `/proc`; per-task file descriptors and working directory; littlefs and CH376S work runs in the `fsd` task
 - Network: interrupt-driven W5500, socket layer with self re-arming listeners, telnet server with three sessions
@@ -90,7 +91,7 @@ pid name prio state stack_used stack_size cpu_ms
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 132 checks) | Result |
+| On-target tests (`make test`, 133 checks) | Result |
 | --- | --- |
 | Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
 | Two sessions reading two different files on the single-file CH376S at once | pass |
@@ -113,8 +114,8 @@ pid name prio state stack_used stack_size cpu_ms
 | CH376S raw write / read 256 KiB (SPI 12.5 MHz) | 114 kB/s / 230 kB/s, 0 errors |
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
-| Stack overflow detection, HardFault capture, crash report kept after reboot | pass |
-| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5856 B (test limit 5600 B) |
+| Stack overflow detection, HardFault capture, crash report kept after reboot, watchdog reset | pass |
+| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 6208 B (test limit 5600 B) |
 | Code size / static RAM including crash records / main stack / heap | 88 KiB / 2.5 KiB / 512 B / 12.9 KiB |
 
 Host tests: 1544 checks pass (including littlefs on a RAM flash and usbfs against a CH376S model), plus 80 243

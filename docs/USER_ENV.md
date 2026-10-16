@@ -299,6 +299,7 @@ free                       heap, and how much of it is task stacks
 | `idle_logout` | seconds, `0` = never | a terminal without input for that long reads as end of file, so its shell logs out and frees its RAM. Busy commands are not interrupted. With `console=on` a new console shell starts right away |
 | `telnet_max` | `0`-`3` | how many telnet sessions are accepted at once; sessions already open stay |
 | `telnetd`, `httpd` | `on`, `off` | the same as `service ... start/stop`; idle servers cost no RAM, only their sessions do |
+| `watchdog` | `0`, `2`, `7`, `26` | seconds without the kernel daemon before the chip resets (default 26; 0 turns it off) |
 
 Settings last until the next reset; put them in `/etc/rc` to apply them at boot,
 for example:
@@ -308,8 +309,9 @@ sysctl console=ask idle_logout=900 telnet_max=2
 ```
 
 Other memory is fixed: the kernel daemon, the file system task and the idle
-task (about 3 KiB of stacks), and about 2.6 KiB of static data. `ps` shows each
-task's stack size and the most it has used.
+task (about 3 KiB of stacks), and about 2.4 KiB of static data. `ps` shows each
+task's stack size and the most it has used; `/proc/stacks` keeps the highest
+use per stack size, also of tasks that have ended.
 
 
 ## File system notes

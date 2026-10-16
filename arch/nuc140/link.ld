@@ -12,7 +12,7 @@ MEMORY {
 }
 __stack_top   = ORIGIN(RAM) + LENGTH(RAM);
 __stack_limit = __stack_top - 512;    /* MSP: interrupts and exceptions */
-__noinit_base = __stack_limit - 360;
+__noinit_base = __stack_limit - 104;   /* the crash record */
 __boot_stack_top = __noinit_base;     /* = __heap_end */
 
 SECTIONS {

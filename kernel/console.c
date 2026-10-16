@@ -91,7 +91,7 @@ static void start_shell(void)
 {
     static const char clear[] = "\x1b[2J\x1b[H";
     vt_write(&vt, clear, sizeof clear - 1);
-    shell_task = task_spawn("nsh", shell, 0, 1280, 5, TASK_LONG_LIVED);
+    shell_task = task_spawn("nsh", shell, 0, NSH_STACK, 5, TASK_LONG_LIVED);
     notice_shown = 0;
 }
 

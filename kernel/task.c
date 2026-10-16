@@ -224,16 +224,65 @@ void task_exit(int code)
     for (;;) { }
 }
 
+/* Stack high-water marks of tasks that have ended, by configured stack size
+ * (tasks of one size do the same job): what stack sizes can be trimmed to. */
+#define PEAK_SLOTS 6
+static struct { uint16_t size, peak; } peaks[PEAK_SLOTS];
+
+static uint32_t stack_peak(const struct task *t)
+{
+    uint32_t untouched = 0;
+    while (untouched < t->stack_size / 4u && t->stack[untouched] == STACK_FILL) untouched++;
+    return t->stack_size - untouched * 4u;
+}
+
+static void note_peak(uint32_t size, uint32_t used)
+{
+    int free_slot = -1;
+    for (int i = 0; i < PEAK_SLOTS; ++i) {
+        if (peaks[i].size == size) { if (used > peaks[i].peak) peaks[i].peak = (uint16_t)used; return; }
+        if (!peaks[i].size && free_slot < 0) free_slot = i;
+    }
+    if (free_slot >= 0) { peaks[free_slot].size = (uint16_t)size; peaks[free_slot].peak = (uint16_t)used; }
+}
+
+int task_stack_peaks(uint16_t sizes[], uint16_t used[], int max)
+{
+    uint32_t s = irq_save();
+    for (int i = 0; i < TASK_MAX; ++i) if (tasks[i]) note_peak(tasks[i]->stack_size, stack_peak(tasks[i]));
+    int n = 0;
+    for (int i = 0; i < PEAK_SLOTS && n < max; ++i)
+        if (peaks[i].size) { sizes[n] = peaks[i].size; used[n] = peaks[i].peak; ++n; }
+    irq_restore(s);
+    return n;
+}
+
+/* Leftover program allocations freed at reaping, reported by the kernel daemon
+ * (task_report_leftovers): logging here would deepen whatever stack reaps the
+ * task, often a waiting shell's. */
+static uint16_t leftover_pid, leftover_blocks;
+
+void task_report_leftovers(void)
+{
+    uint32_t s = irq_save();
+    uint16_t pid = leftover_pid, blocks = leftover_blocks;
+    leftover_blocks = 0;
+    irq_restore(s);
+    if (blocks) kprintf("pid %u: freed %u blocks it left allocated\n", pid, blocks);
+}
+
 /* Frees the struct too: no pointer to t may be used afterwards. Called with
  * interrupts off. Program allocations the task left behind are freed while its
  * pid is still taken, so a new task cannot get that pid (and lose its own
- * blocks). Returns how many there were, to be logged with interrupts on. */
-static int task_free(struct task *t)
+ * blocks). */
+static void task_free(struct task *t)
 {
     uint32_t *block = t->stack;
     char *cwd = t->cwd;
     void *owned = t->owned;
     struct loaded_image *image = t->image;
+    uint16_t t_pid = t->pid;
+    note_peak(t->stack_size, stack_peak(t));
     if (image && --image->refs) image = 0;          /* still used by a relative */
     int left = kmem_free_owned(t->pid);
     for (int i = 0; i < TASK_MAX; ++i) if (tasks[i] == t) tasks[i] = 0;
@@ -241,7 +290,7 @@ static int task_free(struct task *t)
     kfree(owned);
     kfree(image);
     kfree(block);
-    return left;
+    if (left) { leftover_pid = t_pid; leftover_blocks = (uint16_t)(leftover_blocks + left); }
 }
 
 int task_join(struct task *t, uint32_t *cpu_ms)
@@ -253,10 +302,8 @@ int task_join(struct task *t, uint32_t *cpu_ms)
     }
     int code = t->exit_code;
     if (cpu_ms) *cpu_ms = t->cpu_ms;
-    uint16_t pid = t->pid;
-    int left = task_free(t);
+    task_free(t);
     irq_restore(s);
-    if (left) kprintf("pid %u: freed %d blocks it left allocated\n", pid, left);
     return code;
 }
 

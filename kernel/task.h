@@ -77,6 +77,9 @@ void msleep(uint32_t ms);
 void task_exit(int code) __attribute__((noreturn));
 int  task_join(struct task *t, uint32_t *cpu_ms);   /* wait for exit, free it, return the exit code */
 int  task_list(struct task_info *out, int max, int skip);   /* skip the first `skip` tasks */
+/* Highest stack use seen per configured stack size, ended tasks included. */
+int  task_stack_peaks(uint16_t sizes[], uint16_t used[], int max);
+void task_report_leftovers(void);    /* kernel daemon: log leftover memory freed at reaping */
 
 /* Programs: a killed user task leaves at its next system call (no MMU: it can
  * not be stopped at an arbitrary point safely); interruptible waits (sleep,

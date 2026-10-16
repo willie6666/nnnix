@@ -149,6 +149,7 @@ enum {
     NN_CTL_CONSOLE,                    /* NN_CONSOLE_*: the LCD/keyboard shell */
     NN_CTL_IDLE_LOGOUT,                /* seconds without input before a terminal logs out; 0 never */
     NN_CTL_TELNET_MAX,                 /* telnet sessions accepted at once, 0-3 */
+    NN_CTL_WATCHDOG,                   /* seconds without the kernel daemon before a reset: 0 (off), 2, 7, 26 */
     NN_CTL_COUNT
 };
 enum { NN_CONSOLE_OFF, NN_CONSOLE_ASK, NN_CONSOLE_ON };

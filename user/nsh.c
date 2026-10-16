@@ -12,7 +12,7 @@
 #define SCRIPT_MAX 3
 #define STAGES SH_STAGES             /* commands in one pipeline */
 #define JOBS 4
-#define CHILD_STACK 1152u
+#define CHILD_STACK 1024u                  /* pipeline stages: peak 680 B measured */
 
 struct job { int pid[STAGES]; char name[20]; };
 

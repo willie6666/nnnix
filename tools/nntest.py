@@ -799,6 +799,7 @@ def review_tests(ns, serial, report, iface):
         t.read_until(Telnet.PROMPT, 5)
         time.sleep(0.3)
         after = t2.cmd('free')
+        time.sleep(1.2)                               # the kernel daemon logs it within a second
         log = t2.cmd('dmesg | grep freed')
         report.add('kill frees memory', status in (201, 204) and pid and before == after
                    and f'pid {pid}: freed 2 blocks' in log, f'{killed.strip() or "killed"}; {after.strip()}')
@@ -1514,7 +1515,28 @@ def main():
                 crash = serial.wait_for(r'last crash #\d+: panic: stack overflow in ovf', 5, rebooted or mark)
                 report.add('stack overflow', None not in (rebooted, crash),
                            serial.lines[crash] if crash is not None else 'no overflow panic reported')
-                serial.wait_for(r'w5500: link up', 15, rebooted or mark)
+                serial.wait_for(r'telnetd: listening', 30, rebooted or mark)
+
+                # Watchdog: a task that never yields above the kernel daemon starves it.
+                t = Telnet(ns, connect_within=20)
+                t.read_until(Telnet.PROMPT)
+                setting = t.cmd('sysctl watchdog=7')
+                t.close()
+                mark = len(serial.lines)
+                started = time.monotonic()
+                try:
+                    ns.call(request, b'W', 4, 0, b'', None, 3)
+                except OSError:
+                    pass                                  # no reply: everything below it starves
+                cause = serial.wait_for(r'reset cause .*watchdog', 20, mark)
+                took = time.monotonic() - started
+                serial.wait_for(r'telnetd: listening', 30, cause or mark)
+                t = Telnet(ns, connect_within=20)
+                t.read_until(Telnet.PROMPT)
+                default = t.cmd('sysctl watchdog')
+                t.close()
+                report.add('watchdog', 'watchdog=7' in setting and cause is not None and 'watchdog=26' in default,
+                           f'reset {took:.1f} s after the kernel daemon stopped; back to 26 s after boot')
     finally:
         log = REPO / 'build/nntest-serial.log'
         flasher.write_user_file(log, '\n'.join(serial.lines) + '\n')

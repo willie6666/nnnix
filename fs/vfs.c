@@ -8,7 +8,7 @@
 #include "../lib/string.h"
 #include "../arch/nuc140/arch.h"
 
-#define FSD_STACK 1536u
+#define FSD_STACK 1664u                 /* littlefs: peak 1268 B measured (soak test), still rising with use */
 
 static struct mount mounts[] = {
     { "/usb", &usbfs_ops, 0, 1 },

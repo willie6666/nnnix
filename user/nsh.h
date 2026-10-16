@@ -2,6 +2,10 @@
 #ifndef NNNIX_NSH_H
 #define NNNIX_NSH_H
 
+/* Stack of a shell task: measured peak 840 B (2026-10-16, whole test suite)
+ * plus the 128-byte red zone, plus room. */
+#define NSH_STACK 1152u
+
 /* The nnnix shell. Reads lines from fd 0 and runs built-in commands until
  * "exit" or end of file. Uses only system calls. */
 void nsh_main(void);

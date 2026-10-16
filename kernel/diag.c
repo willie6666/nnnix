@@ -36,15 +36,18 @@ static uint8_t pattern(uint32_t i) { return (uint8_t)(((i * 0x9e3779b1u) >> 24) 
 static void report(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void report(const char *fmt, ...)
 {
-    char line[160];
     va_list ap;
     va_start(ap, fmt);
-    int n = nn_vsnprintf(line, sizeof line, fmt, ap);
+    if (task_self() == reply_owner && reply_len < REPLY) {
+        /* Straight into the reply (no line buffer: the worker's stack is small). */
+        char *line = (char *)reply + reply_len;
+        int n = nn_vsnprintf(line, REPLY - reply_len, fmt, ap);
+        reply_len += n < (int)(REPLY - reply_len) ? (unsigned)n : REPLY - reply_len - 1u;
+        kprintf("%s", line);
+    } else {
+        kvprintf(fmt, ap);
+    }
     va_end(ap);
-    if (n > (int)sizeof line - 1) n = sizeof line - 1;
-    if (task_self() == reply_owner)
-        for (int i = 0; i < n && reply_len < REPLY; ++i) reply[reply_len++] = line[i];
-    kprintf("%s", line);
 }
 
 static int tx_pattern(uint32_t length)
@@ -148,15 +151,21 @@ void diag_ch376_bench(uint32_t size)
 
 static const char *const state_names[] = { "-", "run", "sleep", "wait", "zombie" };
 
+static void demo_hang(void *arg)
+{
+    (void)arg;
+    for (;;) { }
+}
+
 static void ps_text(void)
 {
-    struct task_info info[TASK_MAX];
+    struct task_info info[4];        /* paged: the worker's stack is small */
     struct kmem_stats m;
-    int n = task_list(info, TASK_MAX, 0);
     report("  pid name     pri state  stack used/size  cpu ms\n");
-    for (int i = 0; i < n; ++i)
-        report("%5u %-8s %3u %-6s %5u/%-5u %9u\n", info[i].pid, info[i].name, info[i].prio,
-               state_names[info[i].state], info[i].stack_used, info[i].stack_size, info[i].cpu_ms);
+    for (int skip = 0, n; (n = task_list(info, 4, skip)) > 0; skip += n)
+        for (int i = 0; i < n; ++i)
+            report("%5u %-8s %3u %-6s %5u/%-5u %9u\n", info[i].pid, info[i].name, info[i].prio,
+                   state_names[info[i].state], info[i].stack_used, info[i].stack_size, info[i].cpu_ms);
     kmem_stats(&m);
     report("heap %u/%u B free, largest %u; switches %u; msp %u/%u B\n",
            m.free, m.total, m.largest, sched_switches(), stack_used(), stack_size());
@@ -275,6 +284,10 @@ static void session(void)
     case 'O':
         report(task_spawn("ovf", demo_overflow, 0, 512, 4, 1) ? "overflow task started\n" : "spawn failed\n");
         break;
+    case 'W':                                        /* starve everything below priority 0: the watchdog resets */
+        kprintf("diag: starving the kernel daemon (watchdog %d s)\n", wdt_seconds());
+        task_spawn("hang", demo_hang, 0, 256, 0, 1);
+        break;
     case 'F':
     case 'X':
         report(h[0] == 'F' ? "fault injection\n" : "rebooting\n");
@@ -320,7 +333,7 @@ void diag_poll(void)
         worker = 0;
     }
     if (listener_poll(&listener, 1) && w5500_rx_available(SOCK) >= 6) {
-        worker = task_spawn("diag", diag_worker, 0, 1280, 3, 0);
+        worker = task_spawn("diag", diag_worker, 0, 1152, 3, 0);   /* peak 768 B measured */
         if (!worker) { kprintf("diag: no task slot\n"); w5500_disconnect(SOCK, 500); }
     }
 }

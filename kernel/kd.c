@@ -81,6 +81,8 @@ static void kd_main(void *arg)
             second_at += 1000u;
             modules_poll();
             rtc_poll();
+            task_report_leftovers();
+            wdt_kick();
             board_led_toggle();
         }
         if (due(minute_at)) {
@@ -95,4 +97,5 @@ void kd_init(void)
     uart1_set_notify(kd_notify);
     w5500_set_notify(kd_notify);
     if (!task_spawn("kd", kd_main, 0, 1024, 2, 1)) panic("cannot start kd");
+    wdt_set(26);                     /* kd restarts it every second */
 }

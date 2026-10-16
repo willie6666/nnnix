@@ -203,7 +203,11 @@ int cmd_dhcp(int argc, char **argv)
             print_ip(c.server); printf(", lease %u s\n", c.lease);
             return 0;
         }
-        if (c.dhcp == NN_DHCP_FAILED) { printf("dhcp: no answer, address unchanged\n"); return 1; }
+        if (c.dhcp == NN_DHCP_FAILED) {
+            int none = !(c.ip[0] | c.ip[1] | c.ip[2] | c.ip[3]);
+            printf("dhcp: no answer, %s\n", none ? "no address (still trying)" : "address unchanged");
+            return 1;
+        }
         if (nn_interrupted()) { printf("dhcp: still trying in the background\n"); return 130; }
     }
     printf("dhcp: no lease yet, still trying in the background\n");

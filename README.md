@@ -86,7 +86,7 @@ pid name prio state stack_used stack_size cpu_ms
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 111 checks) | Result |
+| On-target tests (`make test`, 115 checks) | Result |
 | --- | --- |
 | Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
 | Two sessions reading two different files on the single-file CH376S at once | pass |
@@ -98,6 +98,7 @@ pid name prio state stack_used stack_size cpu_ms
 | DHCP lease (0.2 s), packet format, no-server fallback; NTP; `nc` TCP/UDP client, server, interactive, Ctrl-C | pass |
 | `/etc/rc` configures the network by DHCP and starts telnetd at boot (lease 2.4 s after reset) | pass |
 | Settings: console on/ask/off (1736 B freed when the console logs out), idle logout, telnet session limit | pass |
+| Review fixes: background redirections, memory of killed programs, concurrent terminal output, DHCP lease end | pass |
 | littlefs write / read (32 KiB) | 37-50 KiB/s / 256 KiB/s |
 | Console: banner, typing, line editing, clear, scrolling, shell restart after `exit` | pass |
 | Two telnet sessions: one runs `sleep 2`, the other answers | in 4 ms |
@@ -107,10 +108,10 @@ pid name prio state stack_used stack_size cpu_ms
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot | pass |
-| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5952 B (test limit 5600 B) |
+| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5912 B (test limit 5600 B) |
 | Code size / static RAM including crash records / main stack / heap | 85 KiB / 2.5 KiB / 512 B / 13.0 KiB |
 
-Host tests: 1440 checks pass, plus 80 243 date conversions compared with the host C library.
+Host tests: 1458 checks pass, plus 80 243 date conversions compared with the host C library.
 
 ## Hardware
 

@@ -391,6 +391,25 @@ uploaded from the NanoPi land in `/home` (M5a).
   accepts an empty buffer with RD == WR as completion. `stat:` in the kernel log counts these: 29 in 120 sessions,
   none stalled.
 
+### Code review fixes (2026-10-16)
+
+An external review of `d84fa3d..359b48a` (M5b, M5c and the second RAM diet) reported six problems; all were
+confirmed in the code and fixed. `make test` 115/115 adds a regression test for four of them; the same tests
+fail 4/4 on the firmware before the fixes. `make host-test` 1458 checks plus the date conversions.
+
+| ID | Problem | Fix |
+| --- | --- | --- |
+| R1 | A background command with four redirections wrote a fifth fd into a 4-entry stack array (`/dev/null` takes one) | one more entry |
+| R2 | File reference counts, now shared between parent and child tasks, changed without a lock; a lost decrement keeps a pipe end open forever | counts change with interrupts off; only the task that drops the last reference closes |
+| R3 | A killed program's `sys_alloc` memory was never freed | allocations carry the owner's pid (the block tag); a reaped task's leftovers are found by walking the heap and freed (logged) |
+| R4 | `ed`: a substitution that needed more memory deleted the old text before failing; `r` kept part of a file | the whole `s` command makes room first (all or nothing); a failed read is taken back |
+| R5 | A shell, its jobs and pipeline stages wrote to one terminal at once; telnet sends share socket pointers, so output was lost | a write lock per terminal (also for the LCD) and per program socket |
+| R6 | DHCP kept using an address after its lease ended | the address is removed at the end of the lease (also when a running lease is refused), and requests repeat every 30 s; static addresses stay |
+
+Measured on the old firmware: R1 broke the redirected output, R3 lost 1 KiB per killed `ed`, R5 dropped a line
+in two concurrent 3.4 KB outputs, R6 kept the address. R2 has no direct test (it needs an exact preemption
+point); the existing pipe and job tests cover the path. Cost: 40 B less free heap (locks).
+
 ### M6 Loadable programs
 - Executable format `NXE`: header + position-independent code (clang `-fropi -frwpi`, R9 as the data base) + relocations.
 - Loader: read from the file system into RAM and run, about 4 KiB maximum; `exec`/`spawn` system calls.

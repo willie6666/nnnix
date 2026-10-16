@@ -180,9 +180,14 @@ int vfs_open(const char *path, int flags)
     return fd;
 }
 
+/* Files are shared between tasks (spawn, dup2): reference counts change only
+ * with interrupts off, and only the task that drops the last one closes. */
 static int release(struct file *f)
 {
-    if (--f->refs) return 0;
+    uint32_t s = irq_save();
+    int last = --f->refs == 0;
+    irq_restore(s);
+    if (!last) return 0;
     struct vreq r = { .fn = do_close, .m = f->mnt, .f = f };
     int e = run(&r);
     kfree(f);
@@ -213,7 +218,9 @@ int vfs_dup2(int fd, int target)
         f = fd_file(fd);
         if (!f) return SYS_EBADF;
         if (fd == target) return target;
+        uint32_t s = irq_save();
         f->refs++;
+        irq_restore(s);
     }
     struct file *old = t->fds[target];
     t->fds[target] = f;

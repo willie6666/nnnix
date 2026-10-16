@@ -15,6 +15,10 @@ void *kmalloc(size_t size);
  * do not split the free space that short-lived allocations come and go in. */
 void *kmalloc_high(size_t size);
 void  kfree(void *p);
+/* Program allocations (sys_alloc) carry the task's pid, so that a program that
+ * is killed, or exits without freeing, gives its memory back when it is reaped. */
+void  kmem_set_owner(void *p, uint16_t owner);
+int   kmem_free_owned(uint16_t owner);          /* returns the number of blocks freed */
 void  kmem_stats(struct kmem_stats *out);
 
 #endif

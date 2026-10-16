@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "task.h"
 #include "kmem.h"
+#include "klog.h"
 #include "panic.h"
 #include "../fs/vfs.h"
 #include "../lib/string.h"
@@ -211,16 +212,27 @@ void task_exit(int code)
     for (;;) { }
 }
 
-/* Frees the struct too: no pointer to t may be used afterwards. */
-static void task_free(struct task *t)
+/* Program allocations left behind by a reaped task. Logging needs interrupts
+ * on and may block, so the idle task (which must never block) passes log 0. */
+static void free_leftovers(uint16_t pid, int log)
+{
+    int left = kmem_free_owned(pid);
+    if (left && log) kprintf("pid %u: freed %d blocks it left allocated\n", pid, left);
+}
+
+/* Frees the struct too: no pointer to t may be used afterwards. Called with
+ * interrupts off; the caller then passes the returned pid to free_leftovers. */
+static uint16_t task_free(struct task *t)
 {
     uint32_t *block = t->stack;
     char *cwd = t->cwd;
     void *owned = t->owned;
+    uint16_t pid = t->pid;
     for (int i = 0; i < TASK_MAX; ++i) if (tasks[i] == t) tasks[i] = 0;
     kfree(cwd);
     kfree(owned);
     kfree(block);
+    return pid;
 }
 
 int task_join(struct task *t, uint32_t *cpu_ms)
@@ -232,8 +244,9 @@ int task_join(struct task *t, uint32_t *cpu_ms)
     }
     int code = t->exit_code;
     if (cpu_ms) *cpu_ms = t->cpu_ms;
-    task_free(t);
+    uint16_t pid = task_free(t);
     irq_restore(s);
+    free_leftovers(pid, 1);
     return code;
 }
 
@@ -331,8 +344,9 @@ static void idle_main(void *arg)
         for (int i = 0; i < TASK_MAX; ++i) {
             uint32_t s = irq_save();
             struct task *t = tasks[i];
-            if (t && t->state == TASK_ZOMBIE && t->detached) task_free(t);
+            uint16_t pid = t && t->state == TASK_ZOMBIE && t->detached ? task_free(t) : 0;
             irq_restore(s);
+            if (pid) free_leftovers(pid, 0);
         }
         __asm volatile("wfi");
     }

@@ -4,11 +4,14 @@
 
 volatile uint32_t tty_idle_logout_s;
 
-static void echo(void *ctx, const char *s, size_t n)
+static void out(struct tty *t, const char *s, size_t n)
 {
-    struct tty *t = ctx;
+    mutex_lock(&t->wlock);
     t->ops->write(t->ctx, s, n);
+    mutex_unlock(&t->wlock);
 }
+
+static void echo(void *ctx, const char *s, size_t n) { out(ctx, s, n); }
 
 void tty_init(struct tty *t, const struct tty_ops *ops, void *ctx)
 {
@@ -59,7 +62,7 @@ static int read_line(struct tty *t, char *buf, size_t n)
         uint32_t limit = tty_idle_logout_s * 1000u, idle = jiffies - idle_since, wait = 1000u;
         if (limit && idle >= limit) {                 /* idle: end of file, the shell logs out */
             static const char msg[] = "\r\nidle timeout\r\n";
-            t->ops->write(t->ctx, msg, sizeof msg - 1);
+            out(t, msg, sizeof msg - 1);
             return 0;
         }
         if (limit && limit - idle < wait) wait = limit - idle;
@@ -87,6 +90,7 @@ static int read_line(struct tty *t, char *buf, size_t n)
 void tty_write(struct tty *t, const char *s, size_t n)
 {
     size_t start = 0;
+    mutex_lock(&t->wlock);                            /* the whole call, so lines stay together */
     for (size_t i = 0; i < n; ++i) {
         if (s[i] != '\n') continue;
         if (i > start) t->ops->write(t->ctx, s + start, i - start);
@@ -94,4 +98,5 @@ void tty_write(struct tty *t, const char *s, size_t n)
         start = i + 1;
     }
     if (n > start) t->ops->write(t->ctx, s + start, n - start);
+    mutex_unlock(&t->wlock);
 }

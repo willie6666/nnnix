@@ -11,7 +11,11 @@
 #endif
 
 #define MIN_SPLIT 16u
-#define USED 0x55534544u             /* "USED": catches double frees and stray pointers */
+/* A used block's tag: "US" in the high half catches double frees and stray
+ * pointers; the low half is the owning task's pid, or 0 for the kernel. */
+#define USED_MAGIC 0x5553u
+#define USED(owner) ((uint32_t)USED_MAGIC << 16 | (owner))
+#define IS_USED(b) ((b)->tag >> 16 == USED_MAGIC)
 
 struct block {
     uint32_t size;                   /* including the header */
@@ -23,6 +27,7 @@ _Static_assert(KMEM_HEADER == HDR, "KMEM_HEADER out of date");
 
 static struct block *free_list;
 static uint32_t total;
+static char *heap_base, *heap_limit;
 
 void kmem_init(void *start, void *end)
 {
@@ -30,7 +35,9 @@ void kmem_init(void *start, void *end)
     uintptr_t b = (uintptr_t)end & ~(uintptr_t)7u;
     free_list = 0;
     total = 0;
+    heap_base = heap_limit = (char *)a;
     if (b <= a + HDR + MIN_SPLIT) return;
+    heap_limit = (char *)b;
     free_list = (struct block *)a;
     free_list->size = (uint32_t)(b - a);
     free_list->next = 0;
@@ -54,7 +61,7 @@ void *kmalloc(size_t size)
         } else {
             *link = b->next;
         }
-        b->tag = USED;
+        b->tag = USED(0);
     }
     UNLOCK(s);
     return b ? (char *)b + HDR : 0;
@@ -77,7 +84,7 @@ void *kmalloc_high(size_t size)
         } else {
             *best = b->next;
         }
-        b->tag = USED;
+        b->tag = USED(0);
     }
     UNLOCK(s);
     return b ? (char *)b + HDR : 0;
@@ -88,7 +95,7 @@ void kfree(void *p)
     if (!p) return;
     struct block *b = (struct block *)((char *)p - HDR);
     uint32_t s = LOCK();
-    if (b->tag != USED) { UNLOCK(s); return; }  /* double free or foreign pointer: ignore */
+    if (!IS_USED(b)) { UNLOCK(s); return; }     /* double free or foreign pointer: ignore */
     struct block **link = &free_list, *next;
     while ((next = *link) && next < b) link = &next->next;
     b->next = next;
@@ -105,6 +112,41 @@ void kfree(void *p)
         }
     }
     UNLOCK(s);
+}
+
+void kmem_set_owner(void *p, uint16_t owner)
+{
+    struct block *b = (struct block *)((char *)p - HDR);
+    uint32_t s = LOCK();
+    if (IS_USED(b)) b->tag = USED(owner);
+    UNLOCK(s);
+}
+
+/* The blocks tile the heap, so walk them by size; free blocks are recognised
+ * by the (address-ordered) free list rather than by their contents. */
+static void *find_owned(uint16_t owner)
+{
+    struct block *f = free_list;
+    for (char *p = heap_base; p < heap_limit; p += ((struct block *)p)->size) {
+        struct block *b = (struct block *)p;
+        if (b == f) { f = f->next; continue; }
+        if (b->tag == USED(owner)) return p + HDR;
+    }
+    return 0;
+}
+
+int kmem_free_owned(uint16_t owner)
+{
+    int n = 0;
+    if (!owner) return 0;
+    for (;;) {
+        uint32_t s = LOCK();
+        void *p = find_owned(owner);
+        UNLOCK(s);
+        if (!p) return n;
+        kfree(p);
+        ++n;
+    }
 }
 
 void kmem_stats(struct kmem_stats *out)

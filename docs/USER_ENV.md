@@ -240,8 +240,10 @@ service telnetd start
 `dhcp` waits for the Ethernet link, then asks for a lease; if no server answers
 (three tries over 14 s) the current address stays. A lease is renewed at half
 its time (at most daily) by the kernel daemon, retried every minute if the
-server is gone; at the end of the lease a new request starts and the old
-address is kept meanwhile. Requests ask for broadcast replies, because the W5500
+server is gone. When the lease ends without a renewal, or the server refuses
+one, the address is removed (RFC 2131: it may belong to someone else by now)
+and the client asks for a new lease, every 30 s until one comes. An address
+that was set with `ifconfig` (or the static boot address) is never removed. Requests ask for broadcast replies, because the W5500
 only accepts unicast frames for its current address. `ifconfig` with an address
 stops DHCP.
 

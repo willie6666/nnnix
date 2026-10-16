@@ -113,8 +113,9 @@ int ed_load(struct ed *e, const char *path, int32_t after)
 {
     int fd = ed_open(path, 0);
     if (fd < 0) return fd;
-    uint32_t off = offset_of(e, after + 1), total = 0;
+    uint32_t start = offset_of(e, after + 1), off = start, total = 0;
     int32_t before = e->lines;
+    uint8_t dirty = e->dirty;
     char chunk[64];
     int n, ended = 1;
     while ((n = ed_read(fd, chunk, sizeof chunk)) > 0) {
@@ -125,7 +126,11 @@ int ed_load(struct ed *e, const char *path, int32_t after)
     }
     ed_close(fd);
     if (n >= 0 && !ended && insert(e, off, "\n", 1, 0, 0)) n = -12;   /* complete the last line */
-    if (n < 0) return n;
+    if (n < 0) {                                       /* take back what was read: all or nothing */
+        if (off > start) erase(e, start, off - start);
+        e->dirty = dirty;
+        return n;
+    }
     e->cur = after + (e->lines - before);
     return (int)total;
 }
@@ -205,14 +210,28 @@ static int substitute(struct ed *e, int32_t a, int32_t b, const char *p)
         else if (*flags == 'p') show = 1;
         else return fail("bad substitution");
     }
+    /* Count first and make room once, so the command changes all or nothing. */
+    uint32_t matches = 0, from = offset_of(e, a), off = from;
+    for (int32_t k = a; k <= b; ++k) {
+        uint32_t len = line_length(e, off);
+        for (uint32_t i = 0; i + nold <= len;) {
+            if (memcmp(e->buf + off + i, old, nold)) { ++i; continue; }
+            ++matches;
+            i += nold;
+            if (!global) break;
+        }
+        off += len + 1;
+    }
+    if (!matches) return fail("no match");
+    if (nrep > nold && ensure(e, e->len + matches * (nrep - nold))) return fail("out of memory");
     int32_t last = NONE;
-    uint32_t off = offset_of(e, a);
+    off = from;
     for (int32_t k = a; k <= b; ++k) {
         uint32_t len = line_length(e, off), i = 0;
         while (i + nold <= len) {
             if (memcmp(e->buf + off + i, old, nold)) { ++i; continue; }
             erase(e, off + i, nold);
-            if (insert(e, off + i, rep, nrep, 0, 0)) return fail("out of memory");
+            insert(e, off + i, rep, nrep, 0, 0);       /* the room is there */
             len = len - nold + nrep;
             i += nrep;
             last = k;
@@ -220,7 +239,6 @@ static int substitute(struct ed *e, int32_t a, int32_t b, const char *p)
         }
         off += len + 1;
     }
-    if (last == NONE) return fail("no match");
     e->cur = last;
     if (show) print_lines(e, last, last, 0);
     return 0;

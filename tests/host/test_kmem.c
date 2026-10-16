@@ -98,5 +98,22 @@ int main(void)
     CHECK_EQ_INT(s.free, sizeof heap);
     CHECK_EQ_INT(s.free_blocks, 1);
     CHECK(kmalloc_high(sizeof heap) == NULL);
+
+    /* Owned blocks: a task's leftovers are found by walking the heap and freed;
+     * other owners' and kernel blocks stay. */
+    char *k1 = kmalloc(40), *a1 = kmalloc(24), *b1 = kmalloc(56), *a2 = kmalloc_high(200), *a3 = kmalloc(8);
+    CHECK(k1 && a1 && b1 && a2 && a3);
+    kmem_set_owner(a1, 7); kmem_set_owner(a2, 7); kmem_set_owner(a3, 7); kmem_set_owner(b1, 9);
+    kfree(a3);                                         /* freed by the program itself */
+    kfree(a3);                                         /* double free: ignored */
+    CHECK_EQ_INT(kmem_free_owned(7), 2);
+    CHECK_EQ_INT(kmem_free_owned(7), 0);
+    CHECK_EQ_INT(kmem_free_owned(0), 0);               /* kernel blocks are never "owned" */
+    memset(k1, 0x11, 40); memset(b1, 0x22, 56);        /* still usable */
+    CHECK_EQ_INT(kmem_free_owned(9), 1);
+    kfree(k1);
+    kmem_stats(&s);
+    CHECK_EQ_INT(s.free, sizeof heap);
+    CHECK_EQ_INT(s.free_blocks, 1);
     return check_summary("test_kmem");
 }

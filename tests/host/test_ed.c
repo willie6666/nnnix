@@ -11,9 +11,16 @@ static char out[4096];
 static size_t out_len;
 static long allocated;               /* blocks not yet released */
 static int fail_alloc;
+static int fail_after = -1;          /* >= 0: that many more allocations succeed */
 
 void ed_out(const char *s, uint32_t n) { if (out_len + n < sizeof out) { memcpy(out + out_len, s, n); out_len += n; out[out_len] = 0; } }
-void *ed_alloc(uint32_t n) { if (fail_alloc) return 0; allocated++; return malloc(n); }
+void *ed_alloc(uint32_t n)
+{
+    if (fail_alloc || !fail_after) return 0;
+    if (fail_after > 0) fail_after--;
+    allocated++;
+    return malloc(n);
+}
 void ed_release(void *p) { if (p) { allocated--; free(p); } }
 int ed_open(const char *path, int write) { int fd = open(path, write ? O_WRONLY | O_CREAT | O_TRUNC : O_RDONLY, 0600); return fd < 0 ? -2 : fd; }
 int ed_read(int fd, void *buf, uint32_t n) { return (int)read(fd, buf, n); }
@@ -154,6 +161,37 @@ int main(void)
     run(".");
     fail_alloc = 0;
     CHECK(text_is("first\n"));
+
+    /* A substitution that needs more room fails without touching the text,
+     * once or with g; reading a file in fails all or nothing. */
+    ed_free_buffer(&e);
+    char line[130];
+    memset(line, 'x', 120); line[120] = 0;
+    run("a"); ed_line(&e, line); ed_line(&e, line); run(".");
+    CHECK_EQ_INT(e.len, 242);
+    char *before = malloc(e.len);
+    memcpy(before, e.buf, e.len);
+    e.dirty = 0;
+    fail_alloc = 1;
+    CHECK(!strcmp(run("1s/x/a much longer replacement/"), "? out of memory\n"));   /* 242 + 28 > 256 */
+    CHECK(e.len == 242 && !memcmp(e.buf, before, 242));
+    CHECK(!strcmp(run(",s/x/yy/g"), "? out of memory\n"));
+    CHECK(e.len == 242 && !memcmp(e.buf, before, 242));
+    fail_alloc = 0;
+    char text[401];
+    for (int i = 0; i < 400; ++i) text[i] = i % 40 == 39 ? '\n' : 'r';
+    text[400] = 0;
+    write_file("c.txt", text);                         /* 4 chunks fit after one growth, the 5th not */
+    fail_after = 1;
+    int r = ed_load(&e, path("c.txt"), 1);
+    fail_after = -1;
+    CHECK(r < 0);
+    CHECK(e.len == 242 && !memcmp(e.buf, before, 242));
+    CHECK_EQ_INT(e.lines, 2); CHECK(!e.dirty);
+    CHECK(!strcmp(run("1s/x/y/|1s/x/y/g"), ""));        /* shrinking needs no memory */
+    CHECK_EQ_INT(e.len, 242);
+    free(before);
+    unlink(path("c.txt"));
 
     ed_free_buffer(&e);
     CHECK_EQ_INT(allocated, 0);

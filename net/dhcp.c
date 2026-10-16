@@ -6,7 +6,10 @@
  * new DISCOVER. Packets are written to and parsed from the chip buffers in small
  * pieces, so the client needs no packet buffer. Requests ask for broadcast
  * replies: the chip only accepts unicast frames for its current address.
- * While a request runs and when a renewal fails, the old address stays. */
+ * While a request runs and while renewals fail, the leased address stays until
+ * the lease ends. When it ends, or a renewal is refused, the address is
+ * removed (RFC 2131 4.4.5) and the client keeps asking for a new lease every
+ * 30 s. An address that did not come from a lease (static) is never removed. */
 #include "net.h"
 #include "../arch/nuc140/arch.h"
 #include "../kernel/kd.h"
@@ -23,6 +26,7 @@ enum { DISCOVER = 1, OFFER = 2, REQUEST = 3, ACK = 5, NAK = 6 };
 static struct {
     volatile uint8_t state, start;
     uint8_t tries, open;
+    uint8_t lost;                    /* the leased address was removed: keep trying */
     uint32_t xid, next, bound_at, lease;
     uint8_t server[4], offered[4];
 } d;
@@ -137,11 +141,20 @@ static void bind_lease(const struct reply *r)
     uint32_t renew = d.lease / 2u < 86400u ? d.lease / 2u : 86400u;
     d.next = jiffies + renew * 1000u;
     d.state = NN_DHCP_BOUND;
+    d.lost = 0;
     close_socket();
     if (r->server[0]) memcpy(d.server, r->server, 4);
     static const uint8_t class_c[4] = { 255, 255, 255, 0 };
     net_set_lease(r->yiaddr, r->mask[0] ? r->mask : class_c, r->router, r->dns);
     kprintf("dhcp: lease %u s from %u.%u.%u.%u\n", d.lease, d.server[0], d.server[1], d.server[2], d.server[3]);
+}
+
+static void drop_address(const char *why)
+{
+    static const uint8_t none[4];
+    kprintf("dhcp: %s, address removed\n", why);
+    net_set_lease(none, none, none, none);
+    d.lost = 1;
 }
 
 static void handle(const struct reply *r)
@@ -155,7 +168,8 @@ static void handle(const struct reply *r)
     } else if (d.state == NN_DHCP_REQUESTING || d.state == NN_DHCP_RENEWING) {
         if (r->type == ACK) bind_lease(r);
         else if (r->type == NAK) {
-            kprintf("dhcp: refused, starting over\n");
+            if (d.state == NN_DHCP_RENEWING) drop_address("renewal refused");
+            else kprintf("dhcp: refused, starting over\n");
             d.state = NN_DHCP_SELECTING;
             d.tries = 0;
             transmit();
@@ -198,7 +212,7 @@ void dhcp_start(void)
     kd_notify();
 }
 
-void dhcp_stop(void) { d.start = 0; d.state = NN_DHCP_OFF; }
+void dhcp_stop(void) { d.start = 0; d.lost = 0; d.state = NN_DHCP_OFF; }
 
 void dhcp_status(struct nn_netcfg *c)
 {
@@ -209,6 +223,8 @@ void dhcp_status(struct nn_netcfg *c)
         c->lease = used < d.lease ? d.lease - used : 0;
     }
 }
+
+static int lease_over(void) { return due(d.bound_at + d.lease * 1000u); }
 
 void dhcp_poll(void)
 {
@@ -222,24 +238,30 @@ void dhcp_poll(void)
     case NN_DHCP_REQUESTING:
     case NN_DHCP_RENEWING:
         receive();
+        if (d.state == NN_DHCP_RENEWING && lease_over()) {
+            drop_address("lease expired");
+            begin(NN_DHCP_SELECTING);
+            break;
+        }
         if (d.state == NN_DHCP_BOUND || !due(d.next)) break;
         if (d.tries < TRIES) { transmit(); break; }
         close_socket();
         if (d.state == NN_DHCP_RENEWING) {             /* keep the address, try again later */
-            if (due(d.bound_at + d.lease * 1000u)) {
-                kprintf("dhcp: lease expired, keeping the address\n");
-                begin(NN_DHCP_SELECTING);
-            } else {
-                d.state = NN_DHCP_BOUND;
-                d.next = jiffies + 60000u;
-            }
-        } else {
-            kprintf("dhcp: no answer\n");
-            d.state = NN_DHCP_FAILED;
+            d.state = NN_DHCP_BOUND;
+            d.next = jiffies + 60000u;
+            break;
         }
+        if (!d.lost) kprintf("dhcp: no answer\n");
+        d.state = NN_DHCP_FAILED;
+        d.next = jiffies + 30000u;
         break;
     case NN_DHCP_BOUND:
-        if (due(d.next)) begin(NN_DHCP_RENEWING);
+        if (lease_over()) { drop_address("lease expired"); begin(NN_DHCP_SELECTING); }
+        else if (due(d.next)) begin(NN_DHCP_RENEWING);
+        break;
+    case NN_DHCP_FAILED:
+        close_socket();
+        if (d.lost && due(d.next)) begin(NN_DHCP_SELECTING);     /* without an address: keep asking */
         break;
     default:                                           /* stopped: drop a half-done exchange */
         close_socket();

@@ -9,10 +9,12 @@
 #include "../fs/vfs.h"
 #include "../kernel/kmem.h"
 #include "../kernel/task.h"
+#include "../kernel/sync.h"
 #include "../arch/nuc140/arch.h"
 #include "../lib/string.h"
 
 struct sock {
+    struct mutex wlock;              /* a parent and its children may share the socket */
     uint8_t sn, proto, has_peer;
     uint16_t left;                   /* UDP: unread bytes of the current datagram */
     uint8_t peer[4];
@@ -76,10 +78,19 @@ static int s_read(struct file *f, void *buf, uint32_t n)
     return s->proto == NN_SOCK_TCP ? tcp_read(s, buf, n) : udp_read(s, buf, n);
 }
 
+static int udp_write(struct sock *s, const void *buf, uint32_t n);
+
 static int s_write(struct file *f, const void *buf, uint32_t n)
 {
     struct sock *s = f->priv;
-    if (s->proto == NN_SOCK_TCP) return net_send(s->sn, buf, n) < 0 ? SYS_EPIPE : (int)n;
+    mutex_lock(&s->wlock);
+    int r = s->proto == NN_SOCK_TCP ? (net_send(s->sn, buf, n) < 0 ? SYS_EPIPE : (int)n) : udp_write(s, buf, n);
+    mutex_unlock(&s->wlock);
+    return r;
+}
+
+static int udp_write(struct sock *s, const void *buf, uint32_t n)
+{
     if (!s->has_peer) return SYS_EINVAL;
     if (w5500_status(s->sn) != W5500_SOCK_UDP) return SYS_EBADF;
     if (n > net_buffers_kib[s->sn] * 1024u) return SYS_EINVAL;

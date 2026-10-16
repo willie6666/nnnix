@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "ledit.h"
+#include "sync.h"
 
 #define TTY_LINE 96
 #define EINTR 4
@@ -26,6 +27,9 @@ struct tty {
     uint16_t rpos, rlen;             /* finished line not yet read */
     uint8_t ahead[16], ahead_len;    /* typed while a command ran; read before new input */
     volatile uint8_t reading;        /* a task is inside tty_read */
+    /* A shell, its background jobs and pipeline stages all write here; the
+     * backend's send (socket pointers, LCD cursor) must not interleave. */
+    struct mutex wlock;
 };
 
 /* Idle logout (sysctl idle_logout): a terminal read with no input for this

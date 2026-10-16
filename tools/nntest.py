@@ -746,6 +746,87 @@ def settings_tests(ns, report):
     time.sleep(0.5)
 
 
+def review_tests(ns, serial, report, iface):
+    """Regression tests for the 2026-10-16 code review (R1, R3, R5, R6)."""
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    folder = f'/home/rv-{os.getpid()}'
+    t.cmd(f'mkdir {folder}')
+    try:
+        # R1: a background command with four redirections (plus /dev/null as its input).
+        t.cmd(f'echo four > {folder}/a > {folder}/b > {folder}/c > {folder}/d &')
+        t.cmd('wait', 5)
+        out = t.cmd(f'cat {folder}/d') + t.cmd(f'wc {folder}/a')
+        report.add('bg redirections', out.startswith('four') and ' 0 ' in out, out.strip().replace('\r\n', ' | '))
+
+        # R3: a killed program's allocations come back.
+        t2 = Telnet(ns)
+        t2.read_until(Telnet.PROMPT)
+        status, _ = ns.call(http_request, 'PUT', f'{folder}/text', b'line\n' * 100)
+        for _ in range(20):                           # the HTTP worker may still be closing
+            if ' httpd ' not in t2.cmd('ps'):
+                break
+            time.sleep(0.2)
+        before = t2.cmd('free')
+        t.send(f'ed -s {folder}/text | cat\r\n')
+        time.sleep(0.8)
+        ps = t2.cmd('ps')
+        pid = next((line.split()[0] for line in ps.splitlines() if line.split()[1:2] == ['ed']), None)
+        killed = t2.cmd(f'kill {pid}') if pid else 'no ed task'
+        t.read_until(Telnet.PROMPT, 5)
+        time.sleep(0.3)
+        after = t2.cmd('free')
+        log = t2.cmd('dmesg | grep freed')
+        report.add('kill frees memory', status in (201, 204) and pid and before == after
+                   and f'pid {pid}: freed 2 blocks' in log, f'{killed.strip() or "killed"}; {after.strip()}')
+        t2.send('exit\r\n'); t2.wait_closed(); t2.close()
+
+        # R5: a background job and the shell write to one telnet session at once; nothing is lost.
+        status, _ = ns.call(http_request, 'PUT', f'{folder}/lines', b'0123456789abcdef\n' * 200)
+        t.send(f'cat {folder}/lines &\r\n')
+        t.send(f'cat {folder}/lines\r\n')
+        text = t.read_until(Telnet.PROMPT, 10)            # the job starts printing at once
+        text += t.read_until(Telnet.PROMPT, 10)
+        t.send('wait\r\n')
+        text += t.read_until(Telnet.PROMPT, 10)
+        report.add('shared terminal', text.count('b') == 400 and text.count('f') == 400,
+                   f"'b' {text.count('b')}, 'f' {text.count('f')} of 400 each")
+    finally:
+        for name in ('a', 'b', 'c', 'd', 'text', 'lines'):
+            t.cmd(f'rm {folder}/{name}')
+        t.cmd(f'rmdir {folder}')
+
+    # R6: when a DHCP lease ends without renewal, the address is removed until a new lease.
+    def reachable():
+        try:
+            socket.create_connection((TARGET[0], 23), timeout=1).close()
+            return True
+        except OSError:
+            return False
+    stop, log = threading.Event(), []
+    server = ns.background(dhcp_server, stop, iface, log, 20)
+    time.sleep(0.3)
+    out = t.cmd('dhcp', 25)
+    stop.set(); server.join()
+    t.close()
+    mark = len(serial.lines)
+    removed = serial.wait_for(r'dhcp: lease expired, address removed', 40, mark)
+    time.sleep(0.5)
+    gone = not ns.call(reachable)
+    stop, log = threading.Event(), []
+    server = ns.background(dhcp_server, stop, iface, log, 120)
+    try:
+        back = serial.wait_for(r'dhcp: lease 120 s', 45, mark)
+        report.add('dhcp lease end', 'lease 20 s' in out and removed is not None and gone and back is not None,
+                   'address removed at expiry, new lease 30 s later at most')
+        t = Telnet(ns, connect_within=10)
+        t.read_until(Telnet.PROMPT)
+        t.cmd('ifconfig eth0 198.18.0.2/30')              # back to the static test address
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+    finally:
+        stop.set(); server.join()
+
+
 # ---- M5c: clock, editor and network tools ----
 
 NTP_TIME = 1893553445                 # 2030-01-02 03:04:05 UTC
@@ -1171,6 +1252,12 @@ def main():
             except (OSError, TimeoutError, ConnectionError) as exc:
                 traceback.print_exc()
                 report.add('settings', False, repr(exc))
+
+            try:
+                review_tests(ns, serial, report, args.iface)
+            except (OSError, TimeoutError, ConnectionError, StopIteration) as exc:
+                traceback.print_exc()
+                report.add('review fixes', False, repr(exc))
 
             try:
                 m5c_tests(ns, serial, report, args.iface)

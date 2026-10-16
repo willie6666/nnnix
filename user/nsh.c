@@ -383,8 +383,8 @@ static int run_children(struct shell *s, int n, int background)
         if (sys_pipe(pipes[i]) < 0) { printf("nsh: cannot create a pipe\n"); n = i + 1; ok = 0; break; }
     }
     for (int i = 0; ok && i < n; ++i) {
-        int in = i ? pipes[i - 1][0] : -1, out = i < n - 1 ? pipes[i][1] : -1, opened[SH_REDIRS], nopen = 0;
-        if (background && i == 0) {                  /* jobs must not read the terminal */
+        int in = i ? pipes[i - 1][0] : -1, out = i < n - 1 ? pipes[i][1] : -1, opened[SH_REDIRS + 1], nopen = 0;
+        if (background && i == 0) {                  /* jobs must not read the terminal (hence + 1 above) */
             int null = sys_open("/dev/null", O_RDONLY);
             if (null >= 0) { opened[nopen++] = null; in = null; }
         }

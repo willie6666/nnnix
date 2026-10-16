@@ -74,7 +74,9 @@ static int32_t sys_statfs_k(const char *path, struct nn_statfs *s) { return vfs_
 static int32_t sys_dup2_k(int32_t fd, int32_t target) { return vfs_dup2(fd, target); }
 static int32_t sys_alloc_k(uint32_t n, uint32_t flags)
 {
-    return (int32_t)(uintptr_t)((flags & NN_ALLOC_LONG) ? kmalloc_high(n) : kmalloc(n));
+    void *p = (flags & NN_ALLOC_LONG) ? kmalloc_high(n) : kmalloc(n);
+    if (p) kmem_set_owner(p, task_self()->pid);   /* freed with the task if the program does not */
+    return (int32_t)(uintptr_t)p;
 }
 static int32_t sys_free_k(void *p) { kfree(p); return 0; }
 

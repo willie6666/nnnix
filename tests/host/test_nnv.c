@@ -123,10 +123,10 @@ static void check_codes(void)
     CHECK_EQ_INT(run(f, c, 0), 0);                    /* empty: the same frame again */
 
     /* Headers. */
-    uint8_t h[NNV_HEADER] = { 'N', 'N', 'V', '1', 128, 0, 64, 0, 3, 0, 100, 0, NNV_LOOP };
+    uint8_t h[NNV_HEADER] = { 'N', 'N', 'V', '1', 128, 0, 64, 0, 3, 0, 33, 0, NNV_LOOP, 85 };
     struct nnv_info info;
     CHECK_EQ_INT(nnv_header(h, &info), 0);
-    CHECK(info.frames == 3 && info.frame_ms == 100 && info.flags == NNV_LOOP);
+    CHECK(info.frames == 3 && info.frame_ms == 33 && info.frame_frac == 85 && info.flags == NNV_LOOP);
     h[6] = 32;
     CHECK_EQ_INT(nnv_header(h, &info), -1);
     h[6] = 64;

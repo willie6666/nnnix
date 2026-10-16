@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* play: show an NNV picture or video (lib/nnv.h) on the LCD.
- *   play [-l] [-w] FILE
+ *   play [-l] [-w] [-v] FILE
  *   -l  loop until Ctrl-C (also when the file has its loop flag)
  *   -w  wait for Enter after the last frame (always for a picture)
+ *   -v  at the end, print the frame count, the time taken and late frames
  * The console text comes back when play ends. Make files with tools/mknnv.py. */
 #include "nnnix.h"
 #include "nnv.h"
@@ -85,15 +86,16 @@ static void wait_enter(void)
 
 int main(int argc, char **argv)
 {
-    int loop = 0, wait = 0;
+    int loop = 0, wait = 0, verbose = 0;
     const char *path = 0;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-l")) loop = 1;
         else if (!strcmp(argv[i], "-w")) wait = 1;
+        else if (!strcmp(argv[i], "-v")) verbose = 1;
         else if (argv[i][0] != '-' && !path) path = argv[i];
         else path = 0, argc = 0;
     }
-    if (!path) { puts("usage: play [-l] [-w] FILE"); return 2; }
+    if (!path) { puts("usage: play [-l] [-w] [-v] FILE"); return 2; }
     fd = sys_open(path, O_RDONLY);
     if (fd < 0) { printf("play: %s: %s\n", path, errstr(fd)); return 1; }
     uint8_t h[NNV_HEADER];
@@ -107,8 +109,8 @@ int main(int argc, char **argv)
     int lcd = sys_open("/dev/lcd", O_WRONLY);
     if (lcd < 0) { printf("play: /dev/lcd: %s\n", errstr(lcd)); return 1; }
 
-    int shown = 0, r;
-    uint32_t due = sys_uptime();
+    int shown = 0, late = 0, r;
+    uint32_t start = sys_uptime(), due = start, frac = 0;
     for (;;) {
         r = next_frame();
         if (r == 0 && loop && shown) {               /* rewind: the first frame starts from blank */
@@ -120,13 +122,20 @@ int main(int argc, char **argv)
         if (r <= 0) break;
         sys_write(lcd, frame, NNV_FRAME);
         ++shown;
-        due += info.frame_ms;
+        frac += info.frame_frac;                     /* 1/256 ms */
+        due += info.frame_ms + (frac >> 8);
+        frac &= 0xffu;
         int32_t early = (int32_t)(due - sys_uptime());
         if (early > 0) sys_sleep((uint32_t)early);
-        else if (early < -500) due = sys_uptime();  /* far behind (slow drive): don't race to catch up */
+        else {
+            ++late;
+            if (early < -500) due = sys_uptime();   /* far behind (slow drive): don't race to catch up */
+        }
     }
     if (r == 0 && wait) wait_enter();
+    uint32_t took = sys_uptime() - start;
     sys_close(lcd);
+    if (verbose) printf("play: %d frames in %u.%03u s, %d late\n", shown, took / 1000u, took % 1000u, late);
     if (r < 0) { printf("play: %s: damaged after %d frames\n", path, shown); return 1; }
     return 0;
 }

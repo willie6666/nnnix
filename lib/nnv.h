@@ -9,7 +9,9 @@
  * one frame. All numbers are little-endian.
  *
  *   header  "NNV1", u16 width (128), u16 height (64), u16 frames (0: unknown),
- *           u16 frame_ms (time per frame), u8 flags (NNV_LOOP), 3 bytes zero
+ *           u16 frame_ms (time per frame), u8 flags (NNV_LOOP),
+ *           u8 frame_frac (and frame_frac/256 ms more: 30 fps is 33 + 85/256),
+ *           2 bytes zero
  *   record  u8 type, u16 length, length bytes:
  *           NNV_RAW    the 1024-byte frame itself
  *           NNV_DELTA  codes that turn the previous frame into this one (the
@@ -38,7 +40,7 @@
 enum { NNV_RAW = 0, NNV_DELTA = 1 };
 #define NNV_LOOP 0x01u
 
-struct nnv_info { uint16_t frames, frame_ms; uint8_t flags; };
+struct nnv_info { uint16_t frames, frame_ms; uint8_t flags, frame_frac; };
 
 static inline uint16_t nnv_u16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
 
@@ -50,6 +52,7 @@ static inline int nnv_header(const uint8_t h[NNV_HEADER], struct nnv_info *info)
     info->frames = nnv_u16(h + 8);
     info->frame_ms = nnv_u16(h + 10);
     info->flags = h[12];
+    info->frame_frac = h[13];
     return 0;
 }
 

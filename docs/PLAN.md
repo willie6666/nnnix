@@ -549,6 +549,8 @@ A file format of our own for the 128x64 LCD and a player ([NNV.md](NNV.md)):
   `play`, one writer, picture until Enter, Ctrl-C back in 20-50 ms, damaged files, RAM back to the same free
   heap); `make host-test` 3716 checks (2170 new for the decoder). Two players at once do not fit next to a
   logged-in shell (each takes about 3.7 KiB with its stack), so the test holds `/dev/lcd` with `sleep > /dev/lcd &`.
+- Bad Apple in full (219 s, 30 fps, 6572 frames, 676 KiB thresholded): 6572 frames in 219.058 s, 0 late
+  (`play -v`). The header keeps the frame time in 1/256 ms, so 30 fps does not drift.
 
 ## 8. Source layout
 

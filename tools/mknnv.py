@@ -146,9 +146,11 @@ def apply(prev, codes):
 
 
 def encode(frames, frame_ms, flags=0):
+    """frame_ms may have a fraction: the header keeps it in 1/256 ms."""
     frames = list(frames)
-    out = bytearray(b'NNV1' + struct.pack('<HHHHB3x', W, H, len(frames) if len(frames) < 65536 else 0,
-                                          frame_ms, flags))
+    units = round(frame_ms * 256)
+    out = bytearray(b'NNV1' + struct.pack('<HHHHBB2x', W, H, len(frames) if len(frames) < 65536 else 0,
+                                          units >> 8, flags, units & 0xff))
     prev = bytes(FRAME)
     for f in frames:
         codes = delta(prev, f)
@@ -164,7 +166,8 @@ def decode(data):
     """Header fields and the frames of an NNV file; raises ValueError if damaged."""
     if len(data) < 16 or data[:4] != b'NNV1':
         raise ValueError('not an NNV file')
-    w, h, count, frame_ms, flags = struct.unpack_from('<HHHHB', data, 4)
+    w, h, count, frame_ms, flags, frac = struct.unpack_from('<HHHHBB', data, 4)
+    frame_ms += frac / 256
     if (w, h) != (W, H):
         raise ValueError(f'{w}x{h}, not {W}x{H}')
     frames, sizes = [], []
@@ -346,7 +349,7 @@ def main():
             print(file=sys.stderr)
         if not frames:
             raise SystemExit(f'mknnv: {a.input}: no frames')
-        frame_ms = 0 if len(frames) == 1 else round(1000 / a.fps)
+        frame_ms = 0 if len(frames) == 1 else 1000 / a.fps
         write(a.output, encode(frames, frame_ms, LOOP if a.loop else 0), frames, a.raw)
     elif a.cmd == 'demo':
         frames, frame_ms, flags = DEMOS[a.name]()
@@ -359,7 +362,7 @@ def main():
             raise SystemExit(f'mknnv: {a.file}: {e}')
         n = len(v['frames'])
         sizes = v['sizes']
-        kind = 'picture' if n == 1 else f'video, {v["frame_ms"]} ms per frame, {n * v["frame_ms"] / 1000:.1f} s'
+        kind = 'picture' if n == 1 else f'video, {v["frame_ms"]:.2f} ms per frame, {n * v["frame_ms"] / 1000:.1f} s'
         print(f'{a.file}: {kind}, {n} frame(s), {len(data)} bytes'
               f'{", loops" if v["flags"] & LOOP else ""}')
         if n > 1:

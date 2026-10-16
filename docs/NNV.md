@@ -27,6 +27,7 @@ nnnix$ play /home/photo.nnv        # stays until Enter
 nnnix$ play /home/clip.nnv         # plays once
 nnnix$ play -l /home/clip.nnv      # loops until Ctrl-C
 nnnix$ play -l /home/clip.nnv &    # in the background; `kill %1` ends it
+nnnix$ play -v /home/clip.nnv      # then: frames, time taken, frames shown late
 ```
 
 The console text comes back when `play` ends, however it ends. The files can
@@ -53,6 +54,11 @@ else is a video (`--still` takes one picture from a video).
 record sizes, and can draw frame N as text. `mknnv.py demo NAME OUTPUT` makes
 test files: `pattern` (a picture for checking orientation: the solid block is
 at the top left), `bounce` (a looping ball) and `mixed` (every kind of record).
+
+Measured: Bad Apple, the whole 219 s at its own 30 fps (6572 frames, 85x64
+in the middle of the screen), is 676 KiB with `--dither threshold`; `play -v`
+reported 6572 frames in 219.058 s, none late. Sending a frame to the LCD takes
+about 4 ms; a 30 fps delta averages about 105 bytes.
 
 Space: the root file system has about 1.9 MiB, and it reads at about
 256 KiB/s, far more than any video needs. A 12 fps video of ordinary footage
@@ -92,7 +98,8 @@ Header, 16 bytes:
 | 8 | 2 | number of frames (0: unknown; play reads to the end) |
 | 10 | 2 | time per frame in milliseconds (0 for a picture) |
 | 12 | 1 | flags: bit 0, loop |
-| 13 | 3 | zero |
+| 13 | 1 | more time per frame, in 1/256 ms (30 fps: 33 ms + 85/256) |
+| 14 | 2 | zero |
 
 Then one record per frame, until the end of the file:
 

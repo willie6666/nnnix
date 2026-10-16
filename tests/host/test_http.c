@@ -18,7 +18,7 @@ int main(void)
     CHECK(!strcmp(r.path, "/home/test.bin")); CHECK_EQ_INT(line(""), 1);
     reset(); CHECK_EQ_INT(line("PUT /home/sub/test.bin HTTP/1.1"), 0);
     CHECK_EQ_INT(line("Host: 198.18.0.2:8080"), 0);
-    CHECK_EQ_INT(line("cOnTeNt-LeNgTh: \t1048576 \t"), 0); CHECK_EQ_INT(r.length, HTTP_MAX_BODY);
+    CHECK_EQ_INT(line("cOnTeNt-LeNgTh: \t2097152 \t"), 0); CHECK_EQ_INT(r.length, HTTP_MAX_BODY);
     CHECK_EQ_INT(line("Expect: 100-continue"), 0); CHECK_EQ_INT(r.expect, 1);
     CHECK_EQ_INT(line(""), 1); CHECK_EQ_INT(r.put, 1);
     const char *paths[] = { "/etc/rc", "/home", "/home/", "/home/../etc/rc", "/home/a/../../x",
@@ -44,7 +44,7 @@ int main(void)
     for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; ++i) {
         reset(); line("PUT /home/a HTTP/1.0"); CHECK_EQ_INT(line(bad[i]), -400);
     }
-    reset(); line("PUT /home/a HTTP/1.0"); CHECK_EQ_INT(line("Content-Length: 1048577"), -413);
+    reset(); line("PUT /home/a HTTP/1.0"); CHECK_EQ_INT(line("Content-Length: 2097153"), -413);
     CHECK_EQ_INT(line("Content-Length: 4294967296"), -413);
     reset(); line("PUT /home/a HTTP/1.0"); CHECK_EQ_INT(line("Transfer-Encoding: chunked"), -501);
     CHECK_EQ_INT(line("Expect: other"), -417);

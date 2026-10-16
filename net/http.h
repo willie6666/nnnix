@@ -5,7 +5,7 @@
 
 #define HTTP_LINE 128
 #define HTTP_PATH 64
-#define HTTP_MAX_BODY (1024u * 1024u)
+#define HTTP_MAX_BODY (2048u * 1024u)
 
 struct http_request {
     char path[HTTP_PATH];

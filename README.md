@@ -82,8 +82,10 @@ pid name prio state stack_used stack_size cpu_ms
 - Loadable programs (`sdk/`, [sdk/README.md](sdk/README.md)): NXE files linked at 0 and relocated by the
   loader; the C library is the firmware's own (a function table), so `hello` needs 276 bytes of RAM
 - Pictures and videos on the LCD ([docs/NNV.md](docs/NNV.md)): `/dev/lcd` gives a program the display as a
-  1024-byte frame (the console text returns when it closes); `tools/mknnv.py` converts pictures and videos
-  through ffmpeg into NNV, a delta-coded format of our own; `play` shows them
+  1024-byte frame (the console text returns when it closes), `/dev/audio` plays 8 kHz sound on the buzzer
+  (PWM on PB11, timer interrupt); `tools/mknnv.py` converts pictures and videos through ffmpeg into NNV, a
+  delta-coded format of our own with optional ADPCM sound; `play` shows them (all of Bad Apple at 30 fps;
+  `play -s` adds the sound, though the buzzer carries rhythm far better than pitch)
 - Firmware updates: `fwupdate FILE` (or `tools/nnupdate.py` from the NanoPi) stages an image in the SPI flash;
   the LDROM bootloader (`boot/`) installs it and repeats an installation that a reset or power loss cut short
 - Network: `ifconfig`, a DHCP client with lease renewal in the kernel daemon, `netstat`, `service` (telnetd,
@@ -94,7 +96,7 @@ pid name prio state stack_used stack_size cpu_ms
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 139 checks) | Result |
+| On-target tests (`make test`, 141 checks) | Result |
 | --- | --- |
 | Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
 | Two sessions reading two different files on the single-file CH376S at once | pass |
@@ -109,6 +111,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Firmware update through the bootloader, an installation interrupted by a reset, the power-on path | pass |
 | Programs: `/bin/hello` with arguments and exit status, in pipelines and the background, Ctrl-C, from USB, damaged files refused, RAM reclaimed | pass |
 | LCD player: a 60-frame video at its frame rate, one `/dev/lcd` writer at a time, picture until Enter, Ctrl-C, damaged files refused, RAM reclaimed | pass |
+| Sound: 2 s of samples in 2.0 s, one `/dev/audio` writer, a video with sound on time and without gaps, Ctrl-C silences it | pass |
 | Review fixes: background redirections, memory of killed programs, concurrent terminal output, DHCP lease end, same-file `cp`/`mv`, `nc` both ways with back-pressure (32 KiB) | pass |
 | littlefs write / read (32 KiB) | 37-50 KiB/s / 256 KiB/s |
 | Console: banner, typing, line editing, clear, scrolling, shell restart after `exit` | pass |
@@ -122,7 +125,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 6208 B (test limit 5600 B) |
 | Code size / static RAM including crash records / main stack / heap | 88 KiB / 2.5 KiB / 512 B / 12.9 KiB |
 
-Host tests: 3716 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model and the NNV decoder against the encoder), plus 80 243
+Host tests: 5736 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model and the NNV decoder against the encoder), plus 80 243
 date conversions compared with the host C library.
 
 ## Hardware
@@ -136,6 +139,7 @@ NU-LB_002 Rev 2.1 (NUC140VE3CN). The external modules run from an MB-102 5 V sup
 | CH376S (SPI; P_S jumper removed, RD/WR tied to GND) | SCK PC9, MISO PC10, MOSI PC11, CS PC8, INT PB14 |
 | W5500 | SCK PC9, MISO PC10, MOSI PC11, CS PB10, INT PB2, RST PB8 |
 | Onboard LCD | SPI3: CS PD8, CLK PD9, MOSI PD11 |
+| Onboard buzzer | PB11 (low: on), driven as PWM4 for `/dev/audio` |
 | Onboard SPI flash (W25Q16, 2 MiB) | SPI2: CS PD0, CLK PD1, MISO PD2, MOSI PD3 |
 
 Board details and constraints (LIN sharing, byte-only CH376S transfers and more) are in [docs/PLAN.md](docs/PLAN.md), section 2.

@@ -551,6 +551,17 @@ A file format of our own for the 128x64 LCD and a player ([NNV.md](NNV.md)):
   logged-in shell (each takes about 3.7 KiB with its stack), so the test holds `/dev/lcd` with `sleep > /dev/lcd &`.
 - Bad Apple in full (219 s, 30 fps, 6572 frames, 676 KiB thresholded): 6572 frames in 219.058 s, 0 late
   (`play -v`). The header keeps the frame time in 1/256 ms, so 30 fps does not drift.
+- Sound (same day): `/dev/audio` plays unsigned 8-bit samples at 8 kHz on the buzzer: PB11 as PWM4 (98 kHz
+  carrier, 8-bit) and TIMER0 at the highest interrupt priority loading one sample per tick from a 1 KiB ring
+  that exists only while the device is open. NNV sound records carry IMA ADPCM (4 KiB/s), each placed 64 ms
+  ahead of its frame; `play` decodes each frame before waiting for its time, so queueing sound never makes a
+  frame late. The HTTP upload limit went from 1 to 2 MiB for such files. Bad Apple with its sound: 1572 KiB,
+  6572 frames in 219.027 s, 0 late. Heard on the board: music comes out harsh, rhythm without much pitch, so
+  sound is opt-in (`mknnv.py --sound`, `play -s`).
+  `make test` 141/141 (2 new: raw sound timing and one writer; a video with sound on time and gapless, silent
+  without `-s`, Ctrl-C), `make host-test` 5736 checks (ADPCM against the Python decoder and by hand). A first
+  run failed the interrupted-update check because Bad Apple with sound had filled the flash and the test's
+  upload failed unnoticed; the test now checks that upload.
 
 ## 8. Source layout
 
@@ -578,7 +589,7 @@ Repository: <https://github.com/willie6666/nnnix>; at least one commit and tag p
 | R1 | LCD controller initialisation sequence and SPI3 framing. Done in M3; PD14 (backlight on this board revision) is left at its reset state | M3 |
 | R2 | Onboard SPI flash: W25Q16 (ef4015, 2 MiB) on SPI2. Done in M4 | M4 |
 | R3 | The RS-232 transceiver on PB0 and how to isolate it; fallback: software UART RX or another pin | M7 |
-| R4 | RTC 32.768 kHz crystal: present, stable within 0.3 s, RTC counts through resets. Done in M5. Buzzer, keys, EEPROM pins remain | M5/M7 |
+| R4 | RTC 32.768 kHz crystal: present, stable within 0.3 s, RTC counts through resets. Done in M5. Buzzer: PB11, low active, a magnetic 2.4 kHz buzzer; driven as PWM4 for `/dev/audio` (2026-10-17). Keys, EEPROM pins remain | M5/M7 |
 | R5 | littlefs on the Cortex-M0: 19.5 KiB code, about 2.2 KiB RAM with fsd. Done in M4 | M4 |
 | R6 | Position independence for loaded programs: not needed; programs are linked at 0 and relocated at load. Done in M6 | M6 |
 | R7 | W5500 interrupts (Sn_IMR/SIMR) with the PB2 GPIO interrupt, measured | M2 |

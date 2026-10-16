@@ -1,14 +1,15 @@
 # NNV: pictures and videos on the LCD
 
-NNV is nnnix's own file format for the onboard 128x64 monochrome LCD. A picture
-is a video of one frame. The pieces:
+NNV is nnnix's own file format for the onboard 128x64 monochrome LCD, with
+sound for the onboard buzzer. A picture is a video of one frame. The pieces:
 
 | Part | What it does |
 | --- | --- |
 | `tools/mknnv.py` | On the build machine: turns pictures and videos into NNV through ffmpeg, makes test files, checks files |
 | `/dev/lcd` | In the kernel: the display as a 1024-byte frame that a program can write |
-| `play` (`sdk/examples/play.c`) | On the board: shows an NNV file (a 1.5 KiB loadable program) |
-| `lib/nnv.h` | The format and its decoder, shared by `play` and the host test |
+| `/dev/audio` | In the kernel: the buzzer, playing 8-bit samples at 8 kHz (`drivers/audio.c`) |
+| `play` (`sdk/examples/play.c`) | On the board: shows an NNV file, with its sound if asked (a 2.6 KiB loadable program) |
+| `lib/nnv.h` | The format and its decoders, shared by `play` and the host test |
 
 ## Quick start
 
@@ -28,6 +29,7 @@ nnnix$ play /home/clip.nnv         # plays once
 nnnix$ play -l /home/clip.nnv      # loops until Ctrl-C
 nnnix$ play -l /home/clip.nnv &    # in the background; `kill %1` ends it
 nnnix$ play -v /home/clip.nnv      # then: frames, time taken, frames shown late
+nnnix$ play -s /home/clip.nnv      # with its sound on the buzzer (see below)
 ```
 
 The console text comes back when `play` ends, however it ends. The files can
@@ -49,20 +51,26 @@ else is a video (`--still` takes one picture from a video).
 | `--start S`, `--duration S` | Take part of the input |
 | `--vf FILTERS` | Extra ffmpeg filters before scaling, for example `eq=contrast=1.4:brightness=0.05` |
 | `--loop` | Mark a video to loop (as if `play -l`) |
+| `--sound` | Keep the video's sound, for `play -s` (left out otherwise) |
+| `--af FILTERS` | ffmpeg audio filters, default `highpass=f=200` (the buzzer has no bass) |
+| `--volume X` | The sound is scaled so its loudest peaks reach full scale; above 1 it is louder and clips |
 
 `mknnv.py info FILE [--ascii N]` checks a file, prints its frame count and
 record sizes, and can draw frame N as text. `mknnv.py demo NAME OUTPUT` makes
 test files: `pattern` (a picture for checking orientation: the solid block is
-at the top left), `bounce` (a looping ball) and `mixed` (every kind of record).
+at the top left), `bounce` (a looping ball), `mixed` (every kind of record)
+and `tone` (a rising tone and a beep, with a bar and a block in time with them).
 
 Measured: Bad Apple, the whole 219 s at its own 30 fps (6572 frames, 85x64
-in the middle of the screen), is 676 KiB with `--dither threshold`; `play -v`
-reported 6572 frames in 219.058 s, none late. Sending a frame to the LCD takes
-about 4 ms; a 30 fps delta averages about 105 bytes.
+in the middle of the screen), is 676 KiB with `--dither threshold`, and
+1572 KiB with its sound (`--sound`); `play -s -v` reported 6572 frames in 219.027 s, none
+late, with the sound playing. Sending a frame to the LCD takes about 4 ms; a
+30 fps delta averages about 105 bytes.
 
 Space: the root file system has about 1.9 MiB, and it reads at about
 256 KiB/s, far more than any video needs. A 12 fps video of ordinary footage
-takes roughly 1-5 KiB per second.
+takes roughly 1-5 KiB per second, and sound 4 KiB per second. Uploads over
+HTTP (`nncp.py`) take files up to 2 MiB at about 50 KiB/s.
 
 ## /dev/lcd
 
@@ -84,6 +92,32 @@ frames one after another without seeking; `lseek` positions a partial update
 From the shell, `echo hi > /dev/lcd` puts three bytes of dots in the top left
 corner until the shell closes the file a moment later.
 
+## /dev/audio and the buzzer
+
+The board's buzzer (on PB11, on while the pin is low) is a magnetic one made
+for a 2.4 kHz beep. `/dev/audio` drives it as a crude loudspeaker: PB11 is
+switched to the PWM4 output, a 98 kHz carrier whose on-time follows the
+samples, and the TIMER0 interrupt (the highest priority, for steady timing)
+loads the next sample 8000 times a second.
+
+How it sounds: rough. On music the buzzer gets the rhythm across, but little
+of the pitch, and the parts run together. So sound is opt-in: `mknnv.py
+--sound` keeps it in a file and `play -s` plays it.
+
+- Writes take unsigned 8-bit mono samples at 8000 Hz, 128 being silence
+  (`cat sound.u8 > /dev/audio` plays a raw file).
+- The kernel keeps a 1 KiB ring (128 ms), allocated only while the device is
+  open; writes block while it is full.
+- One writer at a time (others get `EBUSY`). The close plays out what is
+  queued, or stops at once when the program was killed, and the pin goes back
+  to a plain output, high, so the buzzer is silent.
+- Each close logs `audio: N samples played, M short`: M counts the samples the
+  ring could not supply between the first write and the close (it stays 0 when
+  the writer keeps up).
+
+The timer and the scheduler tick both run from HCLK, so sound and pictures
+stay together however long a video is.
+
 ## File format
 
 All numbers are little-endian.
@@ -99,13 +133,14 @@ Header, 16 bytes:
 | 10 | 2 | time per frame in milliseconds (0 for a picture) |
 | 12 | 1 | flags: bit 0, loop |
 | 13 | 1 | more time per frame, in 1/256 ms (30 fps: 33 ms + 85/256) |
-| 14 | 2 | zero |
+| 14 | 2 | sound: samples per second (8000), or 0 for none |
 
-Then one record per frame, until the end of the file:
+Then records until the end of the file: one per frame, and the sound records
+between them:
 
 | Size | Field |
 | --- | --- |
-| 1 | type: 0 raw, 1 delta; players skip other types |
+| 1 | type: 0 raw, 1 delta, 2 sound; players skip other types |
 | 2 | length of the data |
 | length | data |
 
@@ -125,6 +160,16 @@ Bytes after the last code stay as they were, so an empty delta record repeats
 the previous frame. The encoder writes a raw record whenever the codes would
 not be shorter.
 
+A **sound** record holds IMA ADPCM: the predictor (i16) and the step index
+(u8, 0-88) to start from, then the codes, two per byte, low nibble first, so
+`2 x (length - 3)` samples. The decoder's 16-bit output becomes the device's
+8-bit samples as `(value >> 8) + 128`. Each record holds 256 samples (32 ms),
+the records follow each other in time, and the encoder places each one 64 ms
+before the frame that shows at its start. A player queues sound records as
+they come and shows each frame at its time; the ring then never holds more
+than about 100 ms, and a frame may be up to 64 ms slow before the sound runs
+dry.
+
 Why this shape: the board has about 6 KiB of free RAM. A delta is applied in
 place to the one frame buffer, a few bytes at a time as they are read, so
 `play` needs 1 KiB for the frame and 128 bytes for reading, and no second frame.
@@ -133,11 +178,13 @@ no conversion.
 
 ## Tests
 
-- Host (`make host-test`, `tests/host/test_nnv.c`): the C decoder against the
-  frames the Python encoder started from, for the three demo files, fed in
-  pieces of 1, 7, 128 bytes and whole; codes at their limits; codes that run
-  past the end, records cut inside a code, bad headers.
+- Host (`make host-test`, `tests/host/test_nnv.c`): the C decoders against
+  the frames the Python encoder started from and the sound the Python decoder
+  makes, for the four demo files, fed in pieces of 1, 7, 128 bytes and whole;
+  codes at their limits; codes that run past the end, records cut inside a
+  code, bad headers; ADPCM steps worked out by hand and clamping.
 - Board (`make test`, `nnv_tests` in `tools/nntest.py`): the video plays at its
   frame rate; one writer at a time and the device free again after `kill`; a
-  picture waits for Enter; Ctrl-C; damaged and foreign files refused; no RAM
-  left behind.
+  picture waits for Enter; Ctrl-C; 2 s of raw sound take 2 s; a video with
+  sound on time with no sound gaps, and Ctrl-C silences it at once; damaged
+  and foreign files refused; no RAM left behind.

@@ -16,6 +16,7 @@
 #define SYS_GPB_MFP    REG(0x50000034u)
 #define SYS_GPC_MFP    REG(0x50000038u)
 #define SYS_GPD_MFP    REG(0x5000003cu)
+#define SYS_ALT_MFP    REG(0x50000050u)
 #define SYS_REGWRPROT  REG(0x50000100u)
 
 /* Clock controller */
@@ -25,6 +26,7 @@
 #define CLK_CLKSEL0    REG(0x50000210u)
 #define CLK_CLKSEL1    REG(0x50000214u)
 #define CLK_CLKDIV     REG(0x50000218u)
+#define CLK_CLKSEL2    REG(0x5000021cu)
 #define CLK_PLLCON     REG(0x50000220u)
 
 /* RTC (clocked by the 32.768 kHz crystal LXT) */
@@ -84,6 +86,7 @@ enum { GPIO_INPUT, GPIO_OUTPUT, GPIO_OPEN_DRAIN, GPIO_QUASI };
 
 #define IRQ_GPAB       4
 #define IRQ_UART1      13
+#define IRQ_TMR0       8
 
 static inline void regs_unlock(void)
 {

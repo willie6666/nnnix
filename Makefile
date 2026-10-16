@@ -115,7 +115,7 @@ build/host/test_rootfs: tests/host/test_rootfs.c fs/rootfs.c fs/lfs_port.c third
 build/host/test_usbfs: tests/host/test_usbfs.c fs/usbfs.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
-NNV_DEMOS = pattern bounce mixed
+NNV_DEMOS = pattern bounce mixed tone
 build/host/nnv_%.nnv: tools/mknnv.py
 	@mkdir -p $(dir $@)
 	$(PYTHON) tools/mknnv.py demo $* $@ --raw build/host/nnv_$*.raw

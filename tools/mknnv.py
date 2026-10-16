@@ -6,6 +6,9 @@
   mknnv.py demo NAME OUT.nnv          a generated test file (see DEMOS)
   mknnv.py info FILE.nnv [--ascii N]  check a file, optionally draw frame N
 
+--sound keeps a video's sound (8 kHz, IMA ADPCM, 4 KiB/s) for the board's
+buzzer, played by `play -s`. The buzzer carries rhythm far better than pitch.
+
 Then copy it to the board (tools/nncp.py put OUT.nnv /OUT.nnv) and run
 `play /OUT.nnv` there.
 
@@ -25,7 +28,10 @@ import numpy as np
 
 W, H = 128, 64
 FRAME = W * H // 8
-RAW, DELTA = 0, 1
+RAW, DELTA, AUDIO = 0, 1, 2
+RATE = 8000                       # what /dev/audio plays
+BLOCK = 256                       # samples per audio record (32 ms)
+LEAD = 64                         # ms: an audio record comes this much before the frame it plays with
 LOOP = 0x01
 STILL = {'.png', '.jpg', '.jpeg', '.bmp', '.webp', '.pgm', '.ppm', '.pbm', '.tif', '.tiff'}
 
@@ -145,20 +151,100 @@ def apply(prev, codes):
     return bytes(f)
 
 
-def encode(frames, frame_ms, flags=0):
-    """frame_ms may have a fraction: the header keeps it in 1/256 ms."""
+# ---- sound: IMA ADPCM ----
+STEPS = [7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
+         73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408,
+         449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+         2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630,
+         9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767]
+INDEX_STEP = [-1, -1, -1, -1, 2, 4, 6, 8]
+
+
+def adpcm_step(pred, index, code):
+    """The decoder's state after one code (lib/nnv.h nnv_adpcm_one)."""
+    step = STEPS[index]
+    diff = step >> 3
+    if code & 4:
+        diff += step
+    if code & 2:
+        diff += step >> 1
+    if code & 1:
+        diff += step >> 2
+    pred = max(-32768, min(32767, pred - diff if code & 8 else pred + diff))
+    return pred, max(0, min(88, index + INDEX_STEP[code & 7]))
+
+
+def adpcm_encode(samples, pred, index):
+    """An audio record body for an even number of int16 samples; returns it and the state after."""
+    out = bytearray(struct.pack('<hB', pred, index))
+    codes = []
+    for s in samples:
+        step = STEPS[index]
+        diff = int(s) - pred
+        code = 0
+        if diff < 0:
+            code, diff = 8, -diff
+        if diff >= step:
+            code |= 4
+            diff -= step
+        if diff >= step >> 1:
+            code |= 2
+            diff -= step >> 1
+        if diff >= step >> 2:
+            code |= 1
+        codes.append(code)
+        pred, index = adpcm_step(pred, index, code)
+    out += bytes(codes[i] | codes[i + 1] << 4 for i in range(0, len(codes), 2))
+    return bytes(out), pred, index
+
+
+def adpcm_decode(body):
+    """Unsigned 8-bit samples of an audio record body, as the board plays them."""
+    pred, index = struct.unpack_from('<hB', body)
+    if index > 88:
+        raise ValueError('bad audio step index')
+    out = bytearray()
+    for b in body[3:]:
+        for code in (b & 15, b >> 4):
+            pred, index = adpcm_step(pred, index, code)
+            out.append((pred >> 8) + 128)
+    return bytes(out)
+
+
+def encode(frames, frame_ms, flags=0, audio=None):
+    """frame_ms may have a fraction: the header keeps it in 1/256 ms. audio:
+    int16 samples at RATE, interleaved so each record comes LEAD ms ahead."""
     frames = list(frames)
     units = round(frame_ms * 256)
-    out = bytearray(b'NNV1' + struct.pack('<HHHHBB2x', W, H, len(frames) if len(frames) < 65536 else 0,
-                                          units >> 8, flags, units & 0xff))
+    out = bytearray(b'NNV1' + struct.pack('<HHHHBBH', W, H, len(frames) if len(frames) < 65536 else 0,
+                                          units >> 8, flags, units & 0xff, RATE if audio is not None else 0))
+    blocks = []
+    if audio is not None:
+        audio = np.asarray(audio, dtype=np.int16)
+        if len(audio) % 2:
+            audio = np.append(audio, np.int16(0))
+        pred, index = 0, 0
+        for i in range(0, len(audio), BLOCK):
+            body, pred, index = adpcm_encode(audio[i:i + BLOCK], pred, index)
+            blocks.append((i * 1000 / RATE, body))
+    queued = 0
+
+    def sound(until):
+        nonlocal queued
+        while queued < len(blocks) and blocks[queued][0] <= until:
+            out.extend(struct.pack('<BH', AUDIO, len(blocks[queued][1])) + blocks[queued][1])
+            queued += 1
+
     prev = bytes(FRAME)
-    for f in frames:
+    for k, f in enumerate(frames):
+        sound(k * frame_ms + LEAD)
         codes = delta(prev, f)
         if len(codes) >= FRAME:
             out += struct.pack('<BH', RAW, FRAME) + f
         else:
             out += struct.pack('<BH', DELTA, len(codes)) + codes
         prev = f
+    sound(float('inf'))
     return bytes(out)
 
 
@@ -166,11 +252,11 @@ def decode(data):
     """Header fields and the frames of an NNV file; raises ValueError if damaged."""
     if len(data) < 16 or data[:4] != b'NNV1':
         raise ValueError('not an NNV file')
-    w, h, count, frame_ms, flags, frac = struct.unpack_from('<HHHHBB', data, 4)
+    w, h, count, frame_ms, flags, frac, rate = struct.unpack_from('<HHHHBBH', data, 4)
     frame_ms += frac / 256
     if (w, h) != (W, H):
         raise ValueError(f'{w}x{h}, not {W}x{H}')
-    frames, sizes = [], []
+    frames, sizes, sound = [], [], bytearray()
     prev = bytes(FRAME)
     at = 16
     while at < len(data):
@@ -187,13 +273,19 @@ def decode(data):
             prev = bytes(body)
         elif kind == DELTA:
             prev = apply(prev, body)
+        elif kind == AUDIO:
+            if n < 3:
+                raise ValueError('audio record cut short')
+            sound += adpcm_decode(body)
+            continue
         else:
             continue
         frames.append(prev)
         sizes.append(3 + n)
     if count and count != len(frames):
         raise ValueError(f'header says {count} frames, found {len(frames)}')
-    return {'frame_ms': frame_ms, 'flags': flags, 'frames': frames, 'sizes': sizes}
+    return {'frame_ms': frame_ms, 'flags': flags, 'frames': frames, 'sizes': sizes, 'rate': rate,
+            'sound': bytes(sound)}
 
 
 # ---- input through ffmpeg ----
@@ -224,6 +316,24 @@ def ffmpeg_frames(path, fps, fit, still, start, duration, vf, background):
         yield np.frombuffer(buf, dtype=np.uint8).reshape(H, W)
     if proc.wait():
         raise SystemExit(f'mknnv: ffmpeg failed on {path}')
+
+
+def ffmpeg_audio(path, start, duration, af, volume):
+    """The input's sound as int16 samples at RATE, mono, loudest peak near full
+    scale (times volume), or None when it has none."""
+    cmd = ['ffmpeg', '-v', 'error', '-nostdin']
+    if start:
+        cmd += ['-ss', str(start)]
+    cmd += ['-i', path]
+    if duration:
+        cmd += ['-t', str(duration)]
+    cmd += ['-vn', '-ac', '1', '-ar', str(RATE)] + (['-af', af] if af else []) + ['-f', 's16le', '-']
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    pcm = np.frombuffer(proc.stdout[:len(proc.stdout) // 2 * 2], dtype='<i2').astype(np.float32)
+    if proc.returncode or not len(pcm):
+        return None
+    peak = np.percentile(np.abs(pcm), 99.9) or 1.0
+    return np.clip(pcm * (30000.0 / peak) * volume, -32768, 32767).astype(np.int16)
 
 
 # ---- demos ----
@@ -290,7 +400,29 @@ def demo_mixed():
     return frames, 40, 0
 
 
-DEMOS = {'pattern': demo_pattern, 'bounce': demo_bounce, 'mixed': demo_mixed}
+def demo_tone():
+    """Sound check: 3 s of a bar growing with a tone that rises from 200 Hz to
+    3 kHz, then a 1 kHz beep in time with a flashing block."""
+    n = 3 * RATE
+    t = np.arange(n) / RATE
+    freq = 200 * (15 ** (t / 3))                             # 200 Hz .. 3 kHz, exponential
+    phase = 2 * np.pi * np.cumsum(freq) / RATE
+    sweep = np.sin(phase)
+    beep = np.sin(2 * np.pi * 1000 * np.arange(RATE) / RATE) * ((np.arange(RATE) // 2000) % 2 == 0)
+    audio = (np.concatenate([sweep, beep]) * 28000).astype(np.int16)
+    frames = []
+    for k in range(120):                                     # 4 s at 30 fps
+        d = np.zeros((H, W), dtype=bool)
+        d[0, :] = d[-1, :] = d[:, 0] = d[:, -1] = True
+        if k < 90:
+            d[28:36, 4:4 + (W - 8) * (k + 1) // 90] = True
+        elif (k - 90) // 15 % 2 == 0:                       # with each 250 ms beep
+            d[16:48, 48:80] = True
+        frames.append(pack(d))
+    return frames, 1000 / 30, 0, audio
+
+
+DEMOS = {'pattern': demo_pattern, 'bounce': demo_bounce, 'mixed': demo_mixed, 'tone': demo_tone}
 
 
 def ascii_art(frame):
@@ -300,10 +432,15 @@ def ascii_art(frame):
 def write(path, data, frames, raw):
     with open(path, 'wb') as f:
         f.write(data)
+    v = decode(data)
     if raw:
         with open(raw, 'wb') as f:
             f.write(b''.join(frames))
-    print(f'{path}: {len(frames)} frame(s), {len(data)} bytes')
+        if v['sound']:
+            with open(os.path.splitext(raw)[0] + '.pcm', 'wb') as f:
+                f.write(v['sound'])
+    sound = f', sound {len(v["sound"]) / RATE:.1f} s' if v['sound'] else ''
+    print(f'{path}: {len(frames)} frame(s){sound}, {len(data)} bytes')
 
 
 def main():
@@ -324,11 +461,16 @@ def main():
     c.add_argument('--vf', help='extra ffmpeg filters before scaling, e.g. eq=contrast=1.5')
     c.add_argument('--background', default='white', help='padding colour (default white)')
     c.add_argument('--loop', action='store_true', help='mark the video to loop')
+    c.add_argument('--sound', action='store_true', help="keep the video's sound (for play -s)")
+    c.add_argument('--af', default='highpass=f=200',
+                   help='ffmpeg audio filters (default highpass=f=200: the buzzer has no bass)')
+    c.add_argument('--volume', type=float, default=1.0,
+                   help='after scaling the loudest peaks to full scale; above 1 clips them')
     c.add_argument('--raw', help=argparse.SUPPRESS)
     d = sub.add_parser('demo', help='a generated test file: ' + ', '.join(DEMOS))
     d.add_argument('name', choices=sorted(DEMOS))
     d.add_argument('output')
-    d.add_argument('--raw', help='also write the frames, back to back (host test reference)')
+    d.add_argument('--raw', help='also write the frames, back to back, and the sound as NAME.pcm (host test reference)')
     i = sub.add_parser('info', help='check a file')
     i.add_argument('file')
     i.add_argument('--ascii', type=int, metavar='N', help='draw frame N')
@@ -350,10 +492,15 @@ def main():
         if not frames:
             raise SystemExit(f'mknnv: {a.input}: no frames')
         frame_ms = 0 if len(frames) == 1 else 1000 / a.fps
-        write(a.output, encode(frames, frame_ms, LOOP if a.loop else 0), frames, a.raw)
+        audio = None
+        if a.sound and not (still and len(frames) == 1):
+            audio = ffmpeg_audio(a.input, a.start, a.duration, a.af, a.volume)
+            if audio is not None:                            # no longer than the picture
+                audio = audio[:round(len(frames) * frame_ms * RATE / 1000)]
+        write(a.output, encode(frames, frame_ms, LOOP if a.loop else 0, audio), frames, a.raw)
     elif a.cmd == 'demo':
-        frames, frame_ms, flags = DEMOS[a.name]()
-        write(a.output, encode(frames, frame_ms, flags), frames, a.raw)
+        frames, frame_ms, flags, *audio = DEMOS[a.name]()
+        write(a.output, encode(frames, frame_ms, flags, audio[0] if audio else None), frames, a.raw)
     else:
         data = open(a.file, 'rb').read()
         try:
@@ -363,7 +510,8 @@ def main():
         n = len(v['frames'])
         sizes = v['sizes']
         kind = 'picture' if n == 1 else f'video, {v["frame_ms"]:.2f} ms per frame, {n * v["frame_ms"] / 1000:.1f} s'
-        print(f'{a.file}: {kind}, {n} frame(s), {len(data)} bytes'
+        sound = f', sound {len(v["sound"]) / v["rate"]:.1f} s at {v["rate"]} Hz' if v['sound'] else ''
+        print(f'{a.file}: {kind}, {n} frame(s){sound}, {len(data)} bytes'
               f'{", loops" if v["flags"] & LOOP else ""}')
         if n > 1:
             print(f'record bytes: min {min(sizes)}, mean {sum(sizes) / n:.0f}, max {max(sizes)}')

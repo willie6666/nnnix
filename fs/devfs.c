@@ -5,17 +5,22 @@
  * Opening it for writing takes the display from the console text until the
  * file is closed (also when the program ends or is killed); one writer at a
  * time, others get EBUSY. Writes go to the position modulo 1024, so writing
- * whole frames one after another needs no seeking. */
+ * whole frames one after another needs no seeking.
+ *
+ * audio: the buzzer (drivers/audio.h): unsigned 8-bit mono samples at 8 kHz.
+ * One writer at a time; writes block while the 128 ms buffer is full; the
+ * close plays out what is queued. */
 #include "vfs.h"
 #include "../arch/nuc140/arch.h"
 #include "../kernel/console.h"
 #include "../kernel/task.h"
 #include "../kernel/tty.h"
+#include "../drivers/audio.h"
 #include "../drivers/lcd.h"
 #include "../lib/string.h"
 
-enum { DEV_DIR, DEV_NULL, DEV_ZERO, DEV_TTY, DEV_LED, DEV_LCD };
-static const char *const names[] = { 0, "null", "zero", "tty", "led", "lcd" };
+enum { DEV_DIR, DEV_NULL, DEV_ZERO, DEV_TTY, DEV_LED, DEV_LCD, DEV_AUDIO };
+static const char *const names[] = { 0, "null", "zero", "tty", "led", "lcd", "audio" };
 #define DEVICES (sizeof names / sizeof names[0])
 
 static int find(const char *path)
@@ -32,8 +37,8 @@ static int d_open(struct mount *m, const char *path, int flags, struct file *f)
     if (dev < 0) return flags & O_CREAT ? SYS_EROFS : dev;
     if (dev == DEV_DIR && (flags & O_ACCMODE) != O_RDONLY) return SYS_EISDIR;
     if (dev == DEV_TTY && !task_self()->tty) return SYS_ENODEV;
-    if (dev == DEV_LCD && (flags & O_ACCMODE) != O_RDONLY) {
-        int e = console_lcd_claim();
+    if ((dev == DEV_LCD || dev == DEV_AUDIO) && (flags & O_ACCMODE) != O_RDONLY) {
+        int e = dev == DEV_LCD ? console_lcd_claim() : audio_open();
         if (e) return e;
     }
     f->priv = (void *)(uintptr_t)dev;
@@ -68,6 +73,9 @@ static int d_write(struct file *f, const void *buf, uint32_t n)
         }
         return (int)n;
     }
+    case DEV_AUDIO:
+        if ((f->flags & O_ACCMODE) == O_RDONLY) return SYS_EBADF;
+        return (int)audio_write(buf, n);
     case DEV_DIR: return SYS_EISDIR;
     default: return (int)n;
     }
@@ -75,7 +83,9 @@ static int d_write(struct file *f, const void *buf, uint32_t n)
 
 static int d_close(struct file *f)
 {
-    if ((uintptr_t)f->priv == DEV_LCD && (f->flags & O_ACCMODE) != O_RDONLY) console_lcd_release();
+    if ((f->flags & O_ACCMODE) == O_RDONLY) return 0;
+    if ((uintptr_t)f->priv == DEV_LCD) console_lcd_release();
+    if ((uintptr_t)f->priv == DEV_AUDIO) audio_close();
     return 0;
 }
 

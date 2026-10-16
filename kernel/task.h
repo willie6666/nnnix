@@ -43,6 +43,14 @@ struct task {
     struct tty *tty;                 /* controlling terminal: fd 0/1/2; inherited by children */
     struct file *fds[TASK_FDS];      /* open files; unset 0-2 mean the terminal */
     char *cwd;                       /* kmalloc'd; 0 means "/"; inherited by children */
+    struct loaded_image *image;      /* the loaded program this task runs code of, or 0 */
+};
+
+/* A loaded program's RAM block (kernel/exec.c): the program and every child
+ * it spawns runs code in it, so it is freed with the last of them. */
+struct loaded_image {
+    uint32_t refs;                   /* tasks using it; changed with interrupts off */
+    uint32_t reserved;               /* keeps the code 8-byte aligned */
 };
 
 struct task_info {

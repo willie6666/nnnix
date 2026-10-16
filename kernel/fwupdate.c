@@ -7,6 +7,7 @@
 #include "kmem.h"
 #include "klog.h"
 #include "task.h"
+#include "sync.h"
 #include "../arch/nuc140/arch.h"
 #include "../drivers/spiflash.h"
 #include "../fs/vfs.h"
@@ -91,38 +92,49 @@ static int stage(const char *path, uint8_t *buf)
 
 static int bootloader_present(void) { return fmc_read(0x00100000u) != 0xffffffffu; }
 
+static int status(struct nn_fwinfo *info)
+{
+    struct fw_record r;
+    memset(info, 0, sizeof *info);
+    int e = flash(READ, FW_RECORD_ADDR, &r, sizeof r);
+    if (e) return e;
+    if (!rootfs_legacy() && fw_record_valid(&r)) {   /* in a legacy layout the sector is file system data */
+        info->state = r.state == FW_STAGED ? NN_FW_STAGED : r.state == FW_DONE ? NN_FW_DONE : NN_FW_NONE;
+        info->size = r.size;
+        info->crc = r.crc;
+    }
+    info->bootloader = (uint8_t)bootloader_present();
+    info->boot_ldrom = !(fmc_read(0x00300000u) & 0x80u);    /* CONFIG0 CBS: 0 = LDROM */
+    info->legacy_fs = (uint8_t)rootfs_legacy();
+    return 0;
+}
+
+/* One update operation at a time: staging is many fsd jobs (erase, copy,
+ * read back, record), and a cancel or restart must not land in the middle. */
+static struct mutex busy;
+
 int fw_update(const char *path, int flags, struct nn_fwinfo *info)
 {
-    if (!path && (flags & NN_FW_REBOOT)) {           /* restart through the bootloader */
-        if (!bootloader_present()) return SYS_ENODEV;
-        kprintf("fwupdate: restarting through the bootloader\n");
-        msleep(100);                                 /* let the log reach the serial port */
-        arch_reboot_bootloader();
-    }
-    if (!path && (flags & NN_FW_CANCEL)) {           /* an erased record stages nothing */
-        int e = flash(ERASE, FW_RECORD_ADDR, 0, SPIFLASH_SECTOR);
-        if (!e) kprintf("fwupdate: staged image cancelled\n");
-        return e;
-    }
-    if (!path) {
-        struct fw_record r;
-        memset(info, 0, sizeof *info);
-        int e = flash(READ, FW_RECORD_ADDR, &r, sizeof r);
-        if (e) return e;
-        if (fw_record_valid(&r)) {
-            info->state = r.state == FW_STAGED ? NN_FW_STAGED : r.state == FW_DONE ? NN_FW_DONE : NN_FW_NONE;
-            info->size = r.size;
-            info->crc = r.crc;
+    if (!path && !(flags & (NN_FW_REBOOT | NN_FW_CANCEL))) return status(info);
+    /* The update area is still file system space in a legacy layout. */
+    if (!(flags & NN_FW_REBOOT) && rootfs_legacy()) return SYS_ENOSPC;
+    if (!mutex_trylock(&busy)) return SYS_EBUSY;
+    int e;
+    if (flags & NN_FW_REBOOT) {                      /* restart through the bootloader */
+        e = SYS_ENODEV;
+        if (bootloader_present()) {
+            kprintf("fwupdate: restarting through the bootloader\n");
+            msleep(100);                             /* let the log reach the serial port */
+            arch_reboot_bootloader();
         }
-        info->bootloader = (uint8_t)bootloader_present();
-        info->boot_ldrom = !(fmc_read(0x00300000u) & 0x80u);    /* CONFIG0 CBS: 0 = LDROM */
-        info->legacy_fs = (uint8_t)rootfs_legacy();
-        return 0;
+    } else if (flags & NN_FW_CANCEL) {               /* an erased record stages nothing */
+        e = flash(ERASE, FW_RECORD_ADDR, 0, SPIFLASH_SECTOR);
+        if (!e) kprintf("fwupdate: staged image cancelled\n");
+    } else {
+        uint8_t *buf = kmalloc(CHUNK);
+        e = buf ? stage(path, buf) : SYS_ENOMEM;
+        kfree(buf);
     }
-    if (rootfs_legacy()) return SYS_EBUSY;
-    uint8_t *buf = kmalloc(CHUNK);
-    if (!buf) return SYS_ENOMEM;
-    int e = stage(path, buf);
-    kfree(buf);
+    mutex_unlock(&busy);
     return e;
 }

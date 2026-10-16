@@ -182,13 +182,13 @@ class Telnet:
     """Minimal telnet client: drops option negotiation, reads up to the shell prompt."""
     PROMPT = 'nnnix$ '
 
-    def __init__(self, ns, timeout=5, connect_within=20):
+    def __init__(self, ns, timeout=5, connect_within=20, host=TARGET[0]):
         def connect():
             # telnetd only listens once /etc/rc has finished (or after 10 s): retry refusals.
             deadline = time.monotonic() + connect_within
             while True:
                 try:
-                    return socket.create_connection((TARGET[0], 23), timeout=timeout)
+                    return socket.create_connection((host, 23), timeout=timeout)
                 except OSError:
                     if time.monotonic() > deadline:
                         raise
@@ -897,7 +897,7 @@ def review_tests(ns, serial, report, iface):
 def m6_tests(ns, serial, report):
     """Loadable programs: SDK-built NXE files uploaded to /bin and run by the shell."""
     sdk = REPO / 'sdk/build'
-    programs = {name: (sdk / f'{name}.nxe').read_bytes() for name in ('hello', 'upper', 'primes')}
+    programs = {name: (sdk / f'{name}.nxe').read_bytes() for name in ('hello', 'upper', 'primes', 'spawn')}
     statuses = [ns.call(http_request, 'PUT', f'/bin/{name}', data)[0] for name, data in programs.items()]
     bad = bytearray(programs['hello'])
     bad[40] ^= 0xff                                   # inside the image: the CRC no longer matches
@@ -934,6 +934,16 @@ def m6_tests(ns, serial, report):
         out = t.cmd('damaged') + t.cmd('short') + t.cmd('text') + t.cmd('nosuch')
         report.add('bad programs', out.count('not an executable') == 3 and 'command not found' in out,
                    out.strip().replace('\r\n', ' | '))
+        # A worker spawned by a loaded program keeps the program's image: the
+        # program returns at once, primes then allocates while the worker computes.
+        out = t.cmd('spawn wait', 10)
+        mark = len(serial.lines)
+        out += t.cmd('spawn') + t.cmd('primes 20000', 10)
+        time.sleep(3)
+        alive = t.cmd('uname')
+        fault = serial.wait_for(r'HardFault|PANIC', 1, mark)
+        report.add('program children', 'worker done' in out and 'nnnix' in alive and fault is None
+                   and '2262 primes' in out, out.strip().replace('\r\n', ' | '))
         out = t.cmd('cp /bin/hello /usb/hello.nxe', 10) + t.cmd('/usb/hello.nxe from usb', 10)
         t.cmd('rm /usb/hello.nxe')
         report.add('program from usb', 'argv[1] = from' in out, out.strip().replace('\r\n', ' | '))
@@ -948,8 +958,12 @@ def m6_tests(ns, serial, report):
 
 def m7_tests(ns, serial, report, image):
     """Firmware update through the LDROM bootloader (CONFIG0 set to start in LDROM)."""
+    # The running build plus a word after its end: never executed, but a CRC of
+    # its own, so the bootloader really installs it (an image identical to APROM
+    # is only marked installed).
     data = image.read_bytes()
-    padded = data + b'\xff' * (-len(data) % 4)
+    data += b'\xff' * (-len(data) % 4) + struct.pack('<I', int(time.time()))
+    padded = data
     crc = f'{zlib.crc32(padded) & 0xffffffff:08x}'
     statuses = [ns.call(http_request, 'PUT', '/home/nnnix.bin', data)[0],
                 ns.call(http_request, 'PUT', '/home/notfw.bin', b'this is not a firmware image\n' * 4)[0]]
@@ -958,6 +972,17 @@ def m7_tests(ns, serial, report, image):
     info = t.cmd('fwupdate')
     report.add('fwupdate status', 'bootloader: in LDROM' in info and 'power-on boot: LDROM' in info
                and all(s in (201, 204) for s in statuses), info.strip().replace('\r\n', ' | '))
+    # One update operation at a time: a cancel and a second staging during a staging are refused.
+    t2 = Telnet(ns)
+    t2.read_until(Telnet.PROMPT)
+    t.send('fwupdate -n /home/nnnix.bin\r\n')
+    time.sleep(1)
+    busy = t2.cmd('fwupdate -c') + t2.cmd('fwupdate -n /home/nnnix.bin')
+    staged = t.read_until(Telnet.PROMPT, 30)
+    cancelled = t2.cmd('fwupdate -c') + t2.cmd('fwupdate')
+    t2.send('exit\r\n'); t2.wait_closed(); t2.close()
+    report.add('fwupdate one at a time', busy.count('another update operation is running') == 2 and 'staged; it is installed' in staged
+               and 'nothing staged' in cancelled and 'update area: empty' in cancelled, busy.strip().replace('\r\n', ' | '))
     out = t.cmd('fwupdate -n /home/notfw.bin', 20) + t.cmd('fwupdate -n /home/missing.bin')
     report.add('fwupdate refuses', 'not an APROM image' in out and 'no such file' in out, out.strip().replace('\r\n', ' | '))
 
@@ -983,6 +1008,7 @@ def m7_tests(ns, serial, report, image):
 
     # Interrupted: stage only, then (connecting halts the chip at the bootloader's
     # entry) let the bootloader work for 1 s and reset it in the middle.
+    ns.call(http_request, 'PUT', '/home/nnnix.bin', data[:-4] + struct.pack('<I', int(time.time()) + 1))
     out = t.cmd('fwupdate -n /home/nnnix.bin', 30)
     t.send('exit\r\n'); t.wait_closed(); t.close()
     mark = len(serial.lines)

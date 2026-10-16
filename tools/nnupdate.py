@@ -51,7 +51,7 @@ def update(ns, host, data):
             if time.monotonic() > deadline:
                 raise
             time.sleep(1)
-    t = Telnet(ns)
+    t = Telnet(ns, host=host)
     t.read_until(Telnet.PROMPT)
     before = t.cmd('uname').strip()
     print(f'running: {before}')
@@ -68,7 +68,7 @@ def update(ns, host, data):
     # the old firmware's sockets without anyone answering: wait for a prompt.
     while True:
         try:
-            t = Telnet(ns, timeout=5, connect_within=5)
+            t = Telnet(ns, timeout=5, connect_within=5, host=host)
             t.read_until(Telnet.PROMPT, 5)
             break
         except (OSError, TimeoutError, ConnectionError):
@@ -93,6 +93,8 @@ def main():
     data = args.image.read_bytes()
     if not 8 <= len(data) <= 128 * 1024:
         parser.error('not an APROM image (8 bytes to 128 KiB)')
+    if args.iface and args.host != '198.18.0.2':
+        parser.error('--iface uses the isolated 198.18.0.0/30 test network')
     if args.iface and os.geteuid() != 0:
         parser.error('--iface requires root for the temporary network namespace')
     try:

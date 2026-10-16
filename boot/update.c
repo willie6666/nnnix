@@ -71,15 +71,21 @@ int boot_decide(const struct boot_hw *hw)
         have = 0;
     }
     /* A staged image (also one whose programming was interrupted) is written
-     * now; a done one again only if APROM no longer holds a firmware. */
-    if (have && (r.state == FW_STAGED || !aprom_valid(hw))) {
+     * now, unless APROM already holds exactly it (only marking it done failed
+     * or was cut short); a done one again only if APROM no longer holds a
+     * firmware. */
+    if (have && r.state == FW_STAGED && aprom_crc(hw, r.size) == r.crc) {
+        hw->log("boot: update already in APROM\n");
+    } else if (have && (r.state == FW_STAGED || !aprom_valid(hw))) {
         hw->log(r.state == FW_STAGED ? "boot: installing update\n" : "boot: APROM empty, restoring\n");
         if (program(hw, &r)) return BOOT_STAY;
-        if (r.state == FW_STAGED) {
-            uint32_t done = FW_DONE;
-            hw->spi_program(FW_RECORD_ADDR + (uint32_t)((uint8_t *)&r.state - (uint8_t *)&r), &done, 4);
-        }
         hw->log("boot: APROM written and verified\n");
+    }
+    if (have && r.state == FW_STAGED) {
+        uint32_t addr = FW_RECORD_ADDR + (uint32_t)((uint8_t *)&r.state - (uint8_t *)&r), state = FW_DONE;
+        int e = hw->spi_program(addr, &state, 4);
+        hw->spi_read(addr, &state, 4);
+        if (e || state != FW_DONE) hw->log("boot: could not mark the update installed\n");
     }
     if (!aprom_valid(hw)) { hw->log("boot: no firmware in APROM\n"); return BOOT_STAY; }
     return BOOT_RUN_APROM;

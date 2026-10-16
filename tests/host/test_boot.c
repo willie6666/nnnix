@@ -8,13 +8,14 @@
 
 static uint8_t spi[2u * 1024u * 1024u];
 static uint32_t aprom[AP_SIZE / 4];
-static int writes, erases, fail_after = -1;
+static int writes, erases, fail_after = -1, spi_fail;
 static char log_text[1024];
 
 static void spi_read(uint32_t addr, void *buf, uint32_t n) { memcpy(buf, spi + addr, n); }
 static int spi_program(uint32_t addr, const void *buf, uint32_t n)
 {
     const uint8_t *p = buf;
+    if (spi_fail) return -1;                          /* nothing written */
     for (uint32_t i = 0; i < n; ++i) spi[addr + i] &= p[i];
     return 0;
 }
@@ -94,6 +95,21 @@ int main(void)
     fail_after = -1;
     CHECK_EQ_INT(boot(), BOOT_RUN_APROM);
     CHECK(!memcmp(aprom, img, sizeof img));
+    CHECK_EQ_INT(record().state, FW_DONE);
+
+    /* Marking the update done fails: APROM is right, so the next boot only
+     * marks it, without erasing and writing APROM again. */
+    make_image(img, sizeof img, 3);
+    stage(img, sizeof img, crc32(img, sizeof img));
+    spi_fail = 1;
+    CHECK_EQ_INT(boot(), BOOT_RUN_APROM);
+    CHECK(strstr(log_text, "could not mark") != NULL);
+    CHECK_EQ_INT(record().state, FW_STAGED);
+    CHECK(!memcmp(aprom, img, sizeof img));
+    spi_fail = 0;
+    CHECK_EQ_INT(boot(), BOOT_RUN_APROM);
+    CHECK_EQ_INT(writes + erases, 0);
+    CHECK(strstr(log_text, "already in APROM") != NULL);
     CHECK_EQ_INT(record().state, FW_DONE);
 
     /* APROM erased later: restored from the stored image. */

@@ -365,8 +365,9 @@ reboot -p            restart like power-on (through the bootloader)
 The image goes to an area at the end of the SPI flash, outside the file
 system, and is read back before it counts as staged. The bootloader then
 writes APROM and verifies it; if a reset or power loss interrupts that, it
-starts over at the next power-on. The old firmware keeps running if anything
-fails before the restart. `reboot` (without `-p`) restarts APROM directly.
+starts over at the next power-on; if APROM already holds the staged image, it
+is only marked installed. The old firmware keeps running if anything fails
+before the restart. Only one update operation runs at a time. `reboot` (without `-p`) restarts APROM directly.
 
 A staged image is also installed after programming APROM with Nu-Link (the
 programmer resets the chip through the bootloader): `fwupdate -c` first if that

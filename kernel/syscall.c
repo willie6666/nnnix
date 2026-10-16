@@ -85,8 +85,9 @@ static int32_t sys_alloc_k(uint32_t n, uint32_t flags)
 static int32_t sys_free_k(void *p) { kfree(p); return 0; }
 
 /* Child programs: the argv copy lives in one block owned by the task. A loaded
- * program (image != 0) gets the library table as a third argument, and its
- * image block is owned by the task, so it is freed when the task is reaped. */
+ * program (image != 0) gets the library table as a third argument. The task
+ * holds a reference to the image; so does any child a loaded program spawns,
+ * since it runs code from the same image (task_free drops it). */
 struct spawn_block { int (*main)(int, char **); void *image; int argc; char *argv[]; };
 
 static void spawn_entry(void *arg)
@@ -96,7 +97,7 @@ static void spawn_entry(void *arg)
     task_exit(b->main(b->argc, b->argv));
 }
 
-int spawn_child(const struct nn_spawn *req, void *image)
+int spawn_child(const struct nn_spawn *req, struct loaded_image *image)
 {
     if (!req->main || req->argc < 1 || req->argc > 12 || req->stack < 512u || req->stack > 4096u) return SYS_EINVAL;
     uint32_t size = sizeof(struct spawn_block) + (uint32_t)(req->argc + 1) * sizeof(char *);
@@ -121,7 +122,8 @@ int spawn_child(const struct nn_spawn *req, void *image)
     if (t) {
         t->user = 1;
         t->owned = b;
-        if (image) kmem_set_owner(image, t->pid);
+        t->image = image ? image : task_self()->image;
+        if (t->image) t->image->refs++;
         if (in) { in->refs++; t->fds[0] = in; }
         if (out) { out->refs++; t->fds[1] = out; }
     }

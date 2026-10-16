@@ -90,7 +90,7 @@ pid name prio state stack_used stack_size cpu_ms
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 130 checks) | Result |
+| On-target tests (`make test`, 132 checks) | Result |
 | --- | --- |
 | Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
 | Two sessions reading two different files on the single-file CH376S at once | pass |
@@ -114,10 +114,10 @@ pid name prio state stack_used stack_size cpu_ms
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot | pass |
-| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5912 B (test limit 5600 B) |
+| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5856 B (test limit 5600 B) |
 | Code size / static RAM including crash records / main stack / heap | 88 KiB / 2.5 KiB / 512 B / 12.9 KiB |
 
-Host tests: 1536 checks pass (including littlefs on a RAM flash and usbfs against a CH376S model), plus 80 243
+Host tests: 1544 checks pass (including littlefs on a RAM flash and usbfs against a CH376S model), plus 80 243
 date conversions compared with the host C library.
 
 ## Hardware

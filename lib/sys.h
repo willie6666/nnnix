@@ -122,7 +122,7 @@ struct nn_fwinfo {
     uint32_t state, size, crc;         /* the update area's record */
     uint8_t bootloader;                /* LDROM holds a program */
     uint8_t boot_ldrom;                /* CONFIG0 starts the chip in LDROM */
-    uint8_t legacy_fs;                 /* "/" still covers the update area (mkfs / first) */
+    uint8_t legacy_fs;                 /* "/" still covers the update area (mkfs / first): ENOSPC */
 };
 
 /* Network. Sockets are W5500 hardware sockets; connect and listen do not wait:

@@ -3,6 +3,7 @@
  * the VFS straight into the program's RAM block, patched and started. */
 #include "exec.h"
 #include "kmem.h"
+#include "task.h"
 #include "../fs/vfs.h"
 #include "../lib/string.h"
 
@@ -42,7 +43,12 @@ int exec_program(const struct nn_exec *req)
     uint32_t crc = ~0u;
     int e = read_all(fd, &h, sizeof h);
     if (!e && !header_ok(&h)) e = SYS_ENOEXEC;
-    if (!e && !(image = kmalloc(h.image + h.bss))) e = SYS_ENOMEM;
+    struct loaded_image *block = 0;
+    if (!e && !(block = kmalloc(sizeof *block + h.image + h.bss))) e = SYS_ENOMEM;
+    if (block) {
+        block->refs = 0;
+        image = (uint8_t *)(block + 1);              /* 8-byte aligned, like the block */
+    }
     if (!e) e = read_all(fd, image, h.image);
     if (!e) crc = lfs_crc(crc, image, h.image);
     /* Each listed word holds an address as linked at 0: add where it really is. */
@@ -60,11 +66,11 @@ int exec_program(const struct nn_exec *req)
     }
     if (!e && ~crc != h.crc) e = SYS_ENOEXEC;         /* damaged or truncated upload */
     vfs_close(fd);
-    if (e) { kfree(image); return e; }
+    if (e) { kfree(block); return e; }
     memset(image + h.image, 0, h.bss);
     struct nn_spawn sp = { (int (*)(int, char **))(void *)(image + h.entry), req->argv, req->argc,
                            req->fd_in, req->fd_out, h.stack ? h.stack : DEFAULT_STACK };
-    int pid = spawn_child(&sp, image);
-    if (pid < 0) kfree(image);
+    int pid = spawn_child(&sp, block);
+    if (pid < 0) kfree(block);
     return pid;
 }

@@ -233,10 +233,13 @@ static int task_free(struct task *t)
     uint32_t *block = t->stack;
     char *cwd = t->cwd;
     void *owned = t->owned;
+    struct loaded_image *image = t->image;
+    if (image && --image->refs) image = 0;          /* still used by a relative */
     int left = kmem_free_owned(t->pid);
     for (int i = 0; i < TASK_MAX; ++i) if (tasks[i] == t) tasks[i] = 0;
     kfree(cwd);
     kfree(owned);
+    kfree(image);
     kfree(block);
     return left;
 }

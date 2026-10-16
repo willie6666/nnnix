@@ -490,6 +490,17 @@ the date conversions (28 new bootloader checks against modelled NOR flashes).
 - A staged image is installed by the next boot through the bootloader, also right after programming APROM with
   Nu-Link: `fwupdate -c` cancels it. `fwupdate` cancels it itself if the restart fails.
 
+**M6/M7 review fixes (2026-10-16)**: a review of `9860e59..bbfc415` reported five problems (R16-R20), all
+confirmed and fixed; `make test` 132/132, `make host-test` 1544 checks plus the date conversions.
+
+| ID | Problem | Fix |
+| --- | --- | --- |
+| R16 | `fwupdate -c` erased the record sector even while an old file system still covered it | every write to the update area checks the layout first (ENOSPC) |
+| R17 | A child spawned by a loaded program ran code from the program's image, which was freed when the program was reaped | the image block has a reference count; the program and every child it spawns hold one, the last reaped frees it (`spawn` example and board test: the worker computes while `primes` allocates) |
+| R18 | Staging, cancel and restart were serialized per flash job only; two stagings could both report success and leave an invalid record | one update operation at a time; others get EBUSY ("another update operation is running") |
+| R19 | `nnupdate --host` uploaded to the given host but ran the update on 198.18.0.2 | the same host for every connection; `--iface` only with the test network |
+| R20 | The bootloader ignored a failure to mark the update done, so every later boot erased and wrote APROM again | the result is read back and reported; a staged image that APROM already holds (CRC) is only marked installed, without writing APROM |
+
 ## 8. Source layout
 
 ```

@@ -272,3 +272,37 @@ Programs use sockets through system calls (`socket`, `connect`, `listen`,
 `sockinfo`, then `read`/`write`/`close` like files; see `lib/sys.h`). `connect`
 and `listen` do not wait: programs poll `sockinfo` for the state, which keeps
 Ctrl-C working while they wait.
+
+
+## Settings and RAM
+
+nnnix has about 13 KiB of heap. Shells are what use it up: each one, on the LCD
+or over telnet, costs about 1.5-1.7 KiB (stack, task and shell state) while it
+runs. `sysctl` turns such features off, or makes them start only when needed:
+
+```
+sysctl                     list the settings
+sysctl -h                  explain them
+sysctl console=ask         LCD shell only after Enter (the default)
+sysctl idle_logout=600     log out terminals idle for 10 minutes; 0 never
+sysctl telnet_max=1 httpd=off
+free                       heap, and how much of it is task stacks
+```
+
+| Setting | Values | RAM effect |
+| --- | --- | --- |
+| `console` | `off`, `ask`, `on` | `ask` (default): the LCD shows "Press Enter to log in." and the shell exists only while someone uses it. `on`: a shell always, restarted after logout. `off`: no shell; a running one logs out at once |
+| `idle_logout` | seconds, `0` = never | a terminal without input for that long reads as end of file, so its shell logs out and frees its RAM. Busy commands are not interrupted. With `console=on` a new console shell starts right away |
+| `telnet_max` | `0`-`3` | how many telnet sessions are accepted at once; sessions already open stay |
+| `telnetd`, `httpd` | `on`, `off` | the same as `service ... start/stop`; idle servers cost no RAM, only their sessions do |
+
+Settings last until the next reset; put them in `/etc/rc` to apply them at boot,
+for example:
+
+```
+sysctl console=ask idle_logout=900 telnet_max=2
+```
+
+Other memory is fixed: the kernel daemon, the file system task and the idle
+task (about 3 KiB of stacks), and about 2.6 KiB of static data. `ps` shows each
+task's stack size and the most it has used.

@@ -49,5 +49,6 @@ int      w5500_push(int sn);                        /* SEND queued data, pipelin
 int      w5500_send(int sn, const void *buf, uint16_t n, uint32_t timeout_ms);
 int      w5500_flush(int sn, uint32_t timeout_ms);  /* until the peer ACKed everything */
 void     w5500_disconnect(int sn, uint32_t timeout_ms);
+uint32_t w5500_missed_send_ok(void);               /* SENDs that completed without SEND_OK */
 
 #endif

@@ -10,7 +10,7 @@
 #define SRX(sn)  ((uint8_t)(3u + 4u * (unsigned)(sn)))
 enum { Sn_MR = 0x00, Sn_CR = 0x01, Sn_IR = 0x02, Sn_SR = 0x03, Sn_PORT = 0x04,
        Sn_RXBUF = 0x1e, Sn_TXBUF = 0x1f, Sn_TX_FSR = 0x20, Sn_TX_WR = 0x24,
-       Sn_RX_RSR = 0x26, Sn_RX_RD = 0x28, Sn_IMR = 0x2c };
+       Sn_TX_RD = 0x22, Sn_RX_RSR = 0x26, Sn_RX_RD = 0x28, Sn_IMR = 0x2c };
 enum { SIR = 0x0017, SIMR = 0x0018 };
 enum { CR_OPEN = 0x01, CR_LISTEN = 0x02, CR_CONNECT = 0x04, CR_DISCON = 0x08, CR_CLOSE = 0x10,
        CR_SEND = 0x20, CR_RECV = 0x40 };
@@ -18,7 +18,12 @@ enum { IR_TIMEOUT = 0x08, IR_SEND_OK = 0x10 };
 
 static uint16_t tx_size[8];
 static uint16_t queued[8];           /* bytes written since the last SEND */
-static uint8_t send_pending;         /* bit per socket: a SEND awaits SEND_OK */
+/* A SEND awaits SEND_OK. One byte per socket, not a shared bit mask: tasks on
+ * different sockets update theirs concurrently, and a read-modify-write of a
+ * shared mask lost updates (a stuck flag made every later send wait 5 s; a lost
+ * one let a SEND overtake the previous one, which drops data). */
+static volatile uint8_t send_pending[8];
+static uint32_t missed_send_ok;     /* SENDs completed without a SEND_OK (statistics) */
 static uint8_t events[8];            /* Sn_IR bits read (and cleared on the chip) but not consumed */
 static void (*notify)(void);         /* INTn fell */
 static struct sem sock_ev[8];        /* something happened on socket n */
@@ -59,6 +64,8 @@ static void command(int sn, uint8_t cmd)
     uint32_t start = jiffies;
     while (r8(Sn_CR, SREG(sn)) && jiffies - start < 100u) { }
 }
+
+uint32_t w5500_missed_send_ok(void) { return missed_send_ok; }
 
 int w5500_present(void) { return r8(0x0039, 0) == 0x04; }
 
@@ -126,13 +133,13 @@ void w5500_configure(const struct w5500_netcfg *cfg, const uint8_t buffer_kib[8]
     uint8_t simr = 0;
     for (int sn = 0; sn < 8; ++sn) if (buffer_kib[sn]) simr |= (uint8_t)(1u << sn);
     w8(SIMR, 0, simr);
-    send_pending = 0;
+    for (int sn = 0; sn < 8; ++sn) send_pending[sn] = 0;
 }
 
 static void reset_state(int sn)
 {
     w8(Sn_IR, SREG(sn), 0x1f);
-    send_pending &= (uint8_t)~(1u << sn);
+    send_pending[sn] = 0;
     queued[sn] = 0;
     consume(sn, 0xff);
 }
@@ -235,23 +242,34 @@ uint16_t w5500_tx_room(int sn)
 
 static int wait_send_ok(int sn, uint32_t timeout_ms)
 {
-    if (!(send_pending & (1u << sn))) return 0;
+    if (!send_pending[sn]) return 0;
     uint32_t start = jiffies;
     for (;;) {
         uint8_t ir = read_events(sn);
         if (ir & IR_SEND_OK) {
             consume(sn, IR_SEND_OK);
-            send_pending &= (uint8_t)~(1u << sn);
+            send_pending[sn] = 0;
             return 0;
         }
         /* A FIN closes only the peer's sending direction. W5500 permits SEND
          * in CLOSE_WAIT; keep waiting for SEND_OK so the reply reaches it. */
         if (ir & IR_TIMEOUT) {                      /* TCP gave up, or UDP found no ARP answer */
             consume(sn, IR_TIMEOUT);
-            send_pending &= (uint8_t)~(1u << sn);
+            send_pending[sn] = 0;
             return -1;
         }
         if (!w5500_can_send(sn) || jiffies - start > timeout_ms) return -1;
+        /* Measured (a new telnet session, about 1 in 20): SEND_OK never came
+         * although everything was sent and acknowledged; likely an earlier
+         * SEND took data queued just after it, leaving a SEND with nothing to
+         * do. An empty buffer with the read pointer at the write pointer means
+         * the SEND is complete either way. */
+        if (jiffies - start > 20u && w5500_tx_free(sn) == tx_size[sn] &&
+            r16(Sn_TX_RD, SREG(sn)) == r16(Sn_TX_WR, SREG(sn))) {
+            send_pending[sn] = 0;
+            missed_send_ok++;
+            return 0;
+        }
         w5500_wait(sn, 1);
     }
 }
@@ -262,7 +280,7 @@ int w5500_push(int sn)
      * is ignored, which loses the tail of a stream. */
     if (wait_send_ok(sn, 5000)) return -1;
     command(sn, CR_SEND);
-    send_pending |= (uint8_t)(1u << sn);
+    send_pending[sn] = 1;
     queued[sn] = 0;
     return 0;
 }

@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 extern uint32_t __data_load, __data_start, __data_end, __bss_start, __bss_end;
-extern unsigned char __stack_top;
+extern unsigned char __boot_stack_top;
 void kmain(void);
 
 void Reset_Handler(void)
@@ -25,7 +25,7 @@ void UART1_IRQHandler(void);
 
 #define DEFAULT (uintptr_t)Default_Handler
 __attribute__((section(".vectors"), used)) const uintptr_t vectors[48] = {
-    (uintptr_t)&__stack_top,
+    (uintptr_t)&__boot_stack_top,         /* see link.ld */
     (uintptr_t)Reset_Handler,
     DEFAULT,                          /* NMI */
     (uintptr_t)HardFault_Handler,

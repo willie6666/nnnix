@@ -5,7 +5,7 @@
 
 /* Preemptive scheduler: fixed priorities (0 = highest, 7 = idle), round-robin
  * between equal priorities with a 10 ms time slice, 1 ms tick. */
-#define TASK_MAX        10           /* idle, kd, 4 shells, diag worker, 3 spare */
+#define TASK_MAX        12           /* table of pointers: idle, fsd, kd, 4 shells, workers, pipeline stages */
 #define TASK_PRIO_IDLE  7
 #define TASK_REDZONE    128u         /* a saved sp this close to the stack bottom is an overflow */
 #define ETIMEDOUT       110

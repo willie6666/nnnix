@@ -26,9 +26,10 @@ struct session {
 };
 
 static struct session *sessions[NET_TELNET_SOCKS];
+static volatile uint8_t max_sessions = NET_TELNET_SOCKS;   /* sysctl telnet_max */
 static struct listener listeners[NET_TELNET_SOCKS];
 
-static int session_getc(void *ctx)
+static int session_getc(void *ctx, uint32_t timeout_ms)
 {
     struct session *s = ctx;
     for (;;) {
@@ -36,7 +37,8 @@ static int session_getc(void *ctx)
             int c = telnet_rx(&s->tn, s->rx[s->rpos++]);
             if (c >= 0) return c;
         }
-        int n = net_recv(s->sn, s->rx, sizeof s->rx, 0);
+        int n = net_recv(s->sn, s->rx, sizeof s->rx, timeout_ms);
+        if (n == -ETIMEDOUT) return TTY_TIMEOUT;
         if (n <= 0) return -1;
         s->rlen = (uint8_t)n;
         s->rpos = 0;
@@ -119,11 +121,26 @@ static void finish(int i)
 
 void telnetd_poll(void)
 {
+    int active = 0;
+    for (int i = 0; i < NET_TELNET_SOCKS; ++i) active += sessions[i] != 0;
     for (int i = 0; i < NET_TELNET_SOCKS; ++i) {
         struct session *s = sessions[i];
         if (s) { if (s->done && (!s->task || s->task->state == TASK_ZOMBIE)) finish(i); }
-        else if (listener_poll(&listeners[i], net_services & NN_SVC_TELNETD)) start(i);
+        else if (listener_poll(&listeners[i], (net_services & NN_SVC_TELNETD) && active < max_sessions)) {
+            start(i);
+            active++;
+        }
     }
+}
+
+int telnetd_max_sessions(int n)
+{
+    if (n > NET_TELNET_SOCKS) return -1;
+    if (n >= 0 && n != max_sessions) {
+        max_sessions = (uint8_t)n;
+        kprintf("telnetd: at most %d sessions\n", n);
+    }
+    return max_sessions;
 }
 
 void telnetd_init(void)

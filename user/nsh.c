@@ -63,6 +63,12 @@ static int cmd_free(int argc, char **argv)
     sys_meminfo(&m);
     printf("heap: total %u B, free %u B, largest block %u B, %u free blocks\n",
            m.total, m.free, m.largest, m.free_blocks);
+    struct task_info info[4];        /* paged: the shell stack is small */
+    uint32_t stacks = 0, tasks = 0;
+    for (int skip = 0, n; (n = sys_ps(info, 4, skip)) > 0; skip += n)
+        for (int i = 0; i < n; ++i) { stacks += info[i].stack_size; ++tasks; }
+    uint32_t used = m.total - m.free;
+    printf("used: %u B task stacks (%u tasks), %u B other\n", stacks, tasks, used > stacks ? used - stacks : 0);
     return 0;
 }
 
@@ -161,6 +167,7 @@ static const struct command commands[] = {
     { "ifconfig", cmd_ifconfig, "network address" },
     { "dhcp", cmd_dhcp, "get an address by DHCP" },
     { "service", cmd_service, "start/stop telnetd, httpd" },
+    { "sysctl", cmd_sysctl, "settings: console, idle logout..." },
     { "netstat", cmd_netstat, "network sockets" },
     { "nc", cmd_nc, "TCP/UDP client or server" },
     { "ntpdate", cmd_ntpdate, "set the clock from NTP" },

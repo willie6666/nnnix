@@ -9,7 +9,9 @@
 #define SLICE_MS   10u
 #define STACK_FILL 0x5354434bu       /* "STCK": painted on new stacks for high-water marks */
 
-static struct task tasks[TASK_MAX];
+/* A task's struct lives in the same block as its stack, just above the stack
+ * top (where an overflow does not reach it first); the table holds pointers. */
+static struct task *tasks[TASK_MAX];
 void *sched_current;                 /* struct task *, read by PendSV */
 static int running;
 static uint16_t next_pid = 1;
@@ -100,8 +102,8 @@ static struct task *pick(void)
 {
     struct task *best = 0;
     for (int i = 0; i < TASK_MAX; ++i) {
-        struct task *t = &tasks[i];
-        if (t->state != TASK_READY) continue;
+        struct task *t = tasks[i];
+        if (!t || t->state != TASK_READY) continue;
         if (!best || t->prio < best->prio ||
             (t->prio == best->prio && (t->preempted > best->preempted ||
                                        (t->preempted == best->preempted && t->last_run < best->last_run))))
@@ -137,15 +139,15 @@ void sched_tick(void)
     int resched = 0;
     c->cpu_ms++;
     for (int i = 0; i < TASK_MAX; ++i) {
-        struct task *t = &tasks[i];
-        if ((t->state == TASK_SLEEPING || t->state == TASK_BLOCKED) && t->wake_at &&
+        struct task *t = tasks[i];
+        if (t && (t->state == TASK_SLEEPING || t->state == TASK_BLOCKED) && t->wake_at &&
             (int32_t)(jiffies - t->wake_at) >= 0) {
             sched_wake(t, -ETIMEDOUT);       /* pends a switch if it outranks the current task */
         }
     }
     if (c->slice && --c->slice == 0) {
         for (int i = 0; i < TASK_MAX; ++i)
-            if (&tasks[i] != c && tasks[i].state == TASK_READY && tasks[i].prio == c->prio) resched = 1;
+            if (tasks[i] && tasks[i] != c && tasks[i]->state == TASK_READY && tasks[i]->prio == c->prio) resched = 1;
         if (!resched) c->slice = SLICE_MS;          /* nobody to share with: keep going */
     }
     if (resched) arch_pend_switch();
@@ -159,13 +161,16 @@ struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
 {
     stack_bytes = (stack_bytes + 7u) & ~7u;
     if (stack_bytes < TASK_REDZONE + 128u || prio > TASK_PRIO_IDLE) return 0;
-    uint32_t *stack = (flags & TASK_LONG_LIVED) ? kmalloc_high(stack_bytes) : kmalloc(stack_bytes);
+    uint32_t size = stack_bytes + (uint32_t)((sizeof(struct task) + 7u) & ~7u);
+    uint32_t *stack = (flags & TASK_LONG_LIVED) ? kmalloc_high(size) : kmalloc(size);
     if (!stack) return 0;
     for (uint32_t i = 0; i < stack_bytes / 4u; ++i) stack[i] = STACK_FILL;
+    struct task *t = (struct task *)((char *)stack + stack_bytes);
     uint32_t s = irq_save();
-    struct task *t = 0;
-    for (int i = 0; i < TASK_MAX && !t; ++i) if (tasks[i].state == TASK_UNUSED) t = &tasks[i];
-    if (!t) { irq_restore(s); kfree(stack); return 0; }
+    int slot = 0;
+    while (slot < TASK_MAX && tasks[slot]) ++slot;
+    if (slot == TASK_MAX) { irq_restore(s); kfree(stack); return 0; }
+    tasks[slot] = t;
     *t = (struct task){ .stack = stack, .stack_size = stack_bytes, .name = name, .pid = next_pid++,
                         .prio = prio, .detached = (uint8_t)(flags & TASK_DETACHED), .slice = SLICE_MS,
                         .ppid = running ? cur()->pid : 0 };
@@ -188,8 +193,8 @@ void task_exit(int code)
     uint32_t s = irq_save();
     struct task *t = cur();
     for (int i = 0; i < TASK_MAX; ++i) {          /* hang up the children */
-        struct task *c = &tasks[i];
-        if (c->state == TASK_UNUSED || c == t || c->ppid != t->pid) continue;
+        struct task *c = tasks[i];
+        if (!c || c == t || c->ppid != t->pid) continue;
         c->detached = 1;
         c->ppid = 0;
         if (c->user && c->state != TASK_ZOMBIE) {
@@ -206,18 +211,16 @@ void task_exit(int code)
     for (;;) { }
 }
 
+/* Frees the struct too: no pointer to t may be used afterwards. */
 static void task_free(struct task *t)
 {
-    uint32_t *stack = t->stack;
+    uint32_t *block = t->stack;
     char *cwd = t->cwd;
     void *owned = t->owned;
-    t->state = TASK_UNUSED;
-    t->stack = 0;
-    t->cwd = 0;
-    t->owned = 0;
-    kfree(stack);
+    for (int i = 0; i < TASK_MAX; ++i) if (tasks[i] == t) tasks[i] = 0;
     kfree(cwd);
     kfree(owned);
+    kfree(block);
 }
 
 int task_join(struct task *t, uint32_t *cpu_ms)
@@ -258,7 +261,7 @@ void task_sleep(uint32_t ms)
 static struct task *find(uint16_t pid)
 {
     for (int i = 0; i < TASK_MAX; ++i)
-        if (tasks[i].state != TASK_UNUSED && tasks[i].pid == pid) return &tasks[i];
+        if (tasks[i] && tasks[i]->pid == pid) return tasks[i];
     return 0;
 }
 
@@ -299,7 +302,7 @@ int task_tty_users(const struct tty *tty)
     int n = 0;
     uint32_t s = irq_save();
     for (int i = 0; i < TASK_MAX; ++i)
-        if (tasks[i].state != TASK_UNUSED && tasks[i].state != TASK_ZOMBIE && tasks[i].tty == tty) ++n;
+        if (tasks[i] && tasks[i]->state != TASK_ZOMBIE && tasks[i]->tty == tty) ++n;
     irq_restore(s);
     return n;
 }
@@ -309,8 +312,8 @@ int task_list(struct task_info *out, int max, int skip)
     int n = 0;
     uint32_t s = irq_save();
     for (int i = 0; i < TASK_MAX && n < max; ++i) {
-        struct task *t = &tasks[i];
-        if (t->state == TASK_UNUSED || skip-- > 0) continue;
+        struct task *t = tasks[i];
+        if (!t || skip-- > 0) continue;
         uint32_t untouched = 0;
         if (t->stack) while (untouched < t->stack_size / 4u && t->stack[untouched] == STACK_FILL) untouched++;
         out[n++] = (struct task_info){ t->name, t->pid, t->prio, t->state, t->stack_size,
@@ -326,10 +329,9 @@ static void idle_main(void *arg)
     (void)arg;
     for (;;) {
         for (int i = 0; i < TASK_MAX; ++i) {
-            struct task *t = &tasks[i];
             uint32_t s = irq_save();
-            int reap = t->state == TASK_ZOMBIE && t->detached;
-            if (reap) task_free(t);
+            struct task *t = tasks[i];
+            if (t && t->state == TASK_ZOMBIE && t->detached) task_free(t);
             irq_restore(s);
         }
         __asm volatile("wfi");
@@ -339,7 +341,7 @@ static void idle_main(void *arg)
 void sched_init(void)
 {
     arch_sched_init();
-    idle = task_spawn("idle", idle_main, 0, 384, TASK_PRIO_IDLE, 0);
+    idle = task_spawn("idle", idle_main, 0, 256, TASK_PRIO_IDLE, 0);    /* uses about 80 B */
     if (!idle) panic("cannot create idle task");
 }
 

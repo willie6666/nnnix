@@ -31,5 +31,6 @@ int cmd_netstat(int argc, char **argv);
 int cmd_nc(int argc, char **argv);
 int cmd_ntpdate(int argc, char **argv);
 int cmd_ed(int argc, char **argv);
+int cmd_sysctl(int argc, char **argv);
 
 #endif

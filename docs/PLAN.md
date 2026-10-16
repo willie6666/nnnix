@@ -4,7 +4,8 @@
 NU-LB_002 board (NUC140VE3CN).
 
 Created 2026-10-15. Status: **M5 done** (2026-10-16): scripts, text tools, HTTP transfer (M5a), pipes, jobs,
-Ctrl-C (M5b), and the editor, clock and network tools (M5c). Next: M6 loadable programs.
+Ctrl-C (M5b), and the editor, clock and network tools (M5c); then a second RAM diet with run-time settings.
+Next: M6 loadable programs.
 
 ## 1. Goals
 
@@ -64,9 +65,9 @@ Design points:
 
 ## 4. Memory budget
 
-SRAM 16 KiB. Measured after the RAM diet: static 2.4 KiB, `.noinit` 384 B, MSP 768 B, heap 13.1 KiB
-(idle 384 B and kd 1024 B stacks, console shell 1152 B; 10.4 KiB free; each telnet session about 1.3 KiB).
-The original estimate:
+SRAM 16 KiB. Measured after the second RAM diet (after M5): static 2.2 KiB plus `.noinit` 360 B, MSP 512 B,
+heap 13.0 KiB. With nobody logged in the tasks are idle (256 B stack), fsd (1536 B) and kd (1024 B), and about
+8.6 KiB of heap is free; a shell (console or telnet) costs about 1.5-1.7 KiB while it runs. The original estimate:
 
 | Item | Size |
 | --- | --- |
@@ -356,6 +357,39 @@ uploaded from the NanoPi land in `/home` (M5a).
 - Open: in one of five full test runs the second telnet connection of the telnet tests was accepted only after
   about 5 s instead of 0.7 s, so that section timed out. It did not recur in eight repeated console + telnet runs;
   the half-open re-arm in the listener (section M2) is the first suspect.
+
+### Second RAM diet and run-time settings (after M5)
+
+**Result (2026-10-16)**: `make test` 111/111 (free-RAM floor raised from 4800 to 5600 B), `make host-test` passes.
+
+| | M5c | Now |
+| --- | --- | --- |
+| Static RAM (.data + .bss + .noinit) | 3648 B | 2600 B |
+| Main stack (MSP) | 768 B | 512 B |
+| Heap | 11944 B | 13272 B |
+| Free with the console shell and one telnet session | 5056 B | 5952 B |
+| Free with one telnet session, console not logged in (`console=ask`) | 5056 B | 7688 B |
+
+- Task structs (112 B) now live in the same heap block as their stack, just above the stack top, and the task
+  table holds pointers: the static 1120-byte table is gone, an unused slot costs 4 bytes, and `TASK_MAX` went from
+  10 to 12.
+- The boot code runs on a temporary stack at the top of the still unused heap (the vector table's initial SP is
+  the heap end; kmain only allocates from the bottom). After the scheduler starts, the main stack serves only
+  interrupts and exceptions: measured peak 124 B under network, keyboard and file system load, so it shrank from
+  768 to 512 B (headroom for a panic raised inside PendSV).
+- The idle task's stack went from 384 to 256 B (it uses 80 B); `.noinit` from 384 to its actual 360 B.
+- `sysctl` sets features that hold RAM while they run: `console=off|ask|on` (default `ask`: the LCD shows
+  "Press Enter to log in." and the 1.7 KiB shell exists only while someone uses it; `off` logs a running console
+  shell out), `idle_logout=SECONDS` (a terminal without input reads as end of file, so its shell logs out; waiting
+  readers re-check every second), `telnet_max=0-3`, and `telnetd`/`httpd` on or off. `free` also shows how much
+  of the heap is task stacks. `/etc/rc` can apply settings at boot.
+- Fix found by the new tests: telnet sessions sometimes stalled at start (first seen once in M5c). The per-socket
+  "SEND in flight" flags shared one byte, and tasks on different sockets updated it without locking. Besides
+  that, the W5500 sometimes finished a SEND without ever raising SEND_OK (everything sent and acknowledged,
+  read pointer at the write pointer). This happened in about 1 of 4 new sessions, most likely because an earlier
+  SEND picked up data that was queued just after it. The flags are now per socket, and a wait longer than 20 ms
+  accepts an empty buffer with RD == WR as completion. `stat:` in the kernel log counts these: 29 in 120 sessions,
+  none stalled.
 
 ### M6 Loadable programs
 - Executable format `NXE`: header + position-independent code (clang `-fropi -frwpi`, R9 as the data base) + relocations.

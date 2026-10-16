@@ -48,6 +48,7 @@ enum {
     SYS_LISTEN  = 36,  /* listen(fd, port): TCP accepts one connection on the socket; UDP binds */
     SYS_SOCKINFO = 37, /* sockinfo(fd, struct nn_sockinfo *); fd -1-N reads hardware socket N */
     SYS_NETCFG  = 38,  /* netcfg(struct nn_netcfg *, NN_NET_*) */
+    SYS_SYSCTL  = 39,  /* sysctl(NN_CTL_*, value) -> value; a negative value only reads */
     SYS_COUNT
 };
 #define SYS_REBOOT_MAGIC 0x1d0cu
@@ -119,6 +120,14 @@ struct nn_sockinfo {
     uint8_t peer[4];
     uint16_t rx, tx_free;              /* bytes waiting, transmit room */
 };
+/* Run-time settings (sysctl), mostly to give RAM back when a feature is unused. */
+enum {
+    NN_CTL_CONSOLE,                    /* NN_CONSOLE_*: the LCD/keyboard shell */
+    NN_CTL_IDLE_LOGOUT,                /* seconds without input before a terminal logs out; 0 never */
+    NN_CTL_TELNET_MAX,                 /* telnet sessions accepted at once, 0-3 */
+    NN_CTL_COUNT
+};
+enum { NN_CONSOLE_OFF, NN_CONSOLE_ASK, NN_CONSOLE_ON };
 #define NN_SVC_TELNETD 0x01
 #define NN_SVC_HTTPD   0x02
 enum { NN_DHCP_OFF, NN_DHCP_SELECTING, NN_DHCP_REQUESTING, NN_DHCP_BOUND, NN_DHCP_RENEWING, NN_DHCP_FAILED };
@@ -219,5 +228,6 @@ static inline int sys_connect(int fd, const struct nn_sockaddr *a) { return NN_S
 static inline int sys_listen(int fd, uint16_t port) { return NN_SYSCALL2(SYS_LISTEN, fd, port); }
 static inline int sys_sockinfo(int fd, struct nn_sockinfo *i) { return NN_SYSCALL2(SYS_SOCKINFO, fd, (uintptr_t)i); }
 static inline int sys_netcfg(struct nn_netcfg *c, int op) { return NN_SYSCALL2(SYS_NETCFG, (uintptr_t)c, op); }
+static inline int sys_sysctl(int key, int value) { return NN_SYSCALL2(SYS_SYSCTL, key, value); }
 
 #endif

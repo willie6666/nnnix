@@ -64,8 +64,9 @@ pid name prio state stack_used stack_size cpu_ms
 - Synchronisation: wait queues, mutexes, semaphores (can be given from interrupts); SPI bus lock and CH376S device lock
 - System calls: entered with `svc`; the kernel function runs in the caller's own task context, so it may block; user-side interface in `lib/sys.h`
 - Terminals: canonical line editing (backspace, Ctrl-U, Ctrl-C, Ctrl-D, arrow keys ignored) over a byte backend
-- Console tty0: onboard 128x64 LCD as a 21x8 text terminal plus the USB keyboard (Shift, Caps Lock, Ctrl, arrows, auto-repeat); the shell restarts after logout
-- Kernel daemon `kd`: one event loop for the network, keyboard, telnet and diag listeners, console shell restart and module supervision
+- Console tty0: onboard 128x64 LCD as a 21x8 text terminal plus the USB keyboard (Shift, Caps Lock, Ctrl, arrows, auto-repeat); by default the shell starts when Enter is pressed and its RAM is freed at logout
+- Run-time settings (`sysctl`): console off/ask/on, idle logout, telnet session limit, telnetd/httpd on or off
+- Kernel daemon `kd`: one event loop for the network, keyboard, telnet and diag listeners, the console shell and module supervision
 - File systems: VFS with `/` (littlefs on the SPI flash), `/usb` (CH376S FAT drive), `/dev`, `/proc`; per-task file descriptors and working directory; littlefs and CH376S work runs in the `fsd` task
 - Network: interrupt-driven W5500, socket layer with self re-arming listeners, telnet server with three sessions
 - Shell `nsh`: `help echo ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir touch pwd
@@ -79,12 +80,13 @@ pid name prio state stack_used stack_size cpu_ms
 - `ed` line editor; `date` with the on-chip RTC on the 32.768 kHz crystal, `/etc/tz`, `ntpdate`
 - Network: `ifconfig`, a DHCP client with lease renewal in the kernel daemon, `netstat`, `service` (telnetd,
   httpd), `nc` (TCP/UDP, client/server); sockets are files for programs (`socket`, `connect`, `listen`)
-- Memory: first-fit kmalloc with coalescing, long-lived blocks (login shells) from the top of the heap; task
-  stacks get red-zone and canary checks and an overflow panics
+- Memory: first-fit kmalloc with coalescing, long-lived blocks (login shells) from the top of the heap; each
+  task's struct shares its stack's block; the boot runs on a temporary stack in the heap, so the main stack only
+  needs room for interrupts; task stacks get red-zone and canary checks and an overflow panics
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 102 checks) | Result |
+| On-target tests (`make test`, 111 checks) | Result |
 | --- | --- |
 | Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
 | Two sessions reading two different files on the single-file CH376S at once | pass |
@@ -95,17 +97,18 @@ pid name prio state stack_used stack_size cpu_ms
 | `ed` interactively and from a script, `date`/time zone, RTC across a reboot (within 1 s) | pass |
 | DHCP lease (0.2 s), packet format, no-server fallback; NTP; `nc` TCP/UDP client, server, interactive, Ctrl-C | pass |
 | `/etc/rc` configures the network by DHCP and starts telnetd at boot (lease 2.4 s after reset) | pass |
+| Settings: console on/ask/off (1736 B freed when the console logs out), idle logout, telnet session limit | pass |
 | littlefs write / read (32 KiB) | 37-50 KiB/s / 256 KiB/s |
 | Console: banner, typing, line editing, clear, scrolling, shell restart after `exit` | pass |
 | Two telnet sessions: one runs `sleep 2`, the other answers | in 4 ms |
 | Line editing, Ctrl-C, Ctrl-D, three sessions, log-out and reconnect, heap leak checks | pass |
-| W5500 send / receive (SPI 12.5 MHz, 4 KiB socket buffer) | 555 KiB/s / 588 KiB/s, verified byte by byte |
+| W5500 send / receive (SPI 12.5 MHz, 4 KiB socket buffer) | 559 KiB/s / 582 KiB/s, verified byte by byte |
 | CH376S raw write / read 256 KiB (SPI 12.5 MHz) | 114 kB/s / 230 kB/s, 0 errors |
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot | pass |
-| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5056 B (test limit 4800 B) |
-| Code size / static RAM including crash records / heap | 83 KiB / 3.6 KiB / 11.7 KiB |
+| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5952 B (test limit 5600 B) |
+| Code size / static RAM including crash records / main stack / heap | 85 KiB / 2.5 KiB / 512 B / 13.0 KiB |
 
 Host tests: 1440 checks pass, plus 80 243 date conversions compared with the host C library.
 

@@ -12,6 +12,8 @@
 #include "../arch/nuc140/arch.h"
 #include "../drivers/rtc.h"
 #include "../net/net.h"
+#include "../net/telnetd.h"
+#include "console.h"
 
 static int32_t sys_exit_k(int32_t code) { task_exit(code); }
 static int32_t sys_yield_k(void) { task_yield(); return 0; }
@@ -143,6 +145,31 @@ static int32_t sys_listen_k(int32_t fd, uint32_t port) { return sock_listen(fd, 
 static int32_t sys_sockinfo_k(int32_t fd, struct nn_sockinfo *i) { return sock_info(fd, i); }
 static int32_t sys_netcfg_k(struct nn_netcfg *c, int32_t op) { return net_config(c, op); }
 
+_Static_assert(CONSOLE_OFF == NN_CONSOLE_OFF && CONSOLE_ASK == NN_CONSOLE_ASK && CONSOLE_ON == NN_CONSOLE_ON,
+               "console modes differ from the system call interface");
+
+static int32_t sys_sysctl_k(int32_t key, int32_t value)
+{
+    int r = SYS_EINVAL;
+    switch (key) {
+    case NN_CTL_CONSOLE:
+        r = console_mode(value);
+        break;
+    case NN_CTL_IDLE_LOGOUT:
+        if (value > 7 * 86400) break;
+        if (value >= 0 && (uint32_t)value != tty_idle_logout_s) {
+            tty_idle_logout_s = (uint32_t)value;
+            kprintf("tty: idle logout %s%d s\n", value ? "after " : "off, ", (int)value);
+        }
+        r = (int)tty_idle_logout_s;
+        break;
+    case NN_CTL_TELNET_MAX:
+        r = telnetd_max_sessions(value);
+        break;
+    }
+    return r < 0 ? SYS_EINVAL : r;
+}
+
 static int32_t sys_invalid_k(void) { return SYS_ENOSYS; }
 
 static const uintptr_t table[SYS_COUNT] = {
@@ -185,6 +212,7 @@ static const uintptr_t table[SYS_COUNT] = {
     [SYS_LISTEN] = (uintptr_t)sys_listen_k,
     [SYS_SOCKINFO] = (uintptr_t)sys_sockinfo_k,
     [SYS_NETCFG] = (uintptr_t)sys_netcfg_k,
+    [SYS_SYSCTL] = (uintptr_t)sys_sysctl_k,
 };
 
 /* Called from SVC_Handler with the caller's exception frame:

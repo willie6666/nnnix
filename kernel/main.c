@@ -26,11 +26,11 @@ const char nnnix_version[] = NNNIX_VERSION;
 extern uint32_t __data_start, __bss_end, __noinit_base, __noinit_end, __stack_limit, __stack_top;
 extern uint32_t __heap_start, __heap_end;
 
+/* The boot runs on a stack in the heap (link.ld); the main stack is untouched
+ * until the scheduler starts, then serves interrupts and exceptions only. */
 static void stack_paint(void)
 {
-    uint32_t sp;
-    __asm volatile("mov %0, sp" : "=r"(sp));
-    for (uint32_t *p = &__stack_limit; (uintptr_t)p < sp - 64u; ++p) *p = STACK_FILL;
+    for (uint32_t *p = &__stack_limit; p < &__stack_top; ++p) *p = STACK_FILL;
 }
 
 uint32_t stack_used(void)

@@ -1,14 +1,19 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* NUC140VE3CN: 128 KiB APROM at 0, 16 KiB SRAM at 0x20000000.
- * RAM layout: .data .bss | heap (kmalloc) | .noinit (crash record, fixed) | main stack */
+ * RAM layout: .data .bss | heap (kmalloc) | .noinit (crash record, fixed) | main stack
+ * The boot code runs on a temporary stack at the top of the heap: kmain only
+ * allocates from the bottom, and once the scheduler starts, the main stack
+ * serves interrupts and exceptions only (measured peak 124 B), so it can be
+ * small while the boot (about 600 B deep) costs no RAM afterwards. */
 ENTRY(Reset_Handler)
 MEMORY {
     FLASH (rx) : ORIGIN = 0x00000000, LENGTH = 128K
     RAM (rwx)  : ORIGIN = 0x20000000, LENGTH = 16K
 }
 __stack_top   = ORIGIN(RAM) + LENGTH(RAM);
-__stack_limit = __stack_top - 768;    /* MSP: boot, then interrupts and exceptions only */
-__noinit_base = __stack_limit - 384;
+__stack_limit = __stack_top - 512;    /* MSP: interrupts and exceptions */
+__noinit_base = __stack_limit - 360;
+__boot_stack_top = __noinit_base;     /* = __heap_end */
 
 SECTIONS {
     .vectors : { KEEP(*(.vectors)) } > FLASH

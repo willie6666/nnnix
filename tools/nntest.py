@@ -239,6 +239,9 @@ def console_tests(ns, report):
         return screen()
 
     text = screen()
+    if 'nnnix$' not in text:                          # console=ask: no shell until Enter
+        report.add('console ask', 'Press Enter to\nlog in.' in text, text.strip().replace('\n', ' | '))
+        text = type_keys(b'\r', 1.0)
     report.add('console banner', 'nnnix$' in text and 'Type' in text, text.strip().replace('\n', ' | '))
     text = type_keys(b'echo lcd works\r')
     report.add('console echo', 'lcd works' in text.splitlines()[-3:-1] or 'lcd works' in text, '')
@@ -250,10 +253,13 @@ def console_tests(ns, report):
     text = type_keys(b'help\r', 2.0)          # 50 lines through the LCD
     report.add('console scroll', text.splitlines()[-1].startswith('nnnix$') and 'exit' in text,
                'help output scrolled the 8-line screen')
-    type_keys(b'exit\r', 1.0)
-    text = screen()
+    text = type_keys(b'exit\r', 1.0)
+    tasks = ns.call(request, b'K')[0].decode(errors='replace')
+    report.add('console logout', 'Press Enter to\nlog in.' in text and ' nsh ' not in tasks,
+               'notice shown, shell task gone')
+    text = type_keys(b'\r', 1.0)
     report.add('console respawn', 'Type' in text and text.rstrip().endswith('nnnix$'),
-               'getty started a new shell after exit')
+               'Enter started a new shell')
 
 
 def fs_tests(ns, serial, report):
@@ -337,11 +343,15 @@ def telnet_tests(ns, report):
     time.sleep(0.3)                                   # let kd reap the previous diag worker
     t1 = Telnet(ns)
     t1.read_until(Telnet.PROMPT)
+    for _ in range(20):                               # the last diag worker may still be closing
+        if ' diag ' not in t1.cmd('ps'):
+            break
+        time.sleep(0.2)
     free_before = t1.cmd('free')
     m = re.search(r'free (\d+) B', free_before)
     free_bytes = int(m[1]) if m else 0
-    report.add('free ram', free_bytes >= 4800,
-               f'{free_bytes} B heap free with the console shell and one telnet session (limit 4800)')
+    report.add('free ram', free_bytes >= 5600,
+               f'{free_bytes} B heap free with the console shell and one telnet session (limit 5600)')
     out = t1.cmd('uname')
     report.add('telnet login', 'nnnix' in out, out.strip())
 
@@ -659,6 +669,81 @@ def job_tests(ns, serial, report):
         if keep:
             t.cmd('mv /etc/rc.keep /etc/rc')
         t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
+def settings_tests(ns, report):
+    """sysctl: console modes, idle logout and the telnet session limit, and the RAM they give back."""
+    def screen():
+        return ns.call(request, b'V')[0].decode(errors='replace')
+
+    def heap_free(t):
+        m = re.search(r'free (\d+) B', t.cmd('free'))
+        return int(m[1]) if m else 0
+
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    out = t.cmd('sysctl')
+    report.add('sysctl list', all(k in out for k in ('console=', 'idle_logout=0', 'telnet_max=3', 'telnetd=on',
+                                                       'httpd=on')), out.strip().replace('\r\n', ' '))
+    bad = t.cmd('sysctl console=maybe') + t.cmd('sysctl telnet_max=4') + t.cmd('sysctl nosuch=1')
+    report.add('sysctl checks', bad.count('invalid value') == 2 and 'unknown setting' in bad, '')
+    out = t.cmd('free')
+    report.add('free breakdown', re.search(r'used: \d+ B task stacks \(\d+ tasks\), \d+ B other', out) is not None,
+               out.strip().replace('\r\n', ' | '))
+
+    # The console: on starts a shell at once, off logs it out and frees its RAM.
+    t.cmd('sysctl console=on')
+    time.sleep(0.5)
+    with_shell = heap_free(t)
+    on_screen = screen()
+    t.cmd('sysctl console=off')
+    time.sleep(0.6)
+    without = heap_free(t)
+    off_screen = screen()
+    ns.call(request, b'I', 4, 1, b'\r')
+    time.sleep(0.4)
+    still_off = 'The console is off.' in screen()
+    report.add('console off', 'nnnix$' in on_screen and 'The console is off.' in off_screen and still_off
+               and without - with_shell >= 1400, f'{without - with_shell} B freed by logging the console out')
+    t.cmd('sysctl console=ask')
+    time.sleep(0.4)
+    ask = screen()
+    ns.call(request, b'I', 4, 1, b'\r')
+    time.sleep(0.8)
+    report.add('console ask again', 'Press Enter to\nlog in.' in ask and 'nnnix$' in screen(), 'Enter starts a shell')
+
+    # Idle logout: a quiet session is logged out; a busy shell is not.
+    t2 = Telnet(ns)
+    t2.read_until(Telnet.PROMPT)
+    t.cmd('sysctl idle_logout=2')
+    started = time.monotonic()
+    t.cmd('sleep 4', 8)                               # busy, so this shell does not time out
+    t.cmd('sysctl idle_logout=0')
+    closed = t2.wait_closed(1)
+    report.add('idle logout', closed and 'idle timeout' in t2.text, f'quiet session closed, {time.monotonic() - started:.1f} s')
+    t2.close()
+    time.sleep(0.5)
+    console_gone = 'Press Enter to\nlog in.' in screen()
+
+    # At most one telnet session: a second connection is not accepted.
+    t.cmd('sysctl telnet_max=1')
+
+    def try_connect():
+        try:
+            socket.create_connection((TARGET[0], 23), timeout=2).close()
+            return True
+        except OSError:
+            return False
+    time.sleep(0.3)
+    refused = not ns.call(try_connect)
+    t.cmd('sysctl telnet_max=3')
+    time.sleep(0.3)
+    t3 = Telnet(ns, connect_within=3)
+    t3.read_until(Telnet.PROMPT)
+    t3.send('exit\r\n'); t3.wait_closed(); t3.close()
+    report.add('telnet_max', refused and console_gone, 'second login refused at 1; console also timed out')
+    t.send('exit\r\n'); t.wait_closed(); t.close()
+    time.sleep(0.5)
 
 
 # ---- M5c: clock, editor and network tools ----
@@ -1036,7 +1121,7 @@ def main():
             text, _ = ns.call(request, b'K')
             ps = text.decode(errors='replace')
             names = [line.split()[1] for line in ps.splitlines()[1:] if line[:5].strip().isdigit()]
-            report.add('tasks (K)', {'idle', 'kd', 'diag', 'nsh'} <= set(names), ' '.join(names))
+            report.add('tasks (K)', {'idle', 'fsd', 'kd', 'diag'} <= set(names), ' '.join(names))
 
             text, _ = ns.call(request, b'D', 4, 1000, b'', None, 30)
             demo = text.decode(errors='replace')
@@ -1080,6 +1165,12 @@ def main():
             except (OSError, TimeoutError, ConnectionError) as exc:
                 traceback.print_exc()
                 report.add('jobs and pipes', False, repr(exc))
+
+            try:
+                settings_tests(ns, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
+                report.add('settings', False, repr(exc))
 
             try:
                 m5c_tests(ns, serial, report, args.iface)

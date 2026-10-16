@@ -5,7 +5,7 @@
 
 extern const char nnnix_version[];
 
-uint32_t stack_used(void);            /* main stack high-water mark in bytes */
+uint32_t stack_used(void);            /* main stack high-water mark in bytes (interrupts and exceptions) */
 uint32_t stack_size(void);
 uint32_t ram_static(void);            /* .data + .bss + .noinit bytes */
 

@@ -1,5 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "tty.h"
+#include "../arch/nuc140/arch.h"
+
+volatile uint32_t tty_idle_logout_s;
 
 static void echo(void *ctx, const char *s, size_t n)
 {
@@ -16,7 +19,7 @@ void tty_init(struct tty *t, const struct tty_ops *ops, void *ctx)
     ledit_init(&t->ed, t->line, TTY_LINE - 1, echo, t);
 }
 
-static int next_byte(struct tty *t)
+static int next_byte(struct tty *t, uint32_t timeout_ms)
 {
     if (t->ahead_len) {
         int c = t->ahead[0];
@@ -24,7 +27,7 @@ static int next_byte(struct tty *t)
         t->ahead_len--;
         return c;
     }
-    return t->ops->getc(t->ctx);
+    return t->ops->getc(t->ctx, timeout_ms);
 }
 
 int tty_interrupted(struct tty *t)
@@ -50,9 +53,20 @@ int tty_read(struct tty *t, char *buf, size_t n)
 
 static int read_line(struct tty *t, char *buf, size_t n)
 {
+    uint32_t idle_since = jiffies;
     while (t->rpos >= t->rlen) {
-        int c = next_byte(t);
+        /* Wait at most 1 s at a time, so a changed idle_logout applies to waiting readers too. */
+        uint32_t limit = tty_idle_logout_s * 1000u, idle = jiffies - idle_since, wait = 1000u;
+        if (limit && idle >= limit) {                 /* idle: end of file, the shell logs out */
+            static const char msg[] = "\r\nidle timeout\r\n";
+            t->ops->write(t->ctx, msg, sizeof msg - 1);
+            return 0;
+        }
+        if (limit && limit - idle < wait) wait = limit - idle;
+        int c = next_byte(t, wait);
+        if (c == TTY_TIMEOUT) continue;
         if (c < 0) return 0;                          /* hung up */
+        idle_since = jiffies;
         switch (ledit_feed(&t->ed, (uint8_t)c)) {
         case LEDIT_LINE:
             t->line[t->ed.len] = '\n';

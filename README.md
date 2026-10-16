@@ -8,9 +8,9 @@ flash and a USB drive, and later stand-alone loadable programs. The full plan is
 
 ## Status
 
-**M5 user environment complete**: shell scripts, pipes, background jobs, Ctrl-C, the `ed` editor, a real-time
-clock, DHCP, `nc`, NTP and HTTP file transfer. M0 foundation, M1 kernel core, M2 telnet, M3 LCD/keyboard, the RAM
-diet, M4 file systems and M5 are done; M6 (loadable programs) is next.
+**M6 loadable programs complete**: programs built with the SDK on the NanoPi are uploaded to `/bin` and run
+like built-in commands. M0 foundation, M1 kernel core, M2 telnet, M3 LCD/keyboard, the RAM diets, M4 file
+systems, M5 user environment and M6 are done; M7 holds optional items.
 
 ```
 nnnix$ ls / | grep usb
@@ -78,6 +78,8 @@ pid name prio state stack_used stack_size cpu_ms
   `tools/nncp.py` transfers binary files with no third-party host dependencies
 - Pipes (`a | b | c`), background jobs (`&`, `jobs`, `kill`, `wait`) and Ctrl-C
 - `ed` line editor; `date` with the on-chip RTC on the 32.768 kHz crystal, `/etc/tz`, `ntpdate`
+- Loadable programs (`sdk/`, [sdk/README.md](sdk/README.md)): NXE files linked at 0 and relocated by the
+  loader; the C library is the firmware's own (a function table), so `hello` needs 276 bytes of RAM
 - Network: `ifconfig`, a DHCP client with lease renewal in the kernel daemon, `netstat`, `service` (telnetd,
   httpd), `nc` (TCP/UDP, client/server); sockets are files for programs (`socket`, `connect`, `listen`)
 - Memory: first-fit kmalloc with coalescing, long-lived blocks (login shells) from the top of the heap; each
@@ -86,7 +88,7 @@ pid name prio state stack_used stack_size cpu_ms
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 117 checks) | Result |
+| On-target tests (`make test`, 125 checks) | Result |
 | --- | --- |
 | Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
 | Two sessions reading two different files on the single-file CH376S at once | pass |
@@ -98,6 +100,7 @@ pid name prio state stack_used stack_size cpu_ms
 | DHCP lease (0.2 s), packet format, no-server fallback; NTP; `nc` TCP/UDP client, server, interactive, Ctrl-C | pass |
 | `/etc/rc` configures the network by DHCP and starts telnetd at boot (lease 2.4 s after reset) | pass |
 | Settings: console on/ask/off (1736 B freed when the console logs out), idle logout, telnet session limit | pass |
+| Programs: `/bin/hello` with arguments and exit status, in pipelines and the background, Ctrl-C, from USB, damaged files refused, RAM reclaimed | pass |
 | Review fixes: background redirections, memory of killed programs, concurrent terminal output, DHCP lease end, same-file `cp`/`mv`, `nc` both ways with back-pressure (32 KiB) | pass |
 | littlefs write / read (32 KiB) | 37-50 KiB/s / 256 KiB/s |
 | Console: banner, typing, line editing, clear, scrolling, shell restart after `exit` | pass |
@@ -109,9 +112,9 @@ pid name prio state stack_used stack_size cpu_ms
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot | pass |
 | Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5912 B (test limit 5600 B) |
-| Code size / static RAM including crash records / main stack / heap | 85 KiB / 2.5 KiB / 512 B / 13.0 KiB |
+| Code size / static RAM including crash records / main stack / heap | 88 KiB / 2.5 KiB / 512 B / 12.9 KiB |
 
-Host tests: 1496 checks pass (including littlefs on a RAM flash and usbfs against a CH376S model), plus 80 243
+Host tests: 1504 checks pass (including littlefs on a RAM flash and usbfs against a CH376S model), plus 80 243
 date conversions compared with the host C library.
 
 ## Hardware
@@ -137,7 +140,8 @@ Requires `clang`, `ld.lld`, `llvm-objcopy`, Python 3 and an OpenOCD (0.12) with 
 make              # build/nnnix.elf, build/nnnix.bin
 make host-test    # unit tests on the build machine
 make flash        # program APROM through Nu-Link (APROM only; CONFIG and LDROM are never touched)
-make test         # flash + on-target tests (needs sudo for a temporary network namespace)
+make test         # build the SDK examples, flash, on-target tests (needs sudo for a network namespace)
+make -C sdk       # loadable programs: sdk/build/*.nxe (see sdk/README.md)
 telnet 198.18.0.2 # log in (from the test network; see below)
 python3 tools/console.py   # kernel log (/dev/ttyUSB0, 115200 8N1)
 sudo python3 tools/nncp.py --iface eth1 put local.bin /home/local.bin
@@ -168,7 +172,8 @@ lib/           printf subset, string functions, calendar time, EABI division (no
 user/          nsh shell, parser, file/text/network commands, ed, scheduler demo programs
 third_party/   littlefs v2.11.3 (BSD-3-Clause), unmodified
 tests/host/    host unit tests (including a recorded CH9350 capture)
-tools/         flash.py, console.py, nntest.py, nncp.py (HTTP file transfer)
+tools/         flash.py, console.py, nntest.py, nncp.py (HTTP file transfer), mknxe.py (ELF to NXE)
+sdk/           loadable program SDK: crt0, nnnix.h, linker script, Makefile, examples
 docs/          development plan
 ```
 

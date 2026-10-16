@@ -31,6 +31,7 @@ const char *errstr(int e)
     case SYS_EBUSY: return "busy";
     case SYS_ETIMEDOUT: return "timed out";
     case SYS_ESRCH: return "no such process";
+    case SYS_ENOEXEC: return "not an executable (NXE) file";
     default: return "error";
     }
 }

@@ -12,12 +12,14 @@ static int equal(const char *a, const char *b)
     return *a == *b;
 }
 
-/* Only literal /home paths. Reject ambiguous encodings and dot components
- * before VFS normalisation; uploads cannot reach /etc, /dev, /proc or /usb. */
+/* Only literal paths below /home or /bin (programs). Reject ambiguous
+ * encodings and dot components before VFS normalisation; uploads cannot reach
+ * /etc, /dev, /proc or /usb. */
 static int path_ok(const char *s)
 {
-    if (strncmp(s, "/home/", 6) || !s[6] || strlen(s) >= HTTP_PATH) return 0;
-    for (const char *p = s + 6; *p;) {
+    size_t skip = !strncmp(s, "/home/", 6) ? 6 : !strncmp(s, "/bin/", 5) ? 5 : 0;
+    if (!skip || !s[skip] || strlen(s) >= HTTP_PATH) return 0;
+    for (const char *p = s + skip; *p;) {
         const char *start = p;
         while (*p && *p != '/') {
             char c = *p++;

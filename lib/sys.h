@@ -50,6 +50,7 @@ enum {
     SYS_NETCFG  = 38,  /* netcfg(struct nn_netcfg *, NN_NET_*) */
     SYS_SYSCTL  = 39,  /* sysctl(NN_CTL_*, value) -> value; a negative value only reads */
     SYS_MKFS    = 40,  /* mkfs("/"): format the flash; only when it did not mount (EBUSY otherwise) */
+    SYS_EXEC    = 41,  /* exec(const struct nn_exec *) -> pid: load an NXE program as a child task */
     SYS_COUNT
 };
 #define SYS_REBOOT_MAGIC 0x1d0cu
@@ -101,6 +102,13 @@ struct nn_spawn {
     uint32_t stack;
 };
 #define NN_FOREVER 0xffffffffu
+/* Like nn_spawn, but the program comes from an NXE file (lib/nnlib.h). */
+struct nn_exec {
+    const char *path;
+    char **argv;
+    int argc, fd_in, fd_out;
+};
+#define SYS_ENOEXEC (-8)                   /* not a valid NXE file */
 
 /* Network. Sockets are W5500 hardware sockets; connect and listen do not wait:
  * poll sockinfo until the state is NN_SS_ESTABLISHED (or the socket closed).
@@ -231,5 +239,6 @@ static inline int sys_sockinfo(int fd, struct nn_sockinfo *i) { return NN_SYSCAL
 static inline int sys_netcfg(struct nn_netcfg *c, int op) { return NN_SYSCALL2(SYS_NETCFG, (uintptr_t)c, op); }
 static inline int sys_sysctl(int key, int value) { return NN_SYSCALL2(SYS_SYSCTL, key, value); }
 static inline int sys_mkfs(const char *path) { return NN_SYSCALL1(SYS_MKFS, (uintptr_t)path); }
+static inline int sys_exec(const struct nn_exec *e) { return NN_SYSCALL1(SYS_EXEC, (uintptr_t)e); }
 
 #endif

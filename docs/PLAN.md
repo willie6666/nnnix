@@ -5,7 +5,7 @@ NU-LB_002 board (NUC140VE3CN).
 
 Created 2026-10-15. Status: **M5 done** (2026-10-16): scripts, text tools, HTTP transfer (M5a), pipes, jobs,
 Ctrl-C (M5b), and the editor, clock and network tools (M5c); then a second RAM diet with run-time settings.
-Next: M6 loadable programs.
+**M6 done**: loadable programs (NXE files built with `sdk/`). Next: M7 (optional items).
 
 ## 1. Goals
 
@@ -431,11 +431,31 @@ firmware.
 | R15 | `nc` with a pipe or file as input sent everything before reading, so an echoing peer stalled it | a child task sends while the parent prints, as in interactive mode (32 KiB through a back-pressured echo server: the old firmware stopped after 3.3 KiB) |
 
 ### M6 Loadable programs
-- Executable format `NXE`: header + position-independent code (clang `-fropi -frwpi`, R9 as the data base) + relocations.
+- Executable format `NXE`: header + image linked at 0 + a table of words to relocate (see the result below).
 - Loader: read from the file system into RAM and run, about 4 KiB maximum; `exec`/`spawn` system calls.
 - SDK: `sdk/` (crt0, libc subset headers, linker script, Makefile), built on the NanoPi.
 
 **Acceptance**: build `hello.nxe` on the NanoPi, upload it, run `/bin/hello`; it exits normally and its RAM is reclaimed.
+
+**Result (2026-10-16)**: `make test` builds the SDK and passes 8 new program checks; acceptance met.
+- R6 decided against ROPI/RWPI: the whole program sits in one RAM block, so it is linked at 0
+  (`sdk/nxe.ld`, `ld.lld --emit-relocs`) and `tools/mknxe.py` lists the offsets of its `R_ARM_ABS32` words;
+  the loader adds the load address to them. Calls and branches are PC-relative. R9 stays free, any clang
+  code works, and unknown relocation types are refused at build time.
+- The C library is not linked into programs: `_start(argc, argv, lib)` receives a table of firmware functions
+  (`lib/nnlib.h`: printf, string functions, the division helpers, errstr, time conversion), which run from
+  flash. `hello` is 276 bytes (220 B image, 6 relocations); `primes` 620 bytes.
+- `exec` system call (`kernel/exec.c`): checks the header (sizes, entry, relocation range, at most 8 KiB),
+  reads the image straight into its heap block, verifies the CRC-32 over image and relocations, patches,
+  clears bss and starts the program through the same child-task path as `spawn`. The block is owned by the
+  task (the R3 owner tags), so it is freed when the task is reaped, also after a kill.
+- The shell runs a non-built-in NAME as `/bin/NAME`, or a name with `/` as a path, always as a child task:
+  pipelines, redirection, `&`, Ctrl-C and `kill` work as for built-ins. HTTP uploads may go to `/bin`;
+  `/bin` is created at boot.
+- Checks: arguments and exit status, programs in pipelines, firmware library calls and malloc failure,
+  background job, Ctrl-C, damaged/truncated/non-NXE files refused, a program run from the USB drive, heap
+  identical before and after.
+- Not protected: without an MPU a faulty program can corrupt the kernel; a fault resets the board.
 
 ### M7 Optional
 - Two-way serial console (depends on R3).
@@ -470,7 +490,7 @@ Repository: <https://github.com/willie6666/nnnix>; at least one commit and tag p
 | R3 | The RS-232 transceiver on PB0 and how to isolate it; fallback: software UART RX or another pin | M7 |
 | R4 | RTC 32.768 kHz crystal: present, stable within 0.3 s, RTC counts through resets. Done in M5. Buzzer, keys, EEPROM pins remain | M5/M7 |
 | R5 | littlefs on the Cortex-M0: 19.5 KiB code, about 2.2 KiB RAM with fsd. Done in M4 | M4 |
-| R6 | Whether clang's ROPI/RWPI works for thumbv6m | M6 |
+| R6 | Position independence for loaded programs: not needed; programs are linked at 0 and relocated at load. Done in M6 | M6 |
 | R7 | W5500 interrupts (Sn_IMR/SIMR) with the PB2 GPIO interrupt, measured | M2 |
 
 ## 10. Risks

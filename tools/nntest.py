@@ -894,6 +894,58 @@ def review_tests(ns, serial, report, iface):
         stop.set(); server.join()
 
 
+def m6_tests(ns, serial, report):
+    """Loadable programs: SDK-built NXE files uploaded to /bin and run by the shell."""
+    sdk = REPO / 'sdk/build'
+    programs = {name: (sdk / f'{name}.nxe').read_bytes() for name in ('hello', 'upper', 'primes')}
+    statuses = [ns.call(http_request, 'PUT', f'/bin/{name}', data)[0] for name, data in programs.items()]
+    bad = bytearray(programs['hello'])
+    bad[40] ^= 0xff                                   # inside the image: the CRC no longer matches
+    statuses.append(ns.call(http_request, 'PUT', '/bin/damaged', bytes(bad))[0])
+    statuses.append(ns.call(http_request, 'PUT', '/bin/short', programs['hello'][:100])[0])
+    statuses.append(ns.call(http_request, 'PUT', '/bin/text', b'echo this is not a program\n')[0])
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    try:
+        for _ in range(20):                           # the HTTP worker may still be closing
+            if ' httpd ' not in t.cmd('ps'):
+                break
+            time.sleep(0.2)
+        before = t.cmd('free')
+        out = t.cmd('hello one two') + t.cmd('echo $?')
+        report.add('run /bin/hello', all(s in (201, 204) for s in statuses)
+                   and re.match(r'hello from a loaded program, pid \d+\r\nargv\[1\] = one\r\nargv\[2\] = two\r\n2\r\n$', out)
+                   is not None, out.strip().replace('\r\n', ' | '))
+        out = t.cmd('/bin/hello') + t.cmd('echo shout please | upper') + t.cmd('hello x | upper | wc')
+        report.add('programs in pipes', 'SHOUT PLEASE' in out and re.search(r'\b2 10 4\d\b', out) is not None, out.strip().replace('\r\n', ' | '))
+        out = t.cmd('primes', 10) + t.cmd('primes 100000', 10)
+        report.add('program library', '1229 primes up to 10000, the largest 9973' in out and 'out of memory' in out,
+                   out.strip().replace('\r\n', ' | '))
+        out = t.cmd('primes 20000 &') + t.cmd('wait', 10)
+        report.add('program in background', '2262 primes up to 20000' in out, out.strip().replace('\r\n', ' | '))
+        t.send('upper\r\n')
+        time.sleep(0.5)
+        t.send('typed\r\n')
+        typed = t.read_until('\r\nTYPED', 5)
+        started = time.monotonic()
+        t.send('\x03')
+        t.read_until(Telnet.PROMPT, 5)
+        report.add('ctrl-c program', time.monotonic() - started < 1.0, 'upper echoed a line, ^C ended it')
+        out = t.cmd('damaged') + t.cmd('short') + t.cmd('text') + t.cmd('nosuch')
+        report.add('bad programs', out.count('not an executable') == 3 and 'command not found' in out,
+                   out.strip().replace('\r\n', ' | '))
+        out = t.cmd('cp /bin/hello /usb/hello.nxe', 10) + t.cmd('/usb/hello.nxe from usb', 10)
+        t.cmd('rm /usb/hello.nxe')
+        report.add('program from usb', 'argv[1] = from' in out, out.strip().replace('\r\n', ' | '))
+        time.sleep(0.3)
+        after = t.cmd('free')
+        report.add('program memory freed', before == after, after.strip().replace('\r\n', ' | '))
+    finally:
+        for name in ('damaged', 'short', 'text'):
+            t.cmd(f'rm /bin/{name}')
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
 # ---- M5c: clock, editor and network tools ----
 
 NTP_TIME = 1893553445                 # 2030-01-02 03:04:05 UTC
@@ -1325,6 +1377,12 @@ def main():
             except (OSError, TimeoutError, ConnectionError, StopIteration) as exc:
                 traceback.print_exc()
                 report.add('review fixes', False, repr(exc))
+
+            try:
+                m6_tests(ns, serial, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
+                report.add('M6 programs', False, repr(exc))
 
             try:
                 m5c_tests(ns, serial, report, args.iface)

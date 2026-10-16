@@ -47,7 +47,7 @@ static int flash_blank(void)
 static void mounted_now(uint32_t size)
 {
     /* Directories that the other mounts appear in, so "ls /" shows them. */
-    static const char *const dirs[] = { "/usb", "/dev", "/proc", "/home", "/etc" };
+    static const char *const dirs[] = { "/usb", "/dev", "/proc", "/home", "/etc", "/bin" };
     for (unsigned i = 0; i < sizeof dirs / sizeof dirs[0]; ++i) lfs_mkdir(&lfs, dirs[i]);
     mounted = 1;
     lfs_ssize_t used = lfs_fs_size(&lfs);

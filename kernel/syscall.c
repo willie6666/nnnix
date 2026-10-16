@@ -14,6 +14,8 @@
 #include "../net/net.h"
 #include "../net/telnetd.h"
 #include "console.h"
+#include "exec.h"
+#include "../lib/nnlib.h"
 
 static int32_t sys_exit_k(int32_t code) { task_exit(code); }
 static int32_t sys_yield_k(void) { task_yield(); return 0; }
@@ -80,16 +82,19 @@ static int32_t sys_alloc_k(uint32_t n, uint32_t flags)
 }
 static int32_t sys_free_k(void *p) { kfree(p); return 0; }
 
-/* Child programs: the argv copy lives in one block owned by the task. */
-struct spawn_block { int (*main)(int, char **); int argc; char *argv[]; };
+/* Child programs: the argv copy lives in one block owned by the task. A loaded
+ * program (image != 0) gets the library table as a third argument, and its
+ * image block is owned by the task, so it is freed when the task is reaped. */
+struct spawn_block { int (*main)(int, char **); void *image; int argc; char *argv[]; };
 
 static void spawn_entry(void *arg)
 {
     struct spawn_block *b = arg;
+    if (b->image) task_exit(((int (*)(int, char **, const struct nn_lib *))(void *)b->main)(b->argc, b->argv, &nn_lib));
     task_exit(b->main(b->argc, b->argv));
 }
 
-static int32_t sys_spawn_k(const struct nn_spawn *req)
+int spawn_child(const struct nn_spawn *req, void *image)
 {
     if (!req->main || req->argc < 1 || req->argc > 12 || req->stack < 512u || req->stack > 4096u) return SYS_EINVAL;
     uint32_t size = sizeof(struct spawn_block) + (uint32_t)(req->argc + 1) * sizeof(char *);
@@ -97,6 +102,7 @@ static int32_t sys_spawn_k(const struct nn_spawn *req)
     struct spawn_block *b = kmalloc(size);
     if (!b) return SYS_ENOMEM;
     b->main = req->main;
+    b->image = image;
     b->argc = req->argc;
     char *strings = (char *)&b->argv[req->argc + 1];
     for (int i = 0; i < req->argc; ++i) {
@@ -113,6 +119,7 @@ static int32_t sys_spawn_k(const struct nn_spawn *req)
     if (t) {
         t->user = 1;
         t->owned = b;
+        if (image) kmem_set_owner(image, t->pid);
         if (in) { in->refs++; t->fds[0] = in; }
         if (out) { out->refs++; t->fds[1] = out; }
     }
@@ -120,6 +127,9 @@ static int32_t sys_spawn_k(const struct nn_spawn *req)
     if (!t) { kfree(b); return SYS_ENOMEM; }
     return t->pid;
 }
+
+static int32_t sys_spawn_k(const struct nn_spawn *req) { return spawn_child(req, 0); }
+static int32_t sys_exec_k(const struct nn_exec *req) { return exec_program(req); }
 
 static int32_t sys_wait_k(int32_t pid, int *status, uint32_t timeout_ms)
 {
@@ -218,6 +228,7 @@ static const uintptr_t table[SYS_COUNT] = {
     [SYS_NETCFG] = (uintptr_t)sys_netcfg_k,
     [SYS_SYSCTL] = (uintptr_t)sys_sysctl_k,
     [SYS_MKFS] = (uintptr_t)sys_mkfs_k,
+    [SYS_EXEC] = (uintptr_t)sys_exec_k,
 };
 
 /* Called from SVC_Handler with the caller's exception frame:

@@ -23,7 +23,7 @@ LDFLAGS = -nostdlib -fuse-ld=lld -Wl,-T,arch/nuc140/link.ld,--gc-sections,-Map,b
 SRCS = $(wildcard arch/nuc140/*.c kernel/*.c drivers/*.c lib/*.c net/*.c fs/*.c user/*.c) third_party/littlefs/lfs.c
 OBJS = $(SRCS:%.c=build/%.o)
 
-.PHONY: all flash test host-test size clean
+.PHONY: all flash test host-test size clean sdk
 all: build/nnnix.bin
 
 build/%.o: %.c
@@ -52,7 +52,11 @@ FORCE:
 flash: build/nnnix.bin
 	$(PYTHON) tools/flash.py build/nnnix.bin
 
-test: build/nnnix.bin
+# Loadable example programs (sdk/), built before the tests upload them.
+sdk:
+	$(MAKE) -C sdk
+
+test: build/nnnix.bin sdk
 	sudo $(PYTHON) tools/nntest.py --flash build/nnnix.bin
 
 HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty build/host/test_console build/host/test_shparse build/host/test_http \

@@ -325,3 +325,20 @@ task's stack size and the most it has used.
 - At boot a blank flash is formatted. If the flash holds something that does
   not mount (damage, another format), it is left alone and `/` is unavailable;
   `mkfs /` then formats it. `mkfs` refuses while `/` is mounted.
+
+## Programs
+
+Commands that are not built in are loaded from `/bin/NAME` (or from a path
+that contains `/`, such as `/usb/tool.nxe`). They are NXE files built with the
+SDK on the NanoPi and uploaded over HTTP:
+
+```
+make -C sdk
+sudo python3 tools/nncp.py --iface eth1 put sdk/build/hello.nxe /bin/hello
+```
+
+They behave like built-in commands in pipelines, with redirection and `&`,
+and Ctrl-C or `kill` stops them; their RAM (code, data, stack, and anything
+they allocated) comes back when they end. A file that is not a valid NXE
+program, or was damaged in transfer (CRC check), is refused with "not an
+executable". See [sdk/README.md](../sdk/README.md) for writing programs.

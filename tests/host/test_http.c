@@ -24,11 +24,13 @@ int main(void)
     const char *paths[] = { "/etc/rc", "/home", "/home/", "/home/../etc/rc", "/home/a/../../x",
         "/home/%2e%2e/etc/rc", "/home/./a", "/home//a", "/home/a/", "/home/a?x=1",
         "/home/a#b", "/home/a\\b", "/home/.http-3.tmp", "/home/sub/.http-4.tmp",
-        "/home/12345678901234567890123456789012" };
+        "/home/12345678901234567890123456789012", "/bin", "/bin/", "/bin/../etc/rc", "/binx/a", "/bi/a",
+        "/bin/.http-1.tmp" };
     for (unsigned i = 0; i < sizeof paths / sizeof paths[0]; ++i) {
         char buf[200]; snprintf(buf, sizeof buf, "GET %s HTTP/1.0", paths[i]);
         reset(); CHECK_EQ_INT(line(buf), -403);
     }
+    reset(); CHECK_EQ_INT(line("PUT /bin/hello HTTP/1.0"), 0); CHECK(!strcmp(r.path, "/bin/hello"));
     reset(); CHECK_EQ_INT(line("POST /home/a HTTP/1.0"), -405);
     reset(); CHECK_EQ_INT(line("GET /home/a HTTP/2.0"), -400);
     reset(); CHECK_EQ_INT(line("GET /home/a HTTP/1.1"), 0); CHECK_EQ_INT(line(""), -400);

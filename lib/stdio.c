@@ -20,14 +20,20 @@ static void put(void *ctx, char ch)
     if (c->len == (int)sizeof c->buf) flush(c);
 }
 
-int printf(const char *fmt, ...)
+int vprintf(const char *fmt, va_list ap)
 {
     struct chunk c = { .len = 0 };
+    int n = nn_vformat(put, &c, fmt, ap);
+    flush(&c);
+    return n;
+}
+
+int printf(const char *fmt, ...)
+{
     va_list ap;
     va_start(ap, fmt);
-    int n = nn_vformat(put, &c, fmt, ap);
+    int n = vprintf(fmt, ap);
     va_end(ap);
-    flush(&c);
     return n;
 }
 

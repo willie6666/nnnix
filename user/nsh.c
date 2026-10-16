@@ -361,13 +361,32 @@ static int job_command(struct shell *s, int argc, char **argv)
     return rc;
 }
 
-/* Run n parsed commands connected by pipes, each in its own task. */
+/* A loaded program: NAME is /bin/NAME, a name with a '/' is a path. Fills buf
+ * (NN_PATH_MAX) and returns it, or 0 if there is no such file. */
+static const char *program_path(const char *name, char *buf)
+{
+    struct nn_stat st;
+    if (strchr(name, '/')) {
+        if (strlen(name) >= NN_PATH_MAX) return 0;
+        strcpy(buf, name);
+    } else {
+        if (strlen(name) + 6 > NN_PATH_MAX) return 0;
+        strcpy(buf, "/bin/");
+        strcpy(buf + 5, name);
+    }
+    return !sys_stat(buf, &st) && st.type == NN_TYPE_FILE ? buf : 0;
+}
+
+/* Run n parsed commands connected by pipes, each in its own task: a built-in
+ * command (c[i]) or a loaded program (c[i] == 0). */
 static int run_children(struct shell *s, int n, int background)
 {
     const struct command *c[STAGES];
+    char path[NN_PATH_MAX];
     int pipes[STAGES - 1][2], pid[STAGES] = { 0 }, ok = 1;
     for (int i = 0; i < n; ++i) {
         c[i] = find_command(s->cmd->cmd[i].argv[0]);
+        if (!c[i] && program_path(s->cmd->cmd[i].argv[0], path)) continue;
         if (!c[i]) { printf("nsh: %s: command not found\n", s->cmd->cmd[i].argv[0]); return 127; }
         if (!c[i]->run || c[i]->run == cmd_cd) {
             printf("nsh: %s: cannot run in a pipeline or in the background\n", s->cmd->cmd[i].argv[0]);
@@ -396,9 +415,14 @@ static int run_children(struct shell *s, int n, int background)
             opened[nopen++] = fd;
             if (rd->target) out = fd; else in = fd;
         }
-        if (ok) {
+        if (ok && c[i]) {
             struct nn_spawn sp = { c[i]->run, s->cmd->cmd[i].argv, s->cmd->cmd[i].argc, in, out, CHILD_STACK };
             pid[i] = sys_spawn(&sp);
+            if (pid[i] < 0) { printf("nsh: %s: cannot start (%s)\n", s->cmd->cmd[i].argv[0], errstr(pid[i])); pid[i] = 0; ok = 0; }
+        } else if (ok) {
+            struct nn_exec ex = { program_path(s->cmd->cmd[i].argv[0], path), s->cmd->cmd[i].argv,
+                                  s->cmd->cmd[i].argc, in, out };
+            pid[i] = ex.path ? sys_exec(&ex) : SYS_ENOENT;
             if (pid[i] < 0) { printf("nsh: %s: cannot start (%s)\n", s->cmd->cmd[i].argv[0], errstr(pid[i])); pid[i] = 0; ok = 0; }
         }
         for (int k = 0; k < nopen; ++k) sys_close(opened[k]);
@@ -446,7 +470,10 @@ static int execute_line(struct shell *s)
     }
     if (!strcmp(argv[0], "exit") || !strcmp(argv[0], "logout")) return 1;
     const struct command *c = find_command(argv[0]);
-    if (!c) { printf("nsh: %s: command not found\n", argv[0]); s->status = 127; return 0; }
+    if (!c) {                                         /* a program from a file runs as a child */
+        s->status = run_children(s, 1, 0);
+        return 0;
+    }
     s->status = 0;
     for (int i = 0; i < cmd->nredir; ++i) {
         struct sh_redir *r = &cmd->redir[i];

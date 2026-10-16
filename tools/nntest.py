@@ -57,6 +57,7 @@ class Namespace:
 
     def __init__(self, iface):
         self.iface, self.name, self.moved, self.direct = iface, f'nnnix-test-{os.getpid()}', False, False
+        self.created, self.was_up = False, False
 
     def __enter__(self):
         info = json.loads(run('ip', '-j', 'addr', 'show', 'dev', self.iface).stdout)[0]
@@ -71,7 +72,17 @@ class Namespace:
         if any(r.get('dev') == self.iface for r in routes):
             raise SystemExit(f'{self.iface} carries the default route; refusing to move it')
         self.was_up = 'UP' in info['flags']
+        # __exit__ does not run when __enter__ fails: undo a partial setup here.
+        try:
+            self._setup()
+        except BaseException:
+            self._cleanup()
+            raise
+        return self
+
+    def _setup(self):
         run('ip', 'netns', 'add', self.name)
+        self.created = True
         run('ip', 'link', 'set', self.iface, 'netns', self.name)
         self.moved = True
         run('ip', '-n', self.name, 'addr', 'add', PEER, 'dev', self.iface)
@@ -83,20 +94,32 @@ class Namespace:
             if link.get('operstate') == 'UP':
                 break
             time.sleep(.2)
-        return self
 
     def exec_prefix(self):
         """Command prefix that runs a program on the test network."""
         return [] if self.direct else ['ip', 'netns', 'exec', self.name]
 
     def __exit__(self, *exc):
-        if self.direct:
-            return
+        if not self.direct:
+            self._cleanup()
+
+    def _cleanup(self):
+        """Every step runs even if an earlier one fails; failures are reported, not raised."""
+        steps = []
         if self.moved:
-            run('ip', '-n', self.name, 'addr', 'flush', 'dev', self.iface, check=False)
-            run('ip', '-n', self.name, 'link', 'set', self.iface, 'netns', '1', check=False)
-            run('ip', 'link', 'set', self.iface, 'up' if self.was_up else 'down', check=False)
-        run('ip', 'netns', 'del', self.name, check=False)
+            steps += [('ip', '-n', self.name, 'addr', 'flush', 'dev', self.iface),
+                      ('ip', '-n', self.name, 'link', 'set', self.iface, 'netns', '1'),
+                      ('ip', 'link', 'set', self.iface, 'up' if self.was_up else 'down')]
+        if self.created:
+            steps.append(('ip', 'netns', 'del', self.name))
+        for step in steps:
+            try:
+                result = run(*step, check=False)
+                if result.returncode:
+                    print(f'warning: cleanup step failed: {" ".join(step)}: {result.stderr.strip()}', file=sys.stderr)
+            except Exception as exc:             # keep going: the adapter must get back
+                print(f'warning: cleanup step failed: {" ".join(step)}: {exc}', file=sys.stderr)
+        self.moved = self.created = False
 
     def call(self, fn, *args):
         """Run fn in a thread whose network namespace is ours (setns is per thread)."""
@@ -791,8 +814,52 @@ def review_tests(ns, serial, report, iface):
         text += t.read_until(Telnet.PROMPT, 10)
         report.add('shared terminal', text.count('b') == 400 and text.count('f') == 400,
                    f"'b' {text.count('b')}, 'f' {text.count('f')} of 400 each")
+
+        # R10: cp and mv of a file onto itself, under other names, keep it.
+        t.cmd(f'echo keep me > {folder}/same')
+        t.cmd('echo keep usb > /usb/r10.txt')
+        out = t.cmd(f'cp {folder}/same {folder}/./same') + t.cmd('cp /usb/r10.txt /usb/R10.TXT')
+        out += t.cmd(f'cd {folder}') + t.cmd(f'mv same ../{folder.split("/")[-1]}/same') + t.cmd('cd /')
+        out += t.cmd('mv /usb/R10.TXT /usb/') + t.cmd('cp /usb/r10.txt /usb')
+        kept = t.cmd(f'cat {folder}/same') + t.cmd('cat /usb/r10.txt')
+        t.cmd('rm /usb/r10.txt')
+        report.add('same-file cp/mv', out.count('are the same file') == 3 and kept == 'keep me\r\nkeep usb\r\n',
+                   kept.strip().replace('\r\n', ' | '))
+
+        # R15: nc with a pipe as input sends and receives at once: 32 KiB through an echo
+        # server that stops reading while its send buffer is full. All the buffers on the
+        # way (W5500 2+2 KiB, the server's small socket buffers) hold far less than that.
+        def echo_server(port, total, got):
+            lsock = socket.socket()
+            lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            lsock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)   # inherited by the connection
+            lsock.bind((PEER.split('/')[0], port))
+            lsock.listen(1)
+            lsock.settimeout(15)
+            with lsock:
+                c, _ = lsock.accept()
+                with c:
+                    c.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+                    c.settimeout(20)
+                    while got[0] < total:
+                        chunk = c.recv(512)
+                        if not chunk:
+                            break
+                        got[0] += len(chunk)
+                        c.sendall(chunk)
+                    time.sleep(0.5)
+        t.cmd(f'mkfile {folder}/big 32k', 10)
+        got = [0]
+        server = ns.background(echo_server, 7400, 32768, got)
+        time.sleep(0.3)
+        out = t.cmd(f'cat {folder}/big | nc 198.18.0.1 7400 > {folder}/echo', 60)
+        server.join()
+        sums = t.cmd(f'sum {folder}/big {folder}/echo', 10).split('\r\n')
+        crc = [line.split()[:2] for line in sums if line.strip()]
+        report.add('nc both ways', got[0] == 32768 and len(crc) == 2 and crc[0] == crc[1],
+                   f'{got[0]} B echoed, {" / ".join(" ".join(c) for c in crc)} {out.strip()}')
     finally:
-        for name in ('a', 'b', 'c', 'd', 'text', 'lines'):
+        for name in ('a', 'b', 'c', 'd', 'text', 'lines', 'same', 'big', 'echo'):
             t.cmd(f'rm {folder}/{name}')
         t.cmd(f'rmdir {folder}')
 

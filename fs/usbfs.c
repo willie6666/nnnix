@@ -16,6 +16,7 @@ struct ufile {
     char path[NN_PATH_MAX];          /* 8.3 upper case, absolute within the drive */
     uint32_t size;
     uint8_t dir, dirty;
+    int8_t error;                    /* a write-back that failed while switching files, for close */
 };
 
 static struct ufile *current;        /* file the chip has open */
@@ -28,15 +29,16 @@ static int valid_char(char c)
     return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strchr("_-~!#$%&'()@^{}", c);
 }
 
-/* "/dir/file.txt" -> "/DIR/FILE.TXT", checking every component is 8.3. */
+/* "/dir/file.txt" -> "/DIR/FILE.TXT", checking every component is 8.3 and
+ * that there are at most MAX_DEPTH of them (walk() has room for that many). */
 static int to83(const char *in, char *out)
 {
-    uint32_t o = 0;
+    uint32_t o = 0, depth = 0;
     while (*in) {
         while (*in == '/') ++in;
         if (!*in) break;
         uint32_t base = 0, ext = 0, dot = 0;
-        if (o + 14 >= NN_PATH_MAX) return SYS_ENAMETOOLONG;
+        if (o + 14 >= NN_PATH_MAX || ++depth > MAX_DEPTH) return SYS_ENAMETOOLONG;
         out[o++] = '/';
         for (; *in && *in != '/'; ++in) {
             char c = *in >= 'a' && *in <= 'z' ? (char)(*in - 32) : *in;
@@ -60,9 +62,10 @@ static uint8_t walk(const char *path, int skip_last)
     char *comp[MAX_DEPTH];
     int n = 0;
     strcpy(copy, path);
-    for (char *p = copy; *p && n < MAX_DEPTH;) {
+    for (char *p = copy; *p;) {
         while (*p == '/') *p++ = 0;
         if (!*p) break;
+        if (n == MAX_DEPTH) return 0xf1;              /* to83 rejects this; never copy past name[] */
         comp[n++] = p;
         while (*p && *p != '/') ++p;
     }
@@ -89,15 +92,18 @@ static int status_error(uint8_t s)
     switch (s) {
     case CH376_MISS_FILE: return SYS_ENOENT;
     case 0xf0: return SYS_ENOTDIR;
+    case 0xf1: return SYS_ENAMETOOLONG;
     case 0x1e: case 0x1d: return SYS_EIO;
     default: return SYS_EIO;
     }
 }
 
+/* Close the chip's file; with dirty data this writes the new size to the
+ * directory entry, so a failure is kept for that file's close(). */
 static void deactivate(void)
 {
     if (!current) return;
-    ch376_close(current->dirty);
+    if (ch376_close(current->dirty) != CH376_OK && current->dirty) current->error = SYS_EIO;
     current->dirty = 0;
     current = 0;
 }
@@ -121,6 +127,9 @@ static int activate(struct ufile *u)
     uint8_t s = walk(u->path, 0);
     if (s != CH376_OK) { mounted = s == CH376_OK; return status_error(s); }
     current = u;
+    /* Another handle may have changed the file since; its data was written
+     * back when it was deactivated, so the directory entry is current. */
+    u->size = ch376_file_size();
     return 0;
 }
 
@@ -174,8 +183,9 @@ static int u_close(struct file *f)
     ch376_lock();
     if (current == u) deactivate();
     ch376_unlock();
+    int e = u->error;
     kfree(u);
-    return 0;
+    return e;
 }
 
 static int u_read(struct file *f, void *buf, uint32_t n)
@@ -183,11 +193,11 @@ static int u_read(struct file *f, void *buf, uint32_t n)
     struct ufile *u = f->priv;
     uint32_t got = 0;
     if (u->dir) return SYS_EISDIR;
-    if (f->pos >= u->size) return 0;
-    if (n > u->size - f->pos) n = u->size - f->pos;
     ch376_lock();
     int e = ensure();
-    if (!e) e = activate(u);
+    if (!e) e = activate(u);                        /* refreshes the size */
+    if (!e && f->pos >= u->size) { ch376_unlock(); return 0; }
+    if (!e && n > u->size - f->pos) n = u->size - f->pos;
     if (!e && ch376_byte_locate(f->pos) != CH376_OK) e = SYS_EIO;
     if (!e && ch376_read(buf, n, &got) != CH376_OK) e = SYS_EIO;
     ch376_unlock();
@@ -200,10 +210,10 @@ static int u_write(struct file *f, const void *buf, uint32_t n)
 {
     struct ufile *u = f->priv;
     if (u->dir) return SYS_EISDIR;
-    if (f->flags & O_APPEND) f->pos = u->size;
     ch376_lock();
     int e = ensure();
-    if (!e) e = activate(u);
+    if (!e) e = activate(u);                        /* refreshes the size */
+    if (!e && (f->flags & O_APPEND)) f->pos = u->size;
     if (!e && ch376_byte_locate(f->pos) != CH376_OK) e = SYS_EIO;
     if (!e && ch376_write(buf, n) != CH376_OK) e = SYS_EIO;
     if (!e) u->dirty = 1;
@@ -217,6 +227,13 @@ static int u_write(struct file *f, const void *buf, uint32_t n)
 static int u_lseek(struct file *f, int32_t off, int whence)
 {
     struct ufile *u = f->priv;
+    if (whence == SEEK_END && !u->dir) {               /* the current size, as read and write see it */
+        ch376_lock();
+        int e = ensure();
+        if (!e) e = activate(u);
+        ch376_unlock();
+        if (e) return e;
+    }
     int32_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? (int32_t)f->pos : (int32_t)u->size;
     int32_t pos = base + off;
     if (pos < 0) return SYS_EINVAL;

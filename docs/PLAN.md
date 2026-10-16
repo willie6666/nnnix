@@ -410,6 +410,26 @@ Measured on the old firmware: R1 broke the redirected output, R3 lost 1 KiB per 
 in two concurrent 3.4 KB outputs, R6 kept the address. R2 has no direct test (it needs an exact preemption
 point); the existing pipe and job tests cover the path. Cost: 40 B less free heap (locks).
 
+### Full code review fixes (2026-10-16)
+
+A second, whole-tree review (R7-R15) found nine more problems; all were confirmed and fixed. `make test` 117/117;
+`make host-test` 1496 checks plus the date conversions, with two new host tests: littlefs on a RAM flash
+(mount policy, each boot a forked process) and usbfs against a CH376S model (one open file, size written on
+close). The usbfs test fails 10 checks on the old `usbfs.c`; the board tests for R10 and R15 fail on the old
+firmware.
+
+| ID | Problem | Fix |
+| --- | --- | --- |
+| R7 | usbfs accepted seven path components, and walk() copied the rest of the path into a 14-byte name | `to83` rejects more than six components; walk() stops instead of copying |
+| R8 | Any littlefs mount error formatted the flash | only a blank flash (blocks 0 and 1 all 0xff) is formatted; otherwise `/` stays unmounted and `mkfs /` (new system call and command, refused while mounted) formats on request |
+| R9 | A failed USB write-back (size update on close) was ignored, also when it happened while switching files | the error is kept per file and returned by `close`; `cp`/`mv` see it and `mv` keeps the source |
+| R10 | `cp`/`mv` of a file onto itself (also `./x`, other case on `/usb`) truncated it; on USB `mv` then deleted it | paths are normalised (case-insensitive under `/usb`); `cp` refuses, `mv` does nothing |
+| R11 | Several USB handles of one file used their own stale size (appends overwrote each other) | the size is re-read from the chip whenever a handle becomes the open file (after the other handle's write-back) |
+| R12 | PIDs wrapped to 0 and to PIDs still in use | PID 0 and live/zombie PIDs are skipped; a reaped task's leftover memory is freed before its PID can be reused |
+| R13 | `ps` and `/proc/tasks` received pointers to task names that may be freed before printing | names are copied (11 characters) into the list |
+| R14 | `nntest`'s network namespace was not undone when its setup failed half-way | setup failures roll back; every cleanup step runs even if one fails |
+| R15 | `nc` with a pipe or file as input sent everything before reading, so an echoing peer stalled it | a child task sends while the parent prints, as in interactive mode (32 KiB through a back-pressured echo server: the old firmware stopped after 3.3 KiB) |
+
 ### M6 Loadable programs
 - Executable format `NXE`: header + position-independent code (clang `-fropi -frwpi`, R9 as the data base) + relocations.
 - Loader: read from the file system into RAM and run, about 4 KiB maximum; `exec`/`spawn` system calls.

@@ -56,7 +56,7 @@ test: build/nnnix.bin
 	sudo $(PYTHON) tools/nntest.py --flash build/nnnix.bin
 
 HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty build/host/test_console build/host/test_shparse build/host/test_http \
-             build/host/test_time build/host/test_ed
+             build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs
 build/host/test_lib: tests/host/test_lib.c lib/fmt.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin $^ -o $@
@@ -82,6 +82,17 @@ build/host/test_time: tests/host/test_time.c lib/time.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_ed: tests/host/test_ed.c user/edcore.c lib/fmt.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+LFS_HOST = -DLFS_CONFIG=lfs_port.h -DLFS_NAME_MAX=31 -Ifs -Ithird_party/littlefs
+build/host/test_rootfs: tests/host/test_rootfs.c fs/rootfs.c fs/lfs_port.c third_party/littlefs/lfs.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -g -DNNNIX_HOST $(LFS_HOST) -fsanitize=undefined -fno-sanitize-recover=undefined -c tests/host/test_rootfs.c -o $@.t.o
+	$(HOSTCC) -std=c11 -w -g -DNNNIX_HOST $(LFS_HOST) -c fs/rootfs.c -o $@.r.o
+	$(HOSTCC) -std=c11 -w -g -DNNNIX_HOST $(LFS_HOST) -c fs/lfs_port.c -o $@.p.o
+	$(HOSTCC) -std=c11 -w -g -DNNNIX_HOST $(LFS_HOST) -c third_party/littlefs/lfs.c -o $@.l.o
+	$(HOSTCC) -fsanitize=undefined $@.t.o $@.r.o $@.p.o $@.l.o -o $@
+build/host/test_usbfs: tests/host/test_usbfs.c fs/usbfs.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 host-test: $(HOST_TESTS)

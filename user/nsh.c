@@ -155,6 +155,7 @@ static const struct command commands[] = {
     { "pwd", cmd_pwd, "working directory" },
     { "cd", cmd_cd, "change directory" },
     { "df", cmd_df, "file system space" },
+    { "mkfs", cmd_mkfs, "format / if it did not mount" },
     { "mkfile", cmd_mkfile, "NAME SIZE test file" },
     { "sum", cmd_sum, "CRC-32 of files" },
     { "wc", cmd_wc, "count lines, words, bytes" },

@@ -270,7 +270,8 @@ int cmd_netstat(int argc, char **argv)
 
 static int connected(uint8_t s) { return s == NN_SS_ESTABLISHED || s == NN_SS_CLOSE_WAIT; }
 
-/* Typed lines go to the socket (fd 1) while the parent prints what arrives. */
+/* Standard input (typed lines, or a file or pipe) goes to the socket (fd 1)
+ * while the parent prints what arrives, so neither direction waits for the other. */
 static int nc_typist(int argc, char **argv)
 {
     char buf[96];
@@ -284,8 +285,9 @@ static int nc_typist(int argc, char **argv)
     return 0;
 }
 
-/* Socket to stdout until the peer closes, the typist ends, Ctrl-C, or idle_ms of silence. */
-static int nc_pump(int fd, int proto, int child, uint32_t idle_ms)
+/* Socket to stdout until the peer closes, Ctrl-C, idle_ms of silence, or (with
+ * until_child) the typist ends. */
+static int nc_pump(int fd, int proto, int child, int until_child, uint32_t idle_ms)
 {
     char buf[128];
     uint32_t last = sys_uptime();
@@ -302,9 +304,13 @@ static int nc_pump(int fd, int proto, int child, uint32_t idle_ms)
         }
         if (proto == NN_SOCK_TCP && i.state != NN_SS_ESTABLISHED) return 0;     /* peer closed */
         int status;
-        if (child > 0 && sys_wait(child, &status, 0) == child) return 0;     /* ^D or ^C typed */
-        if (child <= 0 && nn_interrupted()) return 130;
-        if (idle_ms && sys_uptime() - last >= idle_ms) return 0;
+        if (child > 0 && sys_wait(child, &status, 0) == child) {
+            child = 0;
+            if (until_child) return 0;                 /* ^D or ^C typed */
+            last = sys_uptime();                       /* all sent: the silence counts from here */
+        }
+        if (!until_child && nn_interrupted()) return 130;
+        if (idle_ms && !child && sys_uptime() - last >= idle_ms) return 0;
         sys_sleep(20);
     }
 }
@@ -339,24 +345,17 @@ int cmd_nc(int argc, char **argv)
             sys_sleep(20);
         }
     }
-    if (sys_isatty(0) == 1) {
-        char *child_argv[] = { "nc", 0 };
-        struct nn_spawn s = { nc_typist, child_argv, 1, -1, fd, 1024 };
-        int pid = sys_spawn(&s);
-        if (pid < 0) { printf("nc: %s\n", errstr(pid)); goto out; }
-        rc = nc_pump(fd, proto, pid, 0);
-        int status;
-        sys_kill(pid);
-        sys_wait(pid, &status, NN_FOREVER);
-    } else {
-        char buf[128];
-        int n;
-        while ((n = sys_read(0, buf, sizeof buf)) > 0) {
-            int w = sys_write(fd, buf, (size_t)n);
-            if (w < 0) { printf("nc: %s\n", errstr(w)); goto out; }
-        }
-        rc = nc_pump(fd, proto, 0, proto == NN_SOCK_UDP ? 2000u : 0);
-    }
+    int tty = sys_isatty(0) == 1;
+    char *child_argv[] = { "nc", 0 };
+    /* Terminal: the session ends with ^D/^C. File or pipe: once it is all sent,
+     * keep printing until the peer closes (UDP: 2 s of silence). */
+    struct nn_spawn sp = { nc_typist, child_argv, 1, tty ? -1 : 0, fd, 1024 };
+    int pid = sys_spawn(&sp);
+    if (pid < 0) { printf("nc: %s\n", errstr(pid)); goto out; }
+    rc = nc_pump(fd, proto, pid, tty, !tty && proto == NN_SOCK_UDP ? 2000u : 0);
+    int status;
+    sys_kill(pid);
+    sys_wait(pid, &status, NN_FOREVER);
 out:
     sys_close(fd);
     return rc;

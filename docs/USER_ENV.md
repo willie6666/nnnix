@@ -257,8 +257,10 @@ each), 4 HTTP (2 KiB), 5 and 6 for programs such as `nc` and `ntpdate` (2 and
 `nc` connects (or waits for one connection) and then copies standard input to
 the socket and the socket to standard output. With the terminal as input it
 runs interactively until the peer closes, Ctrl-D or Ctrl-C; typed lines are
-sent as you press Enter. With a file or pipe as input it sends all of it and
-then prints what arrives until the peer closes (UDP: until 2 s of silence):
+sent as you press Enter. With a file or pipe as input it sends it while it
+prints what arrives (a child task does the sending, so a peer that echoes
+cannot stall it), then keeps printing until the peer closes (UDP: until 2 s of
+silence):
 
 ```
 echo hello | nc 198.18.0.1 7000
@@ -308,3 +310,18 @@ sysctl console=ask idle_logout=900 telnet_max=2
 Other memory is fixed: the kernel daemon, the file system task and the idle
 task (about 3 KiB of stacks), and about 2.6 KiB of static data. `ps` shows each
 task's stack size and the most it has used.
+
+
+## File system notes
+
+- `/usb` uses 8.3 names (case is ignored) and at most six path components,
+  for example `/usb/a/b/c/d/e/file.txt`; deeper paths give "name too long".
+  Several open files on the USB drive see each other's writes (the CH376S has
+  one file open at a time; nnnix switches between them). An error while the
+  drive writes back a file's size is reported by `close`, so `cp` and `mv`
+  report it too, and `mv` then keeps the source.
+- `cp` refuses to copy a file onto itself, also under another name (`./x`,
+  `../dir/x`, or a different case on `/usb`); `mv` onto itself does nothing.
+- At boot a blank flash is formatted. If the flash holds something that does
+  not mount (damage, another format), it is left alone and `/` is unavailable;
+  `mkfs /` then formats it. `mkfs` refuses while `/` is mounted.

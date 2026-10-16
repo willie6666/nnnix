@@ -155,6 +155,17 @@ void sched_tick(void)
 }
 
 /* ---- task lifetime ---- */
+static struct task *find(uint16_t pid);
+
+/* Interrupts off. PIDs wrap after 65535: skip 0 ("none") and any PID still in
+ * the table, zombies included, so wait, kill and heap ownership stay unique. */
+static uint16_t new_pid(void)
+{
+    uint16_t pid;
+    do pid = next_pid++; while (!pid || find(pid));
+    return pid;
+}
+
 static void task_return(void) { task_exit(0); }
 
 struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
@@ -171,8 +182,9 @@ struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
     int slot = 0;
     while (slot < TASK_MAX && tasks[slot]) ++slot;
     if (slot == TASK_MAX) { irq_restore(s); kfree(stack); return 0; }
+    uint16_t pid = new_pid();                   /* before t is in the table */
     tasks[slot] = t;
-    *t = (struct task){ .stack = stack, .stack_size = stack_bytes, .name = name, .pid = next_pid++,
+    *t = (struct task){ .stack = stack, .stack_size = stack_bytes, .name = name, .pid = pid,
                         .prio = prio, .detached = (uint8_t)(flags & TASK_DETACHED), .slice = SLICE_MS,
                         .ppid = running ? cur()->pid : 0 };
     t->sp = arch_task_stack_init(stack + stack_bytes / 4u, entry, arg, task_return);
@@ -212,27 +224,21 @@ void task_exit(int code)
     for (;;) { }
 }
 
-/* Program allocations left behind by a reaped task. Logging needs interrupts
- * on and may block, so the idle task (which must never block) passes log 0. */
-static void free_leftovers(uint16_t pid, int log)
-{
-    int left = kmem_free_owned(pid);
-    if (left && log) kprintf("pid %u: freed %d blocks it left allocated\n", pid, left);
-}
-
 /* Frees the struct too: no pointer to t may be used afterwards. Called with
- * interrupts off; the caller then passes the returned pid to free_leftovers. */
-static uint16_t task_free(struct task *t)
+ * interrupts off. Program allocations the task left behind are freed while its
+ * pid is still taken, so a new task cannot get that pid (and lose its own
+ * blocks). Returns how many there were, to be logged with interrupts on. */
+static int task_free(struct task *t)
 {
     uint32_t *block = t->stack;
     char *cwd = t->cwd;
     void *owned = t->owned;
-    uint16_t pid = t->pid;
+    int left = kmem_free_owned(t->pid);
     for (int i = 0; i < TASK_MAX; ++i) if (tasks[i] == t) tasks[i] = 0;
     kfree(cwd);
     kfree(owned);
     kfree(block);
-    return pid;
+    return left;
 }
 
 int task_join(struct task *t, uint32_t *cpu_ms)
@@ -244,9 +250,10 @@ int task_join(struct task *t, uint32_t *cpu_ms)
     }
     int code = t->exit_code;
     if (cpu_ms) *cpu_ms = t->cpu_ms;
-    uint16_t pid = task_free(t);
+    uint16_t pid = t->pid;
+    int left = task_free(t);
     irq_restore(s);
-    free_leftovers(pid, 1);
+    if (left) kprintf("pid %u: freed %d blocks it left allocated\n", pid, left);
     return code;
 }
 
@@ -329,8 +336,14 @@ int task_list(struct task_info *out, int max, int skip)
         if (!t || skip-- > 0) continue;
         uint32_t untouched = 0;
         if (t->stack) while (untouched < t->stack_size / 4u && t->stack[untouched] == STACK_FILL) untouched++;
-        out[n++] = (struct task_info){ t->name, t->pid, t->prio, t->state, t->stack_size,
-                                       t->stack ? t->stack_size - untouched * 4u : 0, t->cpu_ms };
+        /* A copy of the name: a program's name lives in its argv block, which is
+         * freed when it is reaped, possibly before the caller prints the list. */
+        struct task_info *o = &out[n++];
+        *o = (struct task_info){ .pid = t->pid, .prio = t->prio, .state = t->state, .stack_size = t->stack_size,
+                                 .stack_used = t->stack ? t->stack_size - untouched * 4u : 0, .cpu_ms = t->cpu_ms };
+        uint32_t k = 0;
+        while (k + 1 < sizeof o->name && t->name[k]) { o->name[k] = t->name[k]; ++k; }
+        o->name[k] = 0;
     }
     irq_restore(s);
     return n;
@@ -344,9 +357,8 @@ static void idle_main(void *arg)
         for (int i = 0; i < TASK_MAX; ++i) {
             uint32_t s = irq_save();
             struct task *t = tasks[i];
-            uint16_t pid = t && t->state == TASK_ZOMBIE && t->detached ? task_free(t) : 0;
+            if (t && t->state == TASK_ZOMBIE && t->detached) task_free(t);   /* idle must not log (block) */
             irq_restore(s);
-            if (pid) free_leftovers(pid, 0);
         }
         __asm volatile("wfi");
     }

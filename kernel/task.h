@@ -46,7 +46,7 @@ struct task {
 };
 
 struct task_info {
-    const char *name;
+    char name[12];                   /* copied, cut to 11 characters */
     uint16_t pid;
     uint8_t prio, state;
     uint32_t stack_size, stack_used, cpu_ms;

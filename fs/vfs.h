@@ -63,6 +63,7 @@ int vfs_rename(const char *from, const char *to);
 int vfs_chdir(const char *path);
 int vfs_getcwd(char *buf, uint32_t n);
 int vfs_statfs(const char *path, struct nn_statfs *s);
+int vfs_mkfs(const char *path);      /* "/" only, and only while it is not mounted */
 int vfs_dup2(int fd, int target);
 int vfs_pipe(int fds[2]);            /* read end, write end */
 int vfs_install(struct file *f);     /* lowest free fd from 3 */
@@ -75,7 +76,8 @@ int vfs_abspath(const char *cwd, const char *path, char *out, uint32_t size);
 
 /* File systems. */
 extern const struct fs_ops lfs_ops, usbfs_ops, devfs_ops, procfs_ops;
-int  rootfs_mount(struct mount *m);  /* in fsd: mount, or format and mount */
+int  rootfs_mount(struct mount *m);  /* in fsd: mount; format only a blank flash */
+int  rootfs_format(struct mount *m); /* in fsd: format and mount, only while not mounted */
 void usbfs_invalidate(void);         /* someone else used the CH376S directly */
 
 #endif

@@ -49,6 +49,7 @@ enum {
     SYS_SOCKINFO = 37, /* sockinfo(fd, struct nn_sockinfo *); fd -1-N reads hardware socket N */
     SYS_NETCFG  = 38,  /* netcfg(struct nn_netcfg *, NN_NET_*) */
     SYS_SYSCTL  = 39,  /* sysctl(NN_CTL_*, value) -> value; a negative value only reads */
+    SYS_MKFS    = 40,  /* mkfs("/"): format the flash; only when it did not mount (EBUSY otherwise) */
     SYS_COUNT
 };
 #define SYS_REBOOT_MAGIC 0x1d0cu
@@ -229,5 +230,6 @@ static inline int sys_listen(int fd, uint16_t port) { return NN_SYSCALL2(SYS_LIS
 static inline int sys_sockinfo(int fd, struct nn_sockinfo *i) { return NN_SYSCALL2(SYS_SOCKINFO, fd, (uintptr_t)i); }
 static inline int sys_netcfg(struct nn_netcfg *c, int op) { return NN_SYSCALL2(SYS_NETCFG, (uintptr_t)c, op); }
 static inline int sys_sysctl(int key, int value) { return NN_SYSCALL2(SYS_SYSCTL, key, value); }
+static inline int sys_mkfs(const char *path) { return NN_SYSCALL1(SYS_MKFS, (uintptr_t)path); }
 
 #endif

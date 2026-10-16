@@ -119,26 +119,77 @@ int cmd_cat(int argc, char **argv)
     return rc;
 }
 
+/* Absolute path with "." and ".." resolved into out (NN_PATH_MAX); 0, or -1
+ * if too long. Built in place: the shell's stack is small. */
+static int normalize(const char *path, char *out)
+{
+    uint32_t o = 0;
+    if (path[0] != '/') {
+        if (sys_getcwd(out, NN_PATH_MAX) < 0) return -1;   /* already normalized */
+        o = (uint32_t)strlen(out);
+        if (o == 1) o = 0;                                   /* "/" */
+    }
+    for (const char *p = path; *p;) {
+        while (*p == '/') ++p;
+        const char *c = p;
+        while (*p && *p != '/') ++p;
+        uint32_t len = (uint32_t)(p - c);
+        if (!len || (len == 1 && c[0] == '.')) continue;
+        if (len == 2 && c[0] == '.' && c[1] == '.') { while (o && out[--o] != '/') { } continue; }
+        if (o + 1 + len + 1 > NN_PATH_MAX) return -1;
+        out[o++] = '/';
+        memcpy(out + o, c, len);
+        o += len;
+    }
+    if (!o) out[o++] = '/';
+    out[o] = 0;
+    return 0;
+}
+
+static int under_usb(const char *p) { return !strncmp(p, "/usb", 4) && (!p[4] || p[4] == '/'); }
+
+/* Both name one file: FAT on the USB drive ignores case. */
+static int same_file(const char *a, const char *b)
+{
+    char x[NN_PATH_MAX], y[NN_PATH_MAX];
+    if (normalize(a, x) || normalize(b, y)) return 0;
+    if (!under_usb(x) || !under_usb(y)) return !strcmp(x, y);
+    const char *p = x, *q = y;
+    for (; *p && *q; ++p, ++q) {
+        char c = *p >= 'a' && *p <= 'z' ? (char)(*p - 32) : *p, d = *q >= 'a' && *q <= 'z' ? (char)(*q - 32) : *q;
+        if (c != d) return 0;
+    }
+    return *p == *q;
+}
+
+/* The destination file: dst itself, or src's name inside the directory dst. */
+static const char *target_of(const char *src, const char *dst, char *buf)
+{
+    if (!is_dir(dst)) return dst;
+    uint32_t n = (uint32_t)strlen(dst);
+    if (n + 1 + strlen(base_name(src)) + 1 > NN_PATH_MAX) return 0;
+    strcpy(buf, dst);
+    if (n && buf[n - 1] != '/') buf[n++] = '/';
+    strcpy(buf + n, base_name(src));
+    return buf;
+}
+
 static int copy_file(const char *cmd, const char *src, const char *dst)
 {
     char target[NN_PATH_MAX];
-    if (is_dir(dst)) {
-        uint32_t n = (uint32_t)strlen(dst);
-        if (n + 1 + strlen(base_name(src)) + 1 > sizeof target) return fail(cmd, dst, SYS_ENAMETOOLONG);
-        strcpy(target, dst);
-        if (n && target[n - 1] != '/') target[n++] = '/';
-        strcpy(target + n, base_name(src));
-        dst = target;
-    }
+    const char *to = target_of(src, dst, target);
+    if (!to) return fail(cmd, dst, SYS_ENAMETOOLONG);
+    /* Opening the destination truncates it: it must not be the source. */
+    if (same_file(src, to)) { printf("%s: %s and %s are the same file\n", cmd, src, to); return 1; }
     int in = sys_open(src, O_RDONLY);
     if (in < 0) return fail(cmd, src, in);
-    int out = sys_open(dst, O_WRONLY | O_CREAT | O_TRUNC);
-    if (out < 0) { sys_close(in); return fail(cmd, dst, out); }
+    int out = sys_open(to, O_WRONLY | O_CREAT | O_TRUNC);
+    if (out < 0) { sys_close(in); return fail(cmd, to, out); }
     int e = copy_fd(in, out);
     sys_close(in);
     int c = sys_close(out);
     if (e < 0) return fail(cmd, src, e);
-    if (c < 0) return fail(cmd, dst, c);
+    if (c < 0) return fail(cmd, to, c);
     return 0;
 }
 
@@ -151,9 +202,12 @@ int cmd_cp(int argc, char **argv)
 int cmd_mv(int argc, char **argv)
 {
     if (argc != 3) { printf("usage: mv SOURCE DEST\n"); return 1; }
+    char target[NN_PATH_MAX];
+    const char *to = target_of(argv[1], argv[2], target);
+    if (to && same_file(argv[1], to)) return 0;     /* moving a file onto itself: nothing to do */
     int e = sys_rename(argv[1], argv[2]);
     if (e == SYS_EXDEV || e == SYS_ENOSYS) {         /* across file systems: copy, then remove */
-        if (copy_file("mv", argv[1], argv[2])) return 1;
+        if (copy_file("mv", argv[1], argv[2])) return 1;   /* the source stays unless the copy closed cleanly */
         e = sys_unlink(argv[1]);
     }
     return e ? fail("mv", argv[1], e) : 0;
@@ -284,4 +338,14 @@ int cmd_sum(int argc, char **argv)
         printf("%08x %u %s %u ms\n", ~crc, size, argv[i], ms);
     }
     return rc;
+}
+
+/* mkfs /: format the onboard flash. Only allowed while "/" is not mounted,
+ * i.e. after the boot refused to format a flash that held something else. */
+int cmd_mkfs(int argc, char **argv)
+{
+    if (argc != 2 || strcmp(argv[1], "/")) { printf("usage: mkfs /\n"); return 1; }
+    int e = sys_mkfs("/");
+    if (e == SYS_EBUSY) { printf("mkfs: / is mounted; it is only formatted when it could not be mounted\n"); return 1; }
+    return e ? fail("mkfs", "/", e) : 0;
 }

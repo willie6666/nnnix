@@ -32,19 +32,20 @@ struct lfile {
     uint8_t cache[CACHE];
 };
 
-int rootfs_mount(struct mount *m)
+/* littlefs keeps its superblock pair in blocks 0 and 1: all 0xff there means
+ * the flash was never formatted. */
+static int flash_blank(void)
 {
-    (void)m;
-    uint32_t size = spiflash_size();
-    if (!size) { kprintf("rootfs: no SPI flash\n"); return SYS_ENODEV; }
-    cfg.block_count = size / SPIFLASH_SECTOR;
-    int e = lfs_mount(&lfs, &cfg);
-    if (e) {
-        kprintf("rootfs: no file system (%d), formatting %u KiB\n", e, size / 1024u);
-        e = lfs_format(&lfs, &cfg);
-        if (!e) e = lfs_mount(&lfs, &cfg);
-        if (e) { kprintf("rootfs: format failed (%d)\n", e); return e; }
+    uint8_t b[32];
+    for (uint32_t addr = 0; addr < 2u * SPIFLASH_SECTOR; addr += sizeof b) {
+        spiflash_read(addr, b, sizeof b);
+        for (unsigned i = 0; i < sizeof b; ++i) if (b[i] != 0xff) return 0;
     }
+    return 1;
+}
+
+static void mounted_now(uint32_t size)
+{
     /* Directories that the other mounts appear in, so "ls /" shows them. */
     static const char *const dirs[] = { "/usb", "/dev", "/proc", "/home", "/etc" };
     for (unsigned i = 0; i < sizeof dirs / sizeof dirs[0]; ++i) lfs_mkdir(&lfs, dirs[i]);
@@ -52,7 +53,44 @@ int rootfs_mount(struct mount *m)
     lfs_ssize_t used = lfs_fs_size(&lfs);
     kprintf("rootfs: littlefs, %u KiB, %u KiB used\n", size / 1024u,
             used < 0 ? 0u : (uint32_t)used * SPIFLASH_SECTOR / 1024u);
+}
+
+static int format(uint32_t size)
+{
+    int e = lfs_format(&lfs, &cfg);
+    if (!e) e = lfs_mount(&lfs, &cfg);
+    if (e) { kprintf("rootfs: format failed (%d)\n", e); return e; }
+    mounted_now(size);
     return 0;
+}
+
+/* A blank flash is formatted; any other mount failure (a read error, damage, a
+ * different format) leaves the data alone: "/" stays unavailable until
+ * someone runs mkfs. */
+int rootfs_mount(struct mount *m)
+{
+    (void)m;
+    uint32_t size = spiflash_size();
+    if (!size) { kprintf("rootfs: no SPI flash\n"); return SYS_ENODEV; }
+    cfg.block_count = size / SPIFLASH_SECTOR;
+    int e = lfs_mount(&lfs, &cfg);
+    if (!e) { mounted_now(size); return 0; }
+    if (!flash_blank()) {
+        kprintf("rootfs: mount failed (%d); the flash is not blank, so it is left alone (mkfs / formats it)\n", e);
+        return e;
+    }
+    kprintf("rootfs: blank flash, formatting %u KiB\n", size / 1024u);
+    return format(size);
+}
+
+int rootfs_format(struct mount *m)
+{
+    (void)m;
+    if (mounted) return SYS_EBUSY;                  /* only to recover a flash that did not mount */
+    uint32_t size = spiflash_size();
+    if (!size) return SYS_ENODEV;
+    kprintf("rootfs: formatting %u KiB on request\n", size / 1024u);
+    return format(size);
 }
 
 static int rfs_open(struct mount *m, const char *path, int flags, struct file *f)

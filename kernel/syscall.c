@@ -172,6 +172,8 @@ static int32_t sys_sysctl_k(int32_t key, int32_t value)
     return r < 0 ? SYS_EINVAL : r;
 }
 
+static int32_t sys_mkfs_k(const char *path) { return vfs_mkfs(path); }
+
 static int32_t sys_invalid_k(void) { return SYS_ENOSYS; }
 
 static const uintptr_t table[SYS_COUNT] = {
@@ -215,6 +217,7 @@ static const uintptr_t table[SYS_COUNT] = {
     [SYS_SOCKINFO] = (uintptr_t)sys_sockinfo_k,
     [SYS_NETCFG] = (uintptr_t)sys_netcfg_k,
     [SYS_SYSCTL] = (uintptr_t)sys_sysctl_k,
+    [SYS_MKFS] = (uintptr_t)sys_mkfs_k,
 };
 
 /* Called from SVC_Handler with the caller's exception frame:

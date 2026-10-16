@@ -300,6 +300,18 @@ int vfs_rename(const char *from, const char *to)
     return run(&r);
 }
 
+static int do_mkfs(struct vreq *r) { return rootfs_format(r->m); }
+
+int vfs_mkfs(const char *path)
+{
+    char abs[NN_PATH_MAX];
+    struct vreq r = { .fn = do_mkfs };
+    int e = resolve(path, abs, &r);
+    if (e) return e;
+    if (r.m != &mounts[MOUNTS - 1] || strcmp(abs, "/")) return SYS_EINVAL;
+    return run(&r);
+}
+
 int vfs_statfs(const char *path, struct nn_statfs *s)
 {
     char abs[NN_PATH_MAX];

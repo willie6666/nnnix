@@ -223,7 +223,7 @@ def encode(frames, frame_ms, flags=0, audio=None):
         audio = np.asarray(audio, dtype=np.int16)
         if len(audio) % 2:
             audio = np.append(audio, np.int16(0))
-        pred, index = 0, 0
+        pred, index = (int(audio[0]) if len(audio) else 0), 0   # no ramp from 0 at the start
         for i in range(0, len(audio), BLOCK):
             body, pred, index = adpcm_encode(audio[i:i + BLOCK], pred, index)
             blocks.append((i * 1000 / RATE, body))

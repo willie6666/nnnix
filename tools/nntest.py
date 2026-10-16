@@ -12,7 +12,6 @@ and must not carry the default route.
 import argparse
 import http.client
 import json
-import math
 import os
 import re
 import zlib
@@ -978,14 +977,14 @@ def nnv_tests(ns, serial, report):
     # A first record whose skips run past the end of the frame (16 x 64 bytes fit).
     files['damaged'] = files['mixed'][:16] + bytes((mknnv.DELTA, 20, 0)) + bytes((0xbf,) * 20)
     files['notnnv'] = b'just some text\n'
+    # The tone demo's pictures with silent sound: samples of 0 keep the buzzer
+    # off (PWM output high), so the sound path is tested without a noise.
     frames, frame_ms, flags, audio = mknnv.DEMOS['tone']()
-    files['tone'] = mknnv.encode(frames, frame_ms, flags, audio)
+    files['tone'] = mknnv.encode(frames, frame_ms, flags, [-32768] * len(audio))
     statuses = [ns.call(http_request, 'PUT', '/bin/play', (REPO / 'sdk/build/play.nxe').read_bytes())[0]]
     statuses += [ns.call(http_request, 'PUT', f'/home/{n}.nnv', d)[0] for n, d in files.items()]
-    # 2 s of raw sound: a 2.4 kHz beep, on and off every 250 ms.
-    beep = bytes(128 + (int(100 * math.sin(2 * math.pi * 2400 * i / 8000)) if i % 4000 < 2000 else 0)
-                 for i in range(16000))
-    statuses.append(ns.call(http_request, 'PUT', '/home/beep.u8', beep)[0])
+    # 2 s of raw sound, all 0: the buzzer stays off.
+    statuses.append(ns.call(http_request, 'PUT', '/home/quiet.u8', bytes(16000))[0])
     t = Telnet(ns)
     t.read_until(Telnet.PROMPT)
     mark = len(serial.lines)
@@ -1030,7 +1029,7 @@ def nnv_tests(ns, serial, report):
         # Sound: 16000 samples take 2 s at 8 kHz; one writer; the close plays out the buffer.
         mark = len(serial.lines)
         started = time.monotonic()
-        out = t.cmd('cat /home/beep.u8 > /dev/audio', 10) + t.cmd('echo $?')
+        out = t.cmd('cat /home/quiet.u8 > /dev/audio', 10) + t.cmd('echo $?')
         took = time.monotonic() - started
         played = serial.wait_for(r'audio: 16000 samples played, 0 short', 2, mark)
         t.cmd('sleep 20 > /dev/audio &')
@@ -1038,7 +1037,7 @@ def nnv_tests(ns, serial, report):
         busy = t.cmd('echo x > /dev/audio')
         t.cmd('kill %1')
         time.sleep(0.5)
-        free = t.cmd('echo x > /dev/audio') + t.cmd('echo $?')
+        free = t.cmd('cat /dev/null > /dev/audio') + t.cmd('echo $?')
         report.add('audio device', out.strip() == '0' and 1.95 < took < 2.6 and played is not None
                    and 'busy' in busy and free.strip().endswith('0'),
                    f'2 s of samples in {took:.2f} s; ' + (busy + free).strip().replace('\r\n', ' | '))
@@ -1056,7 +1055,7 @@ def nnv_tests(ns, serial, report):
         t.send('\x03')
         t.read_until(Telnet.PROMPT, 5)
         stopped = time.monotonic() - started
-        free = t.cmd('echo x > /dev/audio') + t.cmd('echo $?')
+        free = t.cmd('cat /dev/null > /dev/audio') + t.cmd('echo $?')
         report.add('play with sound', re.search(r'120 frames in 3\.9\d\d s, 0 late', out) is not None
                    and silent and gapless is not None and stopped < 1.0 and free.strip().endswith('0'),
                    f'^C took {stopped:.2f} s; ' + (out + free).strip().replace('\r\n', ' | '))
@@ -1072,7 +1071,7 @@ def nnv_tests(ns, serial, report):
     finally:
         for name in ('damaged', 'notnnv'):
             t.cmd(f'rm /home/{name}.nnv')
-        t.cmd('rm /home/beep.u8')
+        t.cmd('rm /home/quiet.u8')
         t.send('exit\r\n'); t.wait_closed(); t.close()
 
 

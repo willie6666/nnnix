@@ -187,4 +187,5 @@ no conversion.
   frame rate; one writer at a time and the device free again after `kill`; a
   picture waits for Enter; Ctrl-C; 2 s of raw sound take 2 s; a video with
   sound on time with no sound gaps, and Ctrl-C silences it at once; damaged
-  and foreign files refused; no RAM left behind.
+  and foreign files refused; no RAM left behind. The sound tests play samples
+  of 0, which keep the buzzer off: they make no noise.

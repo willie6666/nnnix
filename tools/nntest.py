@@ -966,6 +966,75 @@ def m6_tests(ns, serial, report):
         t.send('exit\r\n'); t.wait_closed(); t.close()
 
 
+def nnv_tests(ns, serial, report):
+    """/dev/lcd and the NNV player (sdk/examples/play.c, tools/mknnv.py)."""
+    sys.path.insert(0, str(REPO / 'tools'))
+    import mknnv
+    files = {}
+    for name in ('pattern', 'bounce', 'mixed'):
+        frames, frame_ms, flags = mknnv.DEMOS[name]()
+        files[name] = mknnv.encode(frames, frame_ms, flags)
+    # A first record whose skips run past the end of the frame (16 x 64 bytes fit).
+    files['damaged'] = files['mixed'][:16] + bytes((mknnv.DELTA, 20, 0)) + bytes((0xbf,) * 20)
+    files['notnnv'] = b'just some text\n'
+    statuses = [ns.call(http_request, 'PUT', '/bin/play', (REPO / 'sdk/build/play.nxe').read_bytes())[0]]
+    statuses += [ns.call(http_request, 'PUT', f'/home/{n}.nnv', d)[0] for n, d in files.items()]
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    mark = len(serial.lines)
+    try:
+        for _ in range(20):
+            if ' httpd ' not in t.cmd('ps'):
+                break
+            time.sleep(0.2)
+        before = t.cmd('free')
+        started = time.monotonic()
+        out = t.cmd('play /home/mixed.nnv', 15) + t.cmd('echo $?')
+        took = time.monotonic() - started
+        # 60 frames of 40 ms, a sixth of them raw (1 KiB each from the flash).
+        report.add('play video', all(s in (201, 204) for s in statuses) and out.strip() == '0' and 2.3 < took < 3.5,
+                   f'{took:.2f} s for 60 frames at 40 ms; ' + out.strip().replace('\r\n', ' | '))
+        # One writer at a time; the busy device is free again once its holder ends.
+        # The holder is a background `sleep` with its output on the LCD (two
+        # players at once would not fit in RAM with this shell logged in).
+        t.cmd('sleep 20 > /dev/lcd &')
+        time.sleep(0.5)
+        busy = t.cmd('play /home/pattern.nnv') + t.cmd('echo x > /dev/lcd') + t.cmd('cat /dev/lcd') + t.cmd('ls /dev')
+        t.cmd('kill %1')
+        time.sleep(0.5)
+        after_kill = t.cmd('jobs') + t.cmd('echo x > /dev/lcd') + t.cmd('echo $?')
+        report.add('lcd one writer', 'play: /dev/lcd: busy' in busy and busy.count('busy') == 2
+                   and 'lcd' in busy and after_kill.strip().endswith('0') and 'running' not in after_kill,
+                   (busy + after_kill).strip().replace('\r\n', ' | '))
+        # A picture waits for Enter; ^C ends a looping video at once.
+        t.send('play /home/pattern.nnv\r\n')
+        time.sleep(1)
+        t.send('\r\n')
+        pic = t.read_until(Telnet.PROMPT, 5)
+        t.send('play -l /home/bounce.nnv\r\n')
+        time.sleep(1.5)
+        started = time.monotonic()
+        t.send('\x03')
+        t.read_until(Telnet.PROMPT, 5)
+        stopped = time.monotonic() - started
+        out = t.cmd('echo x > /dev/lcd') + t.cmd('echo $?')
+        report.add('picture and ctrl-c', stopped < 1.0 and out.strip().endswith('0') and 'play' not in pic.split('\r\n', 1)[-1],
+                   f'^C took {stopped:.2f} s; ' + out.strip().replace('\r\n', ' | '))
+        out = (t.cmd('play /home/damaged.nnv') + t.cmd('echo $?') + t.cmd('play /home/notnnv.nnv')
+               + t.cmd('play /home/nosuch.nnv') + t.cmd('play'))
+        report.add('play bad files', 'damaged after 0 frames' in out and 'not an NNV file' in out
+                   and 'nosuch.nnv: no such file' in out and 'usage: play' in out,
+                   out.strip().replace('\r\n', ' | '))
+        time.sleep(0.3)
+        after = t.cmd('free')
+        fault = serial.wait_for(r'HardFault|PANIC', 0.5, mark)
+        report.add('play memory freed', before == after and fault is None, after.strip().replace('\r\n', ' | '))
+    finally:
+        for name in ('damaged', 'notnnv'):
+            t.cmd(f'rm /home/{name}.nnv')
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
 def m7_tests(ns, serial, report, image):
     """Firmware update through the LDROM bootloader (CONFIG0 set to start in LDROM)."""
     # The running build plus a word after its end: never executed, but a CRC of
@@ -1485,6 +1554,12 @@ def main():
             except (OSError, TimeoutError, ConnectionError) as exc:
                 traceback.print_exc()
                 report.add('M6 programs', False, repr(exc))
+
+            try:
+                nnv_tests(ns, serial, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
+                report.add('NNV player', False, repr(exc))
 
             if args.flash:
                 try:

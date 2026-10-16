@@ -1,13 +1,21 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* "/dev": null, zero, tty (the caller's terminal), led (write 0 or 1). */
+/* "/dev": null, zero, tty (the caller's terminal), led (write 0 or 1), lcd.
+ *
+ * lcd: the onboard display as a 1024-byte frame (layout in drivers/lcd.h).
+ * Opening it for writing takes the display from the console text until the
+ * file is closed (also when the program ends or is killed); one writer at a
+ * time, others get EBUSY. Writes go to the position modulo 1024, so writing
+ * whole frames one after another needs no seeking. */
 #include "vfs.h"
 #include "../arch/nuc140/arch.h"
+#include "../kernel/console.h"
 #include "../kernel/task.h"
 #include "../kernel/tty.h"
+#include "../drivers/lcd.h"
 #include "../lib/string.h"
 
-enum { DEV_DIR, DEV_NULL, DEV_ZERO, DEV_TTY, DEV_LED };
-static const char *const names[] = { 0, "null", "zero", "tty", "led" };
+enum { DEV_DIR, DEV_NULL, DEV_ZERO, DEV_TTY, DEV_LED, DEV_LCD };
+static const char *const names[] = { 0, "null", "zero", "tty", "led", "lcd" };
 #define DEVICES (sizeof names / sizeof names[0])
 
 static int find(const char *path)
@@ -24,6 +32,10 @@ static int d_open(struct mount *m, const char *path, int flags, struct file *f)
     if (dev < 0) return flags & O_CREAT ? SYS_EROFS : dev;
     if (dev == DEV_DIR && (flags & O_ACCMODE) != O_RDONLY) return SYS_EISDIR;
     if (dev == DEV_TTY && !task_self()->tty) return SYS_ENODEV;
+    if (dev == DEV_LCD && (flags & O_ACCMODE) != O_RDONLY) {
+        int e = console_lcd_claim();
+        if (e) return e;
+    }
     f->priv = (void *)(uintptr_t)dev;
     return 0;
 }
@@ -43,9 +55,37 @@ static int d_write(struct file *f, const void *buf, uint32_t n)
     switch ((uintptr_t)f->priv) {
     case DEV_TTY: tty_write(task_self()->tty, buf, n); return (int)n;
     case DEV_LED: if (n) board_led_set(((const char *)buf)[0] == '1'); return (int)n;
+    case DEV_LCD: {
+        if ((f->flags & O_ACCMODE) == O_RDONLY) return SYS_EBADF;
+        const uint8_t *p = buf;
+        for (uint32_t left = n; left;) {
+            uint32_t off = f->pos % LCD_FRAME, run = LCD_FRAME - off;
+            if (run > left) run = left;
+            console_lcd_write(off, p, run);
+            f->pos += run;
+            p += run;
+            left -= run;
+        }
+        return (int)n;
+    }
     case DEV_DIR: return SYS_EISDIR;
     default: return (int)n;
     }
+}
+
+static int d_close(struct file *f)
+{
+    if ((uintptr_t)f->priv == DEV_LCD && (f->flags & O_ACCMODE) != O_RDONLY) console_lcd_release();
+    return 0;
+}
+
+static int d_lseek(struct file *f, int32_t off, int whence)
+{
+    if ((uintptr_t)f->priv != DEV_LCD) return SYS_EINVAL;
+    int32_t base = whence == SEEK_CUR ? (int32_t)f->pos : whence == SEEK_END ? (int32_t)LCD_FRAME : 0;
+    if (whence > SEEK_END || base + off < 0) return SYS_EINVAL;
+    f->pos = (uint32_t)(base + off);
+    return (int)f->pos;
 }
 
 static int d_readdir(struct file *f, struct nn_dirent *d)
@@ -63,10 +103,10 @@ static int d_stat(struct mount *m, const char *path, struct nn_stat *st)
     (void)m;
     int dev = find(path);
     if (dev < 0) return dev;
-    st->size = 0;
+    st->size = dev == DEV_LCD ? LCD_FRAME : 0;
     st->type = dev == DEV_DIR ? NN_TYPE_DIR : NN_TYPE_DEV;
     return 0;
 }
 
-const struct fs_ops devfs_ops = { .open = d_open, .read = d_read, .write = d_write,
-                                  .readdir = d_readdir, .stat = d_stat };
+const struct fs_ops devfs_ops = { .open = d_open, .close = d_close, .read = d_read, .write = d_write,
+                                  .lseek = d_lseek, .readdir = d_readdir, .stat = d_stat };

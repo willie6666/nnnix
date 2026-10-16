@@ -13,5 +13,9 @@
 void lcd_init(void);
 void lcd_clear(void);
 void lcd_char(int col, int row, char c, int cursor);   /* cursor: underline the cell */
+/* Graphics: n bytes of a 1024-byte frame starting at byte off (< 1024). Byte i
+ * holds x = i % 128 of page i / 128, bit 0 the top pixel row; set bits are dark. */
+void lcd_bytes(uint32_t off, const uint8_t *p, uint32_t n);
+#define LCD_FRAME 1024u
 
 #endif

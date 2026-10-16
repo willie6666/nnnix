@@ -25,7 +25,7 @@ build/crt0.o: $(SDK)/crt0.c $(SDK)/include/nnnix.h
 	@mkdir -p build
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
-build/%.o: %.c $(SDK)/include/nnnix.h
+build/%.o: %.c $(SDK)/include/nnnix.h $(SDK)/../lib/nnv.h
 	@mkdir -p build
 	$(CLANG) $(CFLAGS) -c $< -o $@
 

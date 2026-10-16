@@ -16,4 +16,10 @@ void console_poll(void);
 void console_input(const uint8_t *bytes, int n);    /* keyboard bytes (any task) */
 size_t console_snapshot(char *buf, size_t size);    /* screen text, for tests */
 
+/* Graphics (/dev/lcd): while claimed, text output still updates the terminal
+ * but not the LCD; release redraws the text. One holder at a time. */
+int  console_lcd_claim(void);         /* 0, or SYS_EBUSY */
+void console_lcd_write(uint32_t off, const void *p, uint32_t n);   /* lcd_bytes */
+void console_lcd_release(void);
+
 #endif

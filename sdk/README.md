@@ -49,6 +49,8 @@ Put it in `sdk/examples/` (or build it from the current directory with
   memory, which stay until the last of them has ended. When the program ends,
   its children are stopped at their next system call.
 - `examples/memtest.c` checks that heap blocks keep their contents over time.
+- `examples/play.c` shows pictures and videos on the LCD through `/dev/lcd`
+  ([docs/NNV.md](../docs/NNV.md)).
 
 The C library is not linked into the program: it is the firmware's own code in
 flash, reached through a function table that `_start` receives

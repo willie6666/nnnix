@@ -78,3 +78,20 @@ void lcd_char(int col, int row, char c, int cursor)
     for (int i = 4; i >= 0; --i) data((uint8_t)(glyph[i] | under));
     cs(0);
 }
+
+void lcd_bytes(uint32_t off, const uint8_t *p, uint32_t n)
+{
+    cs(1);
+    while (n && off < LCD_FRAME) {
+        uint32_t x = off % 128u, run = 128u - x;
+        if (run > n) run = n;
+        /* x..x+run-1 are controller columns 129-x down to 130-x-run: write
+         * upwards from the lowest, so the bytes go out in reverse. */
+        address((uint8_t)(off / 128u), (uint8_t)(130u - x - run));
+        for (uint32_t i = run; i--;) data(p[i]);
+        off += run;
+        p += run;
+        n -= run;
+    }
+    cs(0);
+}

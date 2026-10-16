@@ -533,6 +533,23 @@ confirmed and fixed; `make test` 132/132, `make host-test` 1544 checks plus the 
 | R19 | `nnupdate --host` uploaded to the given host but ran the update on 198.18.0.2 | the same host for every connection; `--iface` only with the test network |
 | R20 | The bootloader ignored a failure to mark the update done, so every later boot erased and wrote APROM again | the result is read back and reported; a staged image that APROM already holds (CRC) is only marked installed, without writing APROM |
 
+### LCD pictures and videos (2026-10-17)
+A file format of our own for the 128x64 LCD and a player ([NNV.md](NNV.md)):
+- `/dev/lcd`: the display as a 1024-byte frame in the controller's page layout. An open for writing takes the
+  LCD from the console (one writer, others EBUSY); text output still updates the terminal grid, and the close
+  (also when a program ends or is killed) clears the LCD and redraws the text. An LCD mutex keeps console text
+  and frames apart on SPI3.
+- NNV: a 16-byte header, then per frame a raw record or a delta record of literal/skip/fill codes applied in
+  place to the previous frame, so the player streams with one frame buffer and a 128-byte read buffer.
+- `play` (SDK program, 1.5 KiB file, 2.5 KiB RAM with bss): plays at the file's frame rate, loops with `-l`,
+  holds a picture until Enter.
+- `tools/mknnv.py`: ffmpeg decodes and scales; Floyd-Steinberg / Atkinson / Bayer / threshold dithering with
+  numpy; demo files for tests; `info` checks a file and draws a frame as text.
+- Result: `make test` 139/139 (5 new: a 60-frame video at 40 ms per frame plays in 2.6 s including loading
+  `play`, one writer, picture until Enter, Ctrl-C back in 20-50 ms, damaged files, RAM back to the same free
+  heap); `make host-test` 3716 checks (2170 new for the decoder). Two players at once do not fit next to a
+  logged-in shell (each takes about 3.7 KiB with its stack), so the test holds `/dev/lcd` with `sleep > /dev/lcd &`.
+
 ## 8. Source layout
 
 ```
@@ -545,9 +562,9 @@ nnnix/
   net/                socket layer, telnetd  (later: dhcp)
   lib/                string, printf, EABI division, system-call stubs (shared by kernel and users)
   user/               nsh and built-in commands, demo programs
-  sdk/                (M6)
+  sdk/                (M6) programs: crt0, nxe.ld, examples (hello ... play)
   tests/host/         unit tests on the build machine
-  tools/              flash.py  console.py  nntest.py (on-target tests)
+  tools/              flash.py  console.py  nntest.py (on-target tests)  mknxe.py  mknnv.py  nncp.py  nnupdate.py
 ```
 
 Repository: <https://github.com/willie6666/nnnix>; at least one commit and tag per milestone.

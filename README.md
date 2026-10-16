@@ -81,6 +81,9 @@ pid name prio state stack_used stack_size cpu_ms
 - `ed` line editor; `date` with the on-chip RTC on the 32.768 kHz crystal, `/etc/tz`, `ntpdate`
 - Loadable programs (`sdk/`, [sdk/README.md](sdk/README.md)): NXE files linked at 0 and relocated by the
   loader; the C library is the firmware's own (a function table), so `hello` needs 276 bytes of RAM
+- Pictures and videos on the LCD ([docs/NNV.md](docs/NNV.md)): `/dev/lcd` gives a program the display as a
+  1024-byte frame (the console text returns when it closes); `tools/mknnv.py` converts pictures and videos
+  through ffmpeg into NNV, a delta-coded format of our own; `play` shows them
 - Firmware updates: `fwupdate FILE` (or `tools/nnupdate.py` from the NanoPi) stages an image in the SPI flash;
   the LDROM bootloader (`boot/`) installs it and repeats an installation that a reset or power loss cut short
 - Network: `ifconfig`, a DHCP client with lease renewal in the kernel daemon, `netstat`, `service` (telnetd,
@@ -91,7 +94,7 @@ pid name prio state stack_used stack_size cpu_ms
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 134 checks) | Result |
+| On-target tests (`make test`, 139 checks) | Result |
 | --- | --- |
 | Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
 | Two sessions reading two different files on the single-file CH376S at once | pass |
@@ -105,6 +108,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Settings: console on/ask/off (1736 B freed when the console logs out), idle logout, telnet session limit | pass |
 | Firmware update through the bootloader, an installation interrupted by a reset, the power-on path | pass |
 | Programs: `/bin/hello` with arguments and exit status, in pipelines and the background, Ctrl-C, from USB, damaged files refused, RAM reclaimed | pass |
+| LCD player: a 60-frame video at its frame rate, one `/dev/lcd` writer at a time, picture until Enter, Ctrl-C, damaged files refused, RAM reclaimed | pass |
 | Review fixes: background redirections, memory of killed programs, concurrent terminal output, DHCP lease end, same-file `cp`/`mv`, `nc` both ways with back-pressure (32 KiB) | pass |
 | littlefs write / read (32 KiB) | 37-50 KiB/s / 256 KiB/s |
 | Console: banner, typing, line editing, clear, scrolling, shell restart after `exit` | pass |
@@ -118,7 +122,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 6208 B (test limit 5600 B) |
 | Code size / static RAM including crash records / main stack / heap | 88 KiB / 2.5 KiB / 512 B / 12.9 KiB |
 
-Host tests: 1544 checks pass (including littlefs on a RAM flash and usbfs against a CH376S model), plus 80 243
+Host tests: 3716 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model and the NNV decoder against the encoder), plus 80 243
 date conversions compared with the host C library.
 
 ## Hardware

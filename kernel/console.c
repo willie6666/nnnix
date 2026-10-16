@@ -7,6 +7,7 @@
 #include "vt.h"
 #include "../arch/nuc140/arch.h"
 #include "../drivers/lcd.h"
+#include "../lib/sys.h"
 #include "../user/nsh.h"
 
 #define INPUT_QUEUE 64u
@@ -17,10 +18,47 @@ static uint8_t queue[INPUT_QUEUE];
 static uint32_t head, tail;          /* protected by irq_save */
 static struct sem input_ready;
 
+/* The LCD is shared by the terminal (any task writing to tty0, kd's notices)
+ * and /dev/lcd: lcd_lock keeps their SPI transfers apart. */
+static struct mutex lcd_lock;
+static volatile uint8_t graphics;    /* /dev/lcd owns the picture */
+
 static void draw(void *ctx, int col, int row, char c, int cursor)
 {
     (void)ctx;
-    lcd_char(col, row, c, cursor);
+    if (!graphics) lcd_char(col, row, c, cursor);
+}
+
+static void text(const char *s, size_t n)
+{
+    mutex_lock(&lcd_lock);
+    vt_write(&vt, s, n);
+    mutex_unlock(&lcd_lock);
+}
+
+int console_lcd_claim(void)
+{
+    uint32_t s = irq_save();
+    int busy = graphics;
+    graphics = 1;
+    irq_restore(s);
+    return busy ? SYS_EBUSY : 0;
+}
+
+void console_lcd_write(uint32_t off, const void *p, uint32_t n)
+{
+    mutex_lock(&lcd_lock);
+    lcd_bytes(off, p, n);
+    mutex_unlock(&lcd_lock);
+}
+
+void console_lcd_release(void)
+{
+    mutex_lock(&lcd_lock);
+    graphics = 0;
+    lcd_clear();
+    vt_redraw(&vt);
+    mutex_unlock(&lcd_lock);
 }
 
 void console_input(const uint8_t *bytes, int n)
@@ -71,7 +109,7 @@ static int console_poll_byte(void *ctx)
 static void console_write(void *ctx, const char *s, size_t n)
 {
     (void)ctx;
-    vt_write(&vt, s, n);
+    text(s, n);
 }
 
 static const struct tty_ops console_ops = { console_getc, console_write, console_poll_byte };
@@ -90,7 +128,7 @@ static void shell(void *arg)
 static void start_shell(void)
 {
     static const char clear[] = "\x1b[2J\x1b[H";
-    vt_write(&vt, clear, sizeof clear - 1);
+    text(clear, sizeof clear - 1);
     shell_task = task_spawn("nsh", shell, 0, NSH_STACK, 5, TASK_LONG_LIVED);
     notice_shown = 0;
 }
@@ -108,8 +146,8 @@ void console_poll(void)
     if (!notice_shown) {
         static const char ask[] = "\x1b[2J\x1b[Hnnnix console\r\n\r\nPress Enter to\r\nlog in.";
         static const char off[] = "\x1b[2J\x1b[Hnnnix console\r\n\r\nThe console is off.";
-        if (mode == CONSOLE_ASK) vt_write(&vt, ask, sizeof ask - 1);
-        else vt_write(&vt, off, sizeof off - 1);
+        if (mode == CONSOLE_ASK) text(ask, sizeof ask - 1);
+        else text(off, sizeof off - 1);
         notice_shown = 1;
     }
     int enter = 0;

@@ -23,6 +23,7 @@ import sys
 import threading
 import tempfile
 import time
+import traceback
 
 sys.dont_write_bytecode = True                  # runs under sudo; keep the tree user-owned
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -115,6 +116,18 @@ class Namespace:
         if 'error' in box:
             raise box['error']
         return box['value']
+
+
+    def background(self, fn, *args):
+        """Like call, but return the started thread instead of waiting for it."""
+        def worker():
+            if not self.direct:
+                with open(f'/run/netns/{self.name}') as ns:
+                    os.setns(ns.fileno(), os.CLONE_NEWNET)
+            fn(*args)
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        return thread
 
 
 def request(cmd, div=4, length=0, payload=b'', expect=None, timeout=60):
@@ -234,7 +247,7 @@ def console_tests(ns, report):
     report.add('console line edit', 'NUC140' in flat and 'xx' not in text, '')
     text = type_keys(b'clear\r')
     report.add('console clear', text.startswith('nnnix$') and text.count('nnnix$') == 1, repr(text[:30]))
-    text = type_keys(b'help\r')
+    text = type_keys(b'help\r', 2.0)          # 50 lines through the LCD
     report.add('console scroll', text.splitlines()[-1].startswith('nnnix$') and 'exit' in text,
                'help output scrolled the 8-line screen')
     type_keys(b'exit\r', 1.0)
@@ -626,7 +639,7 @@ def job_tests(ns, serial, report):
     if keep:
         t.cmd('mv /etc/rc /etc/rc.keep')
     try:
-        t.cmd('echo "sleep 25" > /etc/rc')
+        t.cmd('echo "sleep 14" > /etc/rc')
         t.send('exit\r\n'); t.wait_closed(); t.close()
         mark = len(serial.lines)
         ns.call(request, b'X')
@@ -639,8 +652,324 @@ def job_tests(ns, serial, report):
         report.add('rc time limit', forced and waited < 15, f'login {waited:.1f} s after the link came up')
     finally:
         t.cmd('rm /etc/rc')
+        for _ in range(40):                       # let the boot script finish before later tests
+            if ' init ' not in t.cmd('ps'):
+                break
+            time.sleep(0.5)
         if keep:
             t.cmd('mv /etc/rc.keep /etc/rc')
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
+# ---- M5c: clock, editor and network tools ----
+
+NTP_TIME = 1893553445                 # 2030-01-02 03:04:05 UTC
+
+
+def ntp_server(stop, served):
+    """Answers SNTP requests with NTP_TIME."""
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    u.bind((PEER.split('/')[0], 123))
+    u.settimeout(0.2)
+    with u:
+        while not stop.is_set():
+            try:
+                d, a = u.recvfrom(100)
+            except socket.timeout:
+                continue
+            r = bytearray(48)
+            r[0], r[1] = 0x24, 2                       # version 4, server, stratum 2
+            struct.pack_into('>II', r, 40, NTP_TIME + 2208988800, 0)
+            r[24:32] = d[40:48]
+            u.sendto(bytes(r), a)
+            served.append(a)
+
+
+def dhcp_server(stop, iface, log, lease=120):
+    """Offers 198.18.0.2/30 (the board's test address, so sessions survive) with
+    gateway and DNS 198.18.0.1. log gets (message type, length, broadcast flag, options)."""
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    u.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    u.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    u.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode())
+    u.bind(('0.0.0.0', 67))
+    u.settimeout(0.2)
+    with u:
+        while not stop.is_set():
+            try:
+                d, _ = u.recvfrom(1500)
+            except socket.timeout:
+                continue
+            if len(d) < 240 or d[0] != 1 or d[236:240] != b'\x63\x82\x53\x63':
+                continue
+            opts, i = {}, 240
+            while i < len(d) and d[i] != 255:
+                if d[i] == 0:
+                    i += 1
+                    continue
+                opts[d[i]] = d[i + 2:i + 2 + d[i + 1]]
+                i += 2 + d[i + 1]
+            kind = opts.get(53, b'\0')[0]
+            log.append((kind, len(d), bool(d[10] & 0x80), opts))
+            reply = {1: 2, 3: 5}.get(kind)                    # DISCOVER -> OFFER, REQUEST -> ACK
+            if not reply:
+                continue
+            r = bytearray(240)
+            r[0:3] = b'\x02\x01\x06'
+            r[4:8], r[10:12] = d[4:8], d[10:12]
+            r[16:20], r[20:24], r[28:44] = bytes([198, 18, 0, 2]), bytes([198, 18, 0, 1]), d[28:44]
+            r[236:240] = b'\x63\x82\x53\x63'
+            r += bytes([53, 1, reply, 54, 4, 198, 18, 0, 1, 51, 4]) + struct.pack('>I', lease)
+            r += bytes([1, 4, 255, 255, 255, 252, 3, 4, 198, 18, 0, 1, 6, 4, 198, 18, 0, 1, 255])
+            u.sendto(bytes(r), ('255.255.255.255', 68))
+
+
+def tcp_reply_server(port, replies, got):
+    """Accepts len(replies) connections: reads one line, answers, closes."""
+    lsock = socket.socket()
+    lsock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    lsock.bind((PEER.split('/')[0], port))
+    lsock.listen(2)
+    lsock.settimeout(15)
+    with lsock:
+        for reply in replies:
+            try:
+                c, _ = lsock.accept()
+            except socket.timeout:
+                return
+            with c:
+                c.settimeout(5)
+                data = b''
+                while not data.endswith(b'\n'):
+                    chunk = c.recv(256)
+                    if not chunk:
+                        break
+                    data += chunk
+                got.append(data)
+                c.sendall(reply(data))
+                time.sleep(0.2)
+
+
+def m5c_tests(ns, serial, report, iface):
+    """date/RTC, ed, ifconfig, DHCP, NTP, nc, netstat, services and the M5 boot acceptance."""
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    free_before = t.cmd('free')
+    folder = f'/home/m5c-{os.getpid()}'
+    t.cmd(f'mkdir {folder}')
+    tz_saved = 'tz' in t.cmd('ls /etc').split()
+    if tz_saved:
+        t.cmd('mv /etc/tz /etc/tz.keep')
+    try:
+        # Clock.
+        now = int(time.time())
+        t.cmd("date -s '" + time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(now)) + "'")
+        out = t.cmd('date +%s')
+        diff = int(out.strip() or 0) - int(time.time())
+        utc = t.cmd('date')
+        report.add('date set', abs(diff) <= 2 and utc.strip().endswith('UTC'), f'{utc.strip()} (host {diff:+d} s)')
+        t.cmd('echo +05:30 > /etc/tz')
+        local, utc = t.cmd('date'), t.cmd('date -u')
+        bad = t.cmd('date -s 2026-02-29 10:00') + t.cmd('date -s yesterday')
+        report.add('date tz, checks', local.strip().endswith('+0530') and bad.count('invalid') == 2
+                   and local[11:16] != utc[11:16], f'{local.strip()} / {utc.strip()}')
+        t.cmd('rm /etc/tz')
+        rtc = serial.wait_for(r'rtc: 32.768 kHz crystal running', 1, 0)
+        line = serial.lines[rtc] if rtc is not None else t.cmd('dmesg | grep rtc:').strip()
+        report.add('rtc crystal', 'crystal running' in line, line or 'no crystal reported')
+
+        # ed, interactively and from a script.
+        f = f'{folder}/notes'
+        t.send(f'ed {f}\r\n')
+        t.read_until('*')
+        for line in ('a', 'first line', 'second line', 'third', '.', '2s/second/2nd/', 'w', 'q'):
+            t.send(line + '\r\n')
+            time.sleep(0.05)
+        t.read_until(Telnet.PROMPT)
+        content = t.cmd(f'cat {f}')
+        status, _ = ns.call(http_request, 'PUT', f'{folder}/script',
+                            b'1d\n$a\nappended\n.\n,s/line/LINE/g\n,n\nw\nq\n')
+        out = t.cmd(f'cat {folder}/script | ed -s {f}')
+        after = t.cmd(f'cat {f}')
+        report.add('ed', content.split('\r\n')[:3] == ['first line', '2nd line', 'third']
+                   and status in (201, 204) and '1\t2nd LINE' in out
+                   and after.split('\r\n')[:3] == ['2nd LINE', 'third', 'appended'],
+                   after.strip().replace('\r\n', ' | ') + f' (HTTP {status}, ed printed {out!r})')
+        t.send(f'ed {f}\r\n')
+        t.read_until('*')
+        t.send('1d\r\n')
+        t.read_until('*')
+        t.send('q\r\n')
+        warned = t.read_until('*')
+        t.send('q\r\n')
+        t.read_until(Telnet.PROMPT)
+        unchanged = t.cmd(f'cat {f}') == after
+        report.add('ed unsaved warning', 'unsaved changes' in warned and unchanged, warned.strip())
+
+        # Interface configuration.
+        shown = t.cmd('ifconfig')
+        bad = ''.join(t.cmd(f'ifconfig {a}') for a in ('1.2.3/24', '1.2.3.4/33', '1.2.3.4 gw', '1.2.3.4 via 1.1.1.1'))
+        t.cmd('ifconfig eth0 198.18.0.2/30 gw 198.18.0.1 dns 9.9.9.9')
+        shown2 = t.cmd('ifconfig')
+        report.add('ifconfig', 'inet 198.18.0.2/30' in shown and 'up 100M' in shown and bad.count('usage') == 4
+                   and 'gw 198.18.0.1' in shown2 and 'dns 9.9.9.9' in shown2, shown2.strip().replace('\r\n', ' |'))
+        net = t.cmd('netstat')
+        report.add('netstat', re.search(r'0 diag +tcp +5000 +LISTEN', net) is not None
+                   and re.search(r'[123] telnet +tcp +23 +ESTAB +198\.18\.0\.1:', net) is not None,
+                   net.strip().replace('\r\n', ' | ') if 'ESTAB' not in net else 'diag listening, this session')
+
+        # DHCP (offers the same address, so this session survives).
+        stop, log = threading.Event(), []
+        server = ns.background(dhcp_server, stop, iface, log)
+        time.sleep(0.3)
+        started = time.monotonic()
+        out = t.cmd('dhcp', 25)
+        took = time.monotonic() - started
+        shown = t.cmd('ifconfig')
+        stop.set(); server.join()
+        kinds = [k for k, *_ in log]
+        report.add('dhcp lease', 'from 198.18.0.1, lease 120 s' in out and 'dns 198.18.0.1' in shown
+                   and 'dhcp bound' in shown and kinds[:2] == [1, 3], f'{out.strip()} in {took:.1f} s')
+        report.add('dhcp packets', all(n >= 300 and bcast for _, n, bcast, _ in log)
+                   and log[1][3].get(50) == bytes([198, 18, 0, 2]) and log[1][3].get(54) == bytes([198, 18, 0, 1]),
+                   'broadcast flag, 300 B minimum, requested address and server id')
+        started = time.monotonic()
+        out = t.cmd('dhcp -t 30', 35)
+        took = time.monotonic() - started
+        shown = t.cmd('ifconfig')
+        report.add('dhcp no server', 'no answer' in out and 'inet 198.18.0.2/30' in shown and 'dhcp failed' in shown,
+                   f'{out.strip()} after {took:.1f} s')
+        t.cmd('ifconfig eth0 198.18.0.2/30')
+
+        # NTP.
+        stop, served = threading.Event(), []
+        server = ns.background(ntp_server, stop, served)
+        time.sleep(0.3)
+        out = t.cmd('ntpdate 198.18.0.1', 10)
+        utc = t.cmd('date -u')
+        stop.set(); server.join()
+        report.add('ntpdate', utc.startswith('2030-01-02 03:04:0') and len(served) == 1, out.strip().replace('\r\n', ' | '))
+        out = t.cmd('ntpdate 198.18.0.1', 10)             # the server has stopped
+        t.cmd("date -s '" + time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime()) + "'")
+        report.add('ntpdate no server', 'no answer' in out, out.strip())
+
+        # nc: client through a pipe (TCP and UDP), server into a file, interactive, refused, ^C.
+        got = []
+        server = ns.background(tcp_reply_server, 7300, [lambda d: b'reply:' + d, lambda d: b'echo:' + d], got)
+        time.sleep(0.3)
+        out = t.cmd('echo hello | nc 198.18.0.1 7300', 10)
+        report.add('nc tcp client', out.strip() == 'reply:hello' and got[:1] == [b'hello\n'], out.strip())
+        t.send('nc 198.18.0.1 7300\r\n')
+        time.sleep(0.6)
+        t.send('typed\r\n')
+        out = t.read_until(Telnet.PROMPT, 5)
+        server.join()
+        report.add('nc interactive', 'echo:typed' in out and got[1:] == [b'typed\n'], 'line out, reply in, peer closes')
+
+        def udp_echo(port, got):
+            u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            u.bind((PEER.split('/')[0], port))
+            u.settimeout(10)
+            with u:
+                d, a = u.recvfrom(256)
+                got.append(d)
+                u.sendto(b'pong:' + d, a)
+        got = []
+        server = ns.background(udp_echo, 7301, got)
+        time.sleep(0.3)
+        out = t.cmd('echo ping | nc -u 198.18.0.1 7301', 10)
+        server.join()
+        report.add('nc udp client', out.strip() == 'pong:ping' and got == [b'ping\n'], out.strip())
+
+        t.send(f'nc -l 7302 > {folder}/rx\r\n')
+        time.sleep(0.6)
+
+        def send_to_board():
+            c = socket.create_connection((TARGET[0], 7302), timeout=5)
+            c.sendall(b'line one\nline two\n')
+            time.sleep(0.2)
+            c.close()
+        ns.call(send_to_board)
+        t.read_until(Telnet.PROMPT, 5)
+        out = t.cmd(f'cat {folder}/rx')
+        report.add('nc listen', out == 'line one\r\nline two\r\n', out.strip().replace('\r\n', ' | '))
+
+        out = t.cmd('nc 198.18.0.1 7399', 10)
+        t.send('nc -l 7303\r\n')
+        time.sleep(0.6)
+        started = time.monotonic()
+        t.send('\x03')
+        t.read_until(Telnet.PROMPT, 5)
+        stopped = time.monotonic() - started
+        net = t.cmd('netstat')
+        report.add('nc refused, ^C', 'refused' in out and stopped < 1.0 and re.search(r'5 user +- ', net) is not None
+                   and re.search(r'6 user +- ', net) is not None, f'^C after {stopped * 1000:.0f} ms, sockets closed')
+        bad = ''.join(t.cmd(f'nc {a}') for a in ('1.2.3.4', '1.2.3.4 0', '1.2.3.400 80', '-l', '-x 1.2.3.4 1'))
+        report.add('nc arguments', bad.count('usage') == 5, '')
+
+        # Services.
+        t.cmd('service telnetd stop')
+
+        def try_connect():
+            try:
+                socket.create_connection((TARGET[0], 23), timeout=2).close()
+                return True
+            except OSError:
+                return False
+        time.sleep(0.3)
+        refused = not ns.call(try_connect)
+        listing = t.cmd('service')
+        t.cmd('service telnetd start')
+        time.sleep(0.3)
+        t2 = Telnet(ns, connect_within=3)
+        t2.read_until(Telnet.PROMPT)
+        t2.send('exit\r\n'); t2.wait_closed(); t2.close()
+        report.add('service', refused and 'telnetd  off' in listing and 'httpd    on' in listing,
+                   'telnetd stopped (session kept), started again')
+
+        time.sleep(0.5)
+        free_after = t.cmd('free')
+        report.add('m5c heap reclaimed', free_before == free_after, free_after.strip())
+    finally:
+        t.cmd(f'rm {folder}/notes'); t.cmd(f'rm {folder}/script'); t.cmd(f'rm {folder}/rx')
+        t.cmd(f'rmdir {folder}')
+        t.cmd('rm /etc/tz')
+        if tz_saved:
+            t.cmd('mv /etc/tz.keep /etc/tz')
+        t.cmd('ifconfig eth0 198.18.0.2/30')
+        t.cmd('service telnetd start')
+        t.cmd('service httpd start')
+
+    # M5 acceptance: /etc/rc configures the network (DHCP) and starts telnetd.
+    keep = 'rc' in t.cmd('ls /etc').split()
+    if keep:
+        t.cmd('mv /etc/rc /etc/rc.keep')
+    stop, log = threading.Event(), []
+    server = ns.background(dhcp_server, stop, iface, log)
+    try:
+        for line in ('service telnetd stop', 'ifconfig eth0 198.18.0.2/30', 'dhcp -t 15', 'service telnetd start'):
+            t.cmd(f"echo '{line}' >> /etc/rc")
+        before = int(t.cmd('date +%s').strip() or 0) - int(time.time())
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+        mark = len(serial.lines)
+        ns.call(request, b'X')
+        # Until the W5500 is reset (~0.2 s into the boot) it still listens with
+        # the old firmware's sockets: wait for the new telnetd.
+        serial.wait_for(r'telnetd: listening', 30, mark)
+        t = Telnet(ns, connect_within=10)
+        t.read_until(Telnet.PROMPT, 10)
+        shown = t.cmd('ifconfig')
+        after = int(t.cmd('date +%s').strip() or 0) - int(time.time())
+        leased = serial.wait_for(r'dhcp: lease 120 s', 1, mark)
+        report.add('rc network boot', 'dhcp bound' in shown and leased is not None and [k for k, *_ in log][:2] == [1, 3],
+                   'rc: dhcp lease, then telnetd started')
+        report.add('rtc across reboot', abs(after - before) <= 2, f'clock {before:+d} s before, {after:+d} s after')
+    finally:
+        stop.set(); server.join()
+        t.cmd('rm /etc/rc')
+        if keep:
+            t.cmd('mv /etc/rc.keep /etc/rc')
+        t.cmd('ifconfig eth0 198.18.0.2/30')
         t.send('exit\r\n'); t.wait_closed(); t.close()
 
 
@@ -725,29 +1054,38 @@ def main():
             try:
                 console_tests(ns, report)
             except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
                 report.add('console', False, repr(exc))
             serial.wait_for(r'telnetd: listening', 5, 0)
             try:
                 telnet_tests(ns, report)
             except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
                 report.add('telnet', False, repr(exc))
 
             try:
                 fs_tests(ns, serial, report)
             except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
                 report.add('file systems', False, repr(exc))
 
             try:
                 m5_tests(ns, serial, report)
             except (OSError, TimeoutError, ConnectionError, RuntimeError) as exc:
-                import traceback
                 traceback.print_exc()
                 report.add('M5 environment', False, repr(exc))
 
             try:
                 job_tests(ns, serial, report)
             except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
                 report.add('jobs and pipes', False, repr(exc))
+
+            try:
+                m5c_tests(ns, serial, report, args.iface)
+            except (OSError, TimeoutError, ConnectionError, IndexError) as exc:
+                traceback.print_exc()
+                report.add('M5c tools', False, repr(exc))
 
             if args.usb_bytes:
                 text, _ = ns.call(request, b'U', 1, args.usb_bytes, b'', None, 180)
@@ -779,7 +1117,7 @@ def main():
         log = REPO / 'build/nntest-serial.log'
         flasher.write_user_file(log, '\n'.join(serial.lines) + '\n')
         serial.close()
-    passed = sum(ok for _, ok, _ in report.rows)
+    passed = sum(bool(ok) for _, ok, _ in report.rows)
     print(f'\n{passed}/{len(report.rows)} passed; serial log: {log}')
     return 0 if report.ok else 1
 

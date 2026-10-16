@@ -11,6 +11,9 @@ struct kmem_stats { uint32_t total, free, largest, used_blocks, free_blocks; };
 
 void  kmem_init(void *start, void *end);
 void *kmalloc(size_t size);
+/* From the top of the heap: for long-lived blocks (login shells), so that they
+ * do not split the free space that short-lived allocations come and go in. */
+void *kmalloc_high(size_t size);
 void  kfree(void *p);
 void  kmem_stats(struct kmem_stats *out);
 

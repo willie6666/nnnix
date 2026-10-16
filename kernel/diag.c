@@ -319,7 +319,7 @@ void diag_poll(void)
         task_join(worker, 0);
         worker = 0;
     }
-    if (listener_poll(&listener) && w5500_rx_available(SOCK) >= 6) {
+    if (listener_poll(&listener, 1) && w5500_rx_available(SOCK) >= 6) {
         worker = task_spawn("diag", diag_worker, 0, 1280, 3, 0);
         if (!worker) { kprintf("diag: no task slot\n"); w5500_disconnect(SOCK, 500); }
     }

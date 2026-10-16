@@ -42,7 +42,8 @@ static int console_getc(void *ctx)
             return c;
         }
         irq_restore(s);
-        sem_take(&input_ready, SEM_FOREVER);
+        if (task_self()->killed) return -1;         /* a killed program sees end of input */
+        sem_take(&input_ready, 200);
     }
 }
 
@@ -80,7 +81,7 @@ void console_poll(void)
         task_join(shell_task, 0);
         shell_task = 0;
     }
-    if (!shell_task) shell_task = task_spawn("nsh", shell, 0, 1280, 5, 0);
+    if (!shell_task) shell_task = task_spawn("nsh", shell, 0, 1280, 5, TASK_LONG_LIVED);
 }
 
 void console_init(void)

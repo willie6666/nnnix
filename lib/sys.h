@@ -33,13 +33,21 @@ enum {
     SYS_GETCWD  = 21,  /* getcwd(buf, len) -> len */
     SYS_STATFS  = 22,  /* statfs(path, struct nn_statfs *) */
     SYS_DUP2    = 23,  /* dup2(fd, target); fd -1 gives target back to the terminal */
-    SYS_ALLOC   = 24,  /* alloc(bytes) -> pointer, or null */
+    SYS_ALLOC   = 24,  /* alloc(bytes, flags) -> pointer, or null; NN_ALLOC_LONG: kept for long */
     SYS_FREE    = 25,  /* free(pointer) */
     SYS_SPAWN   = 26,  /* spawn(const struct nn_spawn *) -> pid */
     SYS_WAIT    = 27,  /* wait(pid, int *status, timeout_ms) -> pid, 0 while running; NN_FOREVER waits */
     SYS_KILL    = 28,  /* kill(pid): the program exits at its next system call */
     SYS_PIPE    = 29,  /* pipe(int fds[2]): read end, write end */
     SYS_TTYINTR = 30,  /* ttyintr() -> 1 if Ctrl-C was typed while nobody read the terminal */
+    SYS_TIME    = 31,  /* time() -> seconds since 1970-01-01 UTC */
+    SYS_STIME   = 32,  /* stime(seconds): set the clock (and the RTC) */
+    SYS_ISATTY  = 33,  /* isatty(fd) -> 1 if fd is the terminal */
+    SYS_SOCKET  = 34,  /* socket(NN_SOCK_TCP or NN_SOCK_UDP) -> fd; read/write/close as a file */
+    SYS_CONNECT = 35,  /* connect(fd, const struct nn_sockaddr *): TCP starts connecting; UDP sets the peer */
+    SYS_LISTEN  = 36,  /* listen(fd, port): TCP accepts one connection on the socket; UDP binds */
+    SYS_SOCKINFO = 37, /* sockinfo(fd, struct nn_sockinfo *); fd -1-N reads hardware socket N */
+    SYS_NETCFG  = 38,  /* netcfg(struct nn_netcfg *, NN_NET_*) */
     SYS_COUNT
 };
 #define SYS_REBOOT_MAGIC 0x1d0cu
@@ -91,9 +99,44 @@ struct nn_spawn {
     uint32_t stack;
 };
 #define NN_FOREVER 0xffffffffu
+
+/* Network. Sockets are W5500 hardware sockets; connect and listen do not wait:
+ * poll sockinfo until the state is NN_SS_ESTABLISHED (or the socket closed).
+ * TCP reads wait for data and return 0 once the peer closed; a UDP read returns
+ * one datagram (the rest of a longer one is dropped) and makes its sender the
+ * peer for the next write. */
+enum { NN_SOCK_TCP = 1, NN_SOCK_UDP = 2 };
+struct nn_sockaddr { uint8_t ip[4]; uint16_t port; };
+#define NN_SS_CLOSED      0x00         /* states as the W5500 reports them */
+#define NN_SS_LISTEN      0x14
+#define NN_SS_SYNSENT     0x15
+#define NN_SS_ESTABLISHED 0x17
+#define NN_SS_CLOSE_WAIT  0x1c
+#define NN_SS_UDP         0x22
+struct nn_sockinfo {
+    uint8_t sn, proto, state, user;    /* proto: NN_SOCK_*, 0 when closed; user: opened by a program */
+    uint16_t port, peer_port;
+    uint8_t peer[4];
+    uint16_t rx, tx_free;              /* bytes waiting, transmit room */
+};
+#define NN_SVC_TELNETD 0x01
+#define NN_SVC_HTTPD   0x02
+enum { NN_DHCP_OFF, NN_DHCP_SELECTING, NN_DHCP_REQUESTING, NN_DHCP_BOUND, NN_DHCP_RENEWING, NN_DHCP_FAILED };
+enum { NN_NET_GET, NN_NET_SET, NN_NET_DHCP, NN_NET_SERVICES };
+struct nn_netcfg {
+    uint8_t mac[6], ip[4], mask[4], gw[4], dns[4];   /* NN_NET_SET writes ip, mask, gw and dns */
+    uint8_t services;                  /* NN_SVC_*; written by NN_NET_SERVICES */
+    uint8_t dhcp;                      /* NN_DHCP_* (NN_NET_DHCP starts a lease request) */
+    uint8_t link;                      /* bit0 up, bit1 100M, bit2 full duplex, bit3 chip present */
+    uint8_t server[4];                 /* DHCP server */
+    uint32_t lease;                    /* seconds left */
+};
+
 #define SYS_ESRCH  (-3)
 #define SYS_ECHILD (-10)
 #define SYS_EPIPE  (-32)
+#define SYS_EBUSY  (-16)
+#define SYS_ETIMEDOUT (-110)
 
 #define NN_SVC_CLOBBERS "r1", "r2", "r3", "r12", "lr", "cc", "memory"
 
@@ -155,7 +198,9 @@ static inline int sys_chdir(const char *path) { return NN_SYSCALL1(SYS_CHDIR, (u
 static inline int sys_getcwd(char *buf, size_t len) { return NN_SYSCALL2(SYS_GETCWD, (uintptr_t)buf, len); }
 static inline int sys_statfs(const char *path, struct nn_statfs *s) { return NN_SYSCALL2(SYS_STATFS, (uintptr_t)path, (uintptr_t)s); }
 static inline int sys_dup2(int fd, int target) { return NN_SYSCALL2(SYS_DUP2, fd, target); }
-static inline void *sys_alloc(size_t n) { return (void *)(uintptr_t)(uint32_t)NN_SYSCALL1(SYS_ALLOC, n); }
+#define NN_ALLOC_LONG 1              /* from the top of the heap, away from short-lived blocks */
+static inline void *sys_alloc(size_t n) { return (void *)(uintptr_t)(uint32_t)NN_SYSCALL2(SYS_ALLOC, n, 0); }
+static inline void *sys_alloc_long(size_t n) { return (void *)(uintptr_t)(uint32_t)NN_SYSCALL2(SYS_ALLOC, n, NN_ALLOC_LONG); }
 static inline void sys_free(void *p) { (void)NN_SYSCALL1(SYS_FREE, (uintptr_t)p); }
 static inline int sys_uname(char *buf, size_t len) { return NN_SYSCALL2(SYS_UNAME, (uintptr_t)buf, len); }
 static inline int sys_spawn(const struct nn_spawn *s) { return NN_SYSCALL1(SYS_SPAWN, (uintptr_t)s); }
@@ -166,5 +211,13 @@ static inline int sys_wait(int pid, int *status, uint32_t timeout_ms)
 static inline int sys_kill(int pid) { return NN_SYSCALL1(SYS_KILL, pid); }
 static inline int sys_pipe(int fds[2]) { return NN_SYSCALL1(SYS_PIPE, (uintptr_t)fds); }
 static inline int sys_ttyintr(void) { return NN_SYSCALL0(SYS_TTYINTR); }
+static inline uint32_t sys_time(void) { return (uint32_t)NN_SYSCALL0(SYS_TIME); }
+static inline int sys_stime(uint32_t t) { return NN_SYSCALL1(SYS_STIME, t); }
+static inline int sys_isatty(int fd) { return NN_SYSCALL1(SYS_ISATTY, fd); }
+static inline int sys_socket(int proto) { return NN_SYSCALL1(SYS_SOCKET, proto); }
+static inline int sys_connect(int fd, const struct nn_sockaddr *a) { return NN_SYSCALL2(SYS_CONNECT, fd, (uintptr_t)a); }
+static inline int sys_listen(int fd, uint16_t port) { return NN_SYSCALL2(SYS_LISTEN, fd, port); }
+static inline int sys_sockinfo(int fd, struct nn_sockinfo *i) { return NN_SYSCALL2(SYS_SOCKINFO, fd, (uintptr_t)i); }
+static inline int sys_netcfg(struct nn_netcfg *c, int op) { return NN_SYSCALL2(SYS_NETCFG, (uintptr_t)c, op); }
 
 #endif

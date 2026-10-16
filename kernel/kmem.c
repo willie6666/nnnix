@@ -60,6 +60,29 @@ void *kmalloc(size_t size)
     return b ? (char *)b + HDR : 0;
 }
 
+void *kmalloc_high(size_t size)
+{
+    if (!size || total < HDR || size > total - HDR) return 0;
+    uint32_t need = (uint32_t)((size + 7u) & ~(size_t)7u) + HDR;
+    uint32_t s = LOCK();
+    struct block **link = &free_list, **best = 0, *b;
+    for (; (b = *link); link = &b->next)            /* the list is in address order: keep the last fit */
+        if (b->size >= need) best = link;
+    b = best ? *best : 0;
+    if (b) {
+        if (b->size - need >= MIN_SPLIT + HDR) {
+            b->size -= need;                            /* the free part stays where it is */
+            b = (struct block *)((char *)b + b->size);
+            b->size = need;
+        } else {
+            *best = b->next;
+        }
+        b->tag = USED;
+    }
+    UNLOCK(s);
+    return b ? (char *)b + HDR : 0;
+}
+
 void kfree(void *p)
 {
     if (!p) return;

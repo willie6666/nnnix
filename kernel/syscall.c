@@ -10,6 +10,8 @@
 #include "../lib/string.h"
 #include "../lib/sys.h"
 #include "../arch/nuc140/arch.h"
+#include "../drivers/rtc.h"
+#include "../net/net.h"
 
 static int32_t sys_exit_k(int32_t code) { task_exit(code); }
 static int32_t sys_yield_k(void) { task_yield(); return 0; }
@@ -68,7 +70,10 @@ static int32_t sys_chdir_k(const char *path) { return vfs_chdir(path); }
 static int32_t sys_getcwd_k(char *buf, uint32_t n) { return vfs_getcwd(buf, n); }
 static int32_t sys_statfs_k(const char *path, struct nn_statfs *s) { return vfs_statfs(path, s); }
 static int32_t sys_dup2_k(int32_t fd, int32_t target) { return vfs_dup2(fd, target); }
-static int32_t sys_alloc_k(uint32_t n) { return (int32_t)(uintptr_t)kmalloc(n); }
+static int32_t sys_alloc_k(uint32_t n, uint32_t flags)
+{
+    return (int32_t)(uintptr_t)((flags & NN_ALLOC_LONG) ? kmalloc_high(n) : kmalloc(n));
+}
 static int32_t sys_free_k(void *p) { kfree(p); return 0; }
 
 /* Child programs: the argv copy lives in one block owned by the task. */
@@ -121,6 +126,23 @@ static int32_t sys_kill_k(int32_t pid) { int r = task_kill((uint16_t)pid); retur
 static int32_t sys_pipe_k(int *fds) { return vfs_pipe(fds); }
 static int32_t sys_ttyintr_k(void) { return task_self()->tty ? tty_interrupted(task_self()->tty) : 0; }
 
+static int32_t sys_time_k(void) { return (int32_t)time_now(); }
+static int32_t sys_stime_k(uint32_t t)
+{
+    if (time_set(t)) return SYS_EINVAL;
+    kprintf("clock set by pid %u\n", task_self()->pid);
+    return 0;
+}
+static int32_t sys_isatty_k(int32_t fd)
+{
+    return fd >= 0 && fd <= 2 && !vfs_fd_is_open(fd) && task_self()->tty ? 1 : 0;
+}
+static int32_t sys_socket_k(int32_t proto) { return sock_create(proto); }
+static int32_t sys_connect_k(int32_t fd, const struct nn_sockaddr *a) { return sock_connect(fd, a); }
+static int32_t sys_listen_k(int32_t fd, uint32_t port) { return sock_listen(fd, (uint16_t)port); }
+static int32_t sys_sockinfo_k(int32_t fd, struct nn_sockinfo *i) { return sock_info(fd, i); }
+static int32_t sys_netcfg_k(struct nn_netcfg *c, int32_t op) { return net_config(c, op); }
+
 static int32_t sys_invalid_k(void) { return SYS_ENOSYS; }
 
 static const uintptr_t table[SYS_COUNT] = {
@@ -155,6 +177,14 @@ static const uintptr_t table[SYS_COUNT] = {
     [SYS_KILL] = (uintptr_t)sys_kill_k,
     [SYS_PIPE] = (uintptr_t)sys_pipe_k,
     [SYS_TTYINTR] = (uintptr_t)sys_ttyintr_k,
+    [SYS_TIME] = (uintptr_t)sys_time_k,
+    [SYS_STIME] = (uintptr_t)sys_stime_k,
+    [SYS_ISATTY] = (uintptr_t)sys_isatty_k,
+    [SYS_SOCKET] = (uintptr_t)sys_socket_k,
+    [SYS_CONNECT] = (uintptr_t)sys_connect_k,
+    [SYS_LISTEN] = (uintptr_t)sys_listen_k,
+    [SYS_SOCKINFO] = (uintptr_t)sys_sockinfo_k,
+    [SYS_NETCFG] = (uintptr_t)sys_netcfg_k,
 };
 
 /* Called from SVC_Handler with the caller's exception frame:

@@ -80,13 +80,13 @@ static void start(int i)
     uint8_t sn = (uint8_t)(NET_SOCK_TELNET + i), ip[4];
     uint16_t port;
     net_peer(sn, ip, &port);
-    struct session *s = kmalloc(sizeof *s);
+    struct session *s = kmalloc_high(sizeof *s);
     if (s) {
         memset(s, 0, sizeof *s);
         s->sn = sn;
         tty_init(&s->tty, &session_ops, s);
         net_send(sn, telnet_greeting, sizeof telnet_greeting);
-        s->task = task_spawn("nsh", session_main, s, SESSION_STACK, SESSION_PRIO, 0);
+        s->task = task_spawn("nsh", session_main, s, SESSION_STACK, SESSION_PRIO, TASK_LONG_LIVED);
     }
     if (!s || !s->task) {
         static const char msg[] = "nnnix: out of memory\r\n";
@@ -122,7 +122,7 @@ void telnetd_poll(void)
     for (int i = 0; i < NET_TELNET_SOCKS; ++i) {
         struct session *s = sessions[i];
         if (s) { if (s->done && (!s->task || s->task->state == TASK_ZOMBIE)) finish(i); }
-        else if (listener_poll(&listeners[i])) start(i);
+        else if (listener_poll(&listeners[i], net_services & NN_SVC_TELNETD)) start(i);
     }
 }
 

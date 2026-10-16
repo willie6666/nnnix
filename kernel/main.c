@@ -9,6 +9,7 @@
 #include "../drivers/uart.h"
 #include "../drivers/spi.h"
 #include "../drivers/spiflash.h"
+#include "../drivers/rtc.h"
 #include "console.h"
 #include "kd.h"
 #include "../fs/vfs.h"
@@ -64,6 +65,7 @@ void kmain(void)
 
     kmem_init(&__heap_start, &__heap_end);
     uart1_init();
+    rtc_init();
     spi_init();
     sched_init();
     telnetd_init();

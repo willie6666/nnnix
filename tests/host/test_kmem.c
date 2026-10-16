@@ -70,7 +70,7 @@ int main(void)
             ptr[i] = NULL;
         } else {
             len[i] = (size_t)(rand() % 300) + 1;
-            ptr[i] = kmalloc(len[i]);
+            ptr[i] = (i & 1) ? kmalloc_high(len[i]) : kmalloc(len[i]);
             if (ptr[i]) memset(ptr[i], i, len[i]);
         }
     }
@@ -78,5 +78,25 @@ int main(void)
     kmem_stats(&s);
     CHECK_EQ_INT(s.free, sizeof heap);
     CHECK_EQ_INT(s.free_blocks, 1);
+
+    /* Long-lived blocks come from the top: freeing and reallocating a low block
+     * around them leaves the free space in one piece. */
+    char *low = kmalloc(100), *high = kmalloc_high(200);
+    CHECK(low == (char *)heap + KMEM_HEADER || (uintptr_t)low - (uintptr_t)heap < 16);
+    CHECK((char *)high + 200 + 8 >= (char *)heap + sizeof heap - 8);
+    kfree(low);
+    kmem_stats(&s);
+    CHECK_EQ_INT(s.free_blocks, 1);
+    CHECK_EQ_INT(s.largest, sizeof heap - KMEM_HEADER - 200);
+    char *exact = kmalloc_high(s.largest - KMEM_HEADER);   /* takes the whole free block */
+    CHECK(exact != NULL);
+    kmem_stats(&s);
+    CHECK_EQ_INT(s.free, 0);
+    kfree(exact);
+    kfree(high);
+    kmem_stats(&s);
+    CHECK_EQ_INT(s.free, sizeof heap);
+    CHECK_EQ_INT(s.free_blocks, 1);
+    CHECK(kmalloc_high(sizeof heap) == NULL);
     return check_summary("test_kmem");
 }

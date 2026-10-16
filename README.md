@@ -8,9 +8,9 @@ flash and a USB drive, and later stand-alone loadable programs. The full plan is
 
 ## Status
 
-**M5 in progress: shell scripts, text tools, HTTP file transfer, pipes, background jobs and Ctrl-C implemented.**
-M0 foundation, M1 kernel core, M2 telnet, M3 LCD/keyboard, the RAM diet and M4 file systems are complete.
-The editor, DHCP and RTC tools remain in M5.
+**M5 user environment complete**: shell scripts, pipes, background jobs, Ctrl-C, the `ed` editor, a real-time
+clock, DHCP, `nc`, NTP and HTTP file transfer. M0 foundation, M1 kernel core, M2 telnet, M3 LCD/keyboard, the RAM
+diet, M4 file systems and M5 are done; M6 (loadable programs) is next.
 
 ```
 nnnix$ ls / | grep usb
@@ -24,6 +24,12 @@ nnnix$ jobs
 [1] running  sleep
 nnnix$ kill %1
 [1] done  sleep
+nnnix$ dhcp
+dhcp: 192.168.1.50/24 from 192.168.1.1, lease 86400 s
+nnnix$ ntpdate 192.168.1.1
+2026-10-16 14:30:05 +0800
+ntpdate: offset 3 s
+nnnix$ echo hello | nc 192.168.1.10 7000
 ```
 
 nnnix runs a shell on the board's own LCD with a USB keyboard, and up to three more over telnet. Files live on
@@ -62,37 +68,46 @@ pid name prio state stack_used stack_size cpu_ms
 - Kernel daemon `kd`: one event loop for the network, keyboard, telnet and diag listeners, console shell restart and module supervision
 - File systems: VFS with `/` (littlefs on the SPI flash), `/usb` (CH376S FAT drive), `/dev`, `/proc`; per-task file descriptors and working directory; littlefs and CH376S work runs in the `fsd` task
 - Network: interrupt-driven W5500, socket layer with self re-arming listeners, telnet server with three sessions
-- Shell `nsh`: `help echo ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir touch pwd cd df mkfile sum`, redirection `< > >>`, using only system calls
+- Shell `nsh`: `help echo ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir touch pwd
+  cd df mkfile sum wc head tail grep hexdump ed date ifconfig dhcp service netstat nc ntpdate`, redirection
+  `< > >>`, using only system calls
 - M5 shell: quotes/escapes, per-session variables (`set`, `unset`, `env`, `$NAME`, `${NAME}`, `$?`),
   `sh`/`source` scripts and optional `/etc/rc` at boot; streaming `wc head tail grep hexdump`
 - HTTP transfers: TCP port 8080, GET/PUT under `/home`, temporary-file uploads committed by atomic rename;
   `tools/nncp.py` transfers binary files with no third-party host dependencies
-- Memory: first-fit kmalloc with coalescing; task stacks get red-zone and canary checks and an overflow panics
+- Pipes (`a | b | c`), background jobs (`&`, `jobs`, `kill`, `wait`) and Ctrl-C
+- `ed` line editor; `date` with the on-chip RTC on the 32.768 kHz crystal, `/etc/tz`, `ntpdate`
+- Network: `ifconfig`, a DHCP client with lease renewal in the kernel daemon, `netstat`, `service` (telnetd,
+  httpd), `nc` (TCP/UDP, client/server); sockets are files for programs (`socket`, `connect`, `listen`)
+- Memory: first-fit kmalloc with coalescing, long-lived blocks (login shells) from the top of the heap; task
+  stacks get red-zone and canary checks and an overflow panics
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 70 checks) | Result |
+| On-target tests (`make test`, 102 checks) | Result |
 | --- | --- |
 | Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
 | Two sessions reading two different files on the single-file CH376S at once | pass |
 | Files survive a reboot | pass |
 | M5: quoting, variables, scripts/nesting, long-line rejection, `/etc/rc` after reboot and text tools | pass |
 | HTTP: 32 KiB binary roundtrip, atomic replacement, aborted upload, framing/path checks, TCP half-close | pass |
-| `nncp.py` upload/download, concurrent shell use and heap reclamation | pass |
-| littlefs write / read (32 KiB) | 50 KiB/s / 256 KiB/s |
+| Pipes, background jobs, kill, Ctrl-C (back at the prompt in 2-4 ms), hang-up at logout, `/etc/rc` time limit | pass |
+| `ed` interactively and from a script, `date`/time zone, RTC across a reboot (within 1 s) | pass |
+| DHCP lease (0.2 s), packet format, no-server fallback; NTP; `nc` TCP/UDP client, server, interactive, Ctrl-C | pass |
+| `/etc/rc` configures the network by DHCP and starts telnetd at boot (lease 2.4 s after reset) | pass |
+| littlefs write / read (32 KiB) | 37-50 KiB/s / 256 KiB/s |
 | Console: banner, typing, line editing, clear, scrolling, shell restart after `exit` | pass |
-| Two telnet sessions: one runs `sleep 2`, the other answers | in 5 ms |
-| Line editing, Ctrl-C, Ctrl-D, three sessions, log-out and reconnect, heap leak check | pass |
-| W5500 send / receive (SPI 12.5 MHz, 8 KiB socket buffer) | 627 KiB/s / 580 KiB/s, verified byte by byte |
-| CH376S raw write / read 256 KiB (SPI 12.5 MHz) | 114 kB/s / 229 kB/s, 0 errors |
+| Two telnet sessions: one runs `sleep 2`, the other answers | in 4 ms |
+| Line editing, Ctrl-C, Ctrl-D, three sessions, log-out and reconnect, heap leak checks | pass |
+| W5500 send / receive (SPI 12.5 MHz, 4 KiB socket buffer) | 555 KiB/s / 588 KiB/s, verified byte by byte |
+| CH376S raw write / read 256 KiB (SPI 12.5 MHz) | 114 kB/s / 230 kB/s, 0 errors |
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot | pass |
-| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5784 B (test limit 5500 B) |
-| Code size / static RAM including crash records / heap | 62.0 KiB / 3.3 KiB / 11.9 KiB |
+| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 5056 B (test limit 4800 B) |
+| Code size / static RAM including crash records / heap | 83 KiB / 3.6 KiB / 11.7 KiB |
 
-Host tests: 1326 checks pass. An additional 20 consecutive telnet
-connect/command/logout cycles pass.
+Host tests: 1440 checks pass, plus 80 243 date conversions compared with the host C library.
 
 ## Hardware
 
@@ -129,9 +144,9 @@ network namespace (198.18.0.1/30; nnnix is 198.18.0.2) and moves it back afterwa
 no IPv4 address and must not carry the default route. The default is `eth1`; pass `--iface` to
 `tools/nntest.py` to change it.
 
-Shell syntax, script limits, `/etc/rc` and file-transfer usage are documented in
-[docs/USER_ENV.md](docs/USER_ENV.md). The network address is still static; boot-time network
-configuration and service control remain pending in M5.
+Shell syntax, script limits, `/etc/rc`, the editor, the clock, network configuration and file transfer are
+documented in [docs/USER_ENV.md](docs/USER_ENV.md). The board starts with the static address 198.18.0.2/30;
+`/etc/rc` can switch to DHCP or another address at boot.
 
 OpenOCD lookup order: `$NNNIX_OPENOCD_ROOT` (an extracted Debian openocd package root), then
 `.tools/openocd/root` one level above the repository, then `openocd` on `PATH`.
@@ -141,11 +156,11 @@ OpenOCD lookup order: `$NNNIX_OPENOCD_ROOT` (an extracted Debian openocd package
 ```
 arch/nuc140/   startup, vector table, clock, pins, context switch, HardFault, linker script
 kernel/        scheduler, synchronisation, system calls, kmalloc, klog, panic, kd (kernel daemon), tty, line editor, vt, console, input, module supervision, diag service
-net/           socket layer, telnet filter, telnetd, bounded HTTP parser and file-transfer server
-drivers/       uart spi ch376 w5500 ch9350 hidkey kbd lcd font5x7 spiflash
+net/           socket layer, sockets for programs, interface config, DHCP client, telnet filter, telnetd, HTTP server
+drivers/       uart spi ch376 w5500 ch9350 hidkey kbd lcd font5x7 spiflash rtc
 fs/            vfs and fsd, rootfs (littlefs), usbfs (CH376S), devfs, procfs, littlefs port
-lib/           printf subset, string functions, EABI division (no divide instruction on M0), system-call stubs (sys.h), user stdio
-user/          nsh shell, parser, file/text commands, scheduler demo programs
+lib/           printf subset, string functions, calendar time, EABI division (no divide instruction on M0), system-call stubs (sys.h), user stdio
+user/          nsh shell, parser, file/text/network commands, ed, scheduler demo programs
 third_party/   littlefs v2.11.3 (BSD-3-Clause), unmodified
 tests/host/    host unit tests (including a recorded CH9350 capture)
 tools/         flash.py, console.py, nntest.py, nncp.py (HTTP file transfer)

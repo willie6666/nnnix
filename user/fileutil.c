@@ -28,6 +28,9 @@ const char *errstr(int e)
     case SYS_ENOTEMPTY: return "directory not empty";
     case SYS_EINTR: return "interrupted";
     case SYS_EPIPE: return "broken pipe";
+    case SYS_EBUSY: return "busy";
+    case SYS_ETIMEDOUT: return "timed out";
+    case SYS_ESRCH: return "no such process";
     default: return "error";
     }
 }

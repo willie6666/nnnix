@@ -156,7 +156,7 @@ static void serve(void *arg)
 void httpd_poll(void)
 {
     if (worker && worker->state == TASK_ZOMBIE) { task_join(worker, 0); worker = 0; }
-    if (worker || !listener_poll(&listener)) return;
+    if (worker || !listener_poll(&listener, net_services & NN_SVC_HTTPD)) return;
     struct transfer *t = kmalloc(sizeof *t);
     if (t) {
         memset(t, 0, sizeof *t);

@@ -27,6 +27,14 @@
 #define CLK_CLKDIV     REG(0x50000218u)
 #define CLK_PLLCON     REG(0x50000220u)
 
+/* RTC (clocked by the 32.768 kHz crystal LXT) */
+#define RTC_INIR       REG(0x40008000u)   /* bit0: active */
+#define RTC_AER        REG(0x40008004u)   /* bit16: write access enabled */
+#define RTC_TLR        REG(0x4000800cu)   /* BCD time */
+#define RTC_CLR        REG(0x40008010u)   /* BCD date, year from 2000 */
+#define RTC_TSSR       REG(0x40008014u)   /* bit0: 24-hour */
+#define RTC_DWR        REG(0x40008018u)   /* day of the week */
+
 /* GPIO: port n at 0x50004000 + 0x40 * n */
 enum { PORTA, PORTB, PORTC, PORTD, PORTE };
 #define GPIO_PMD(p)    REG(0x50004000u + 0x40u * (p))   /* 2 bits/pin: 0 in 1 out 2 OD 3 quasi */

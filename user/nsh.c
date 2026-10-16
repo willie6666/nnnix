@@ -156,6 +156,14 @@ static const struct command commands[] = {
     { "tail", cmd_tail, "last lines (-n COUNT)" },
     { "grep", cmd_grep, "literal text search" },
     { "hexdump", cmd_hexdump, "hexadecimal and ASCII" },
+    { "ed", cmd_ed, "line editor" },
+    { "date", cmd_date, "show or set the clock" },
+    { "ifconfig", cmd_ifconfig, "network address" },
+    { "dhcp", cmd_dhcp, "get an address by DHCP" },
+    { "service", cmd_service, "start/stop telnetd, httpd" },
+    { "netstat", cmd_netstat, "network sockets" },
+    { "nc", cmd_nc, "TCP/UDP client or server" },
+    { "ntpdate", cmd_ntpdate, "set the clock from NTP" },
     { "sh", 0, "run a script in this shell" },
     { "source", 0, "run a script in this shell" },
     { "set", 0, "set NAME VALUE" },
@@ -457,7 +465,7 @@ static int execute(struct shell *s)
 
 static void run_shell(int interactive)
 {
-    struct shell *s = sys_alloc(sizeof *s);
+    struct shell *s = sys_alloc_long(sizeof *s);
     if (!s) { printf("nsh: out of memory\n"); return; }
     memset(s, 0, sizeof *s);
     if (interactive) {

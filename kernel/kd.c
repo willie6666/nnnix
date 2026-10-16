@@ -12,7 +12,9 @@
 #include "../arch/nuc140/arch.h"
 #include "../drivers/spi.h"
 #include "../drivers/uart.h"
+#include "../drivers/rtc.h"
 #include "../drivers/w5500.h"
+#include "../net/net.h"
 #include "../net/telnetd.h"
 #include "../net/http.h"
 #include "../user/nsh.h"
@@ -68,6 +70,7 @@ static void kd_main(void *arg)
             poll_at = jiffies + POLL_MS;
             if (modules.w5500) {
                 diag_poll();
+                dhcp_poll();
                 httpd_poll();
                 if (logins_open()) telnetd_poll();
             }
@@ -76,6 +79,7 @@ static void kd_main(void *arg)
         if (due(second_at)) {
             second_at += 1000u;
             modules_poll();
+            rtc_poll();
             board_led_toggle();
         }
         if (due(minute_at)) {

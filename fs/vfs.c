@@ -312,7 +312,7 @@ int vfs_chdir(const char *path)
     if (st.type != NN_TYPE_DIR) return SYS_ENOTDIR;
     char *copy = 0;
     if (strcmp(abs, "/")) {
-        copy = kmalloc((uint32_t)n + 1);
+        copy = kmalloc_high((uint32_t)n + 1);        /* lives as long as the task, usually a shell */
         if (!copy) return SYS_ENOMEM;
         strcpy(copy, abs);
     }

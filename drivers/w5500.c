@@ -12,7 +12,7 @@ enum { Sn_MR = 0x00, Sn_CR = 0x01, Sn_IR = 0x02, Sn_SR = 0x03, Sn_PORT = 0x04,
        Sn_RXBUF = 0x1e, Sn_TXBUF = 0x1f, Sn_TX_FSR = 0x20, Sn_TX_WR = 0x24,
        Sn_RX_RSR = 0x26, Sn_RX_RD = 0x28, Sn_IMR = 0x2c };
 enum { SIR = 0x0017, SIMR = 0x0018 };
-enum { CR_OPEN = 0x01, CR_LISTEN = 0x02, CR_DISCON = 0x08, CR_CLOSE = 0x10,
+enum { CR_OPEN = 0x01, CR_LISTEN = 0x02, CR_CONNECT = 0x04, CR_DISCON = 0x08, CR_CLOSE = 0x10,
        CR_SEND = 0x20, CR_RECV = 0x40 };
 enum { IR_TIMEOUT = 0x08, IR_SEND_OK = 0x10 };
 
@@ -102,7 +102,7 @@ uint8_t w5500_collect(void)
 int w5500_wait(int sn, uint32_t timeout_ms) { return sem_take(&sock_ev[sn], timeout_ms); }
 uint8_t w5500_phy(void) { return r8(0x002e, 0); }
 
-void w5500_configure(const struct w5500_netcfg *cfg, const uint8_t buffer_kib[8])
+void w5500_set_addr(const struct w5500_netcfg *cfg)
 {
     uint8_t common[18];
     for (int i = 0; i < 4; ++i) common[i] = cfg->gateway[i];
@@ -110,6 +110,11 @@ void w5500_configure(const struct w5500_netcfg *cfg, const uint8_t buffer_kib[8]
     for (int i = 0; i < 6; ++i) common[8 + i] = cfg->mac[i];
     for (int i = 0; i < 4; ++i) common[14 + i] = cfg->ip[i];
     wr(0x0001, 0, common, sizeof common);          /* GAR SUBR SHAR SIPR are contiguous */
+}
+
+void w5500_configure(const struct w5500_netcfg *cfg, const uint8_t buffer_kib[8])
+{
+    w5500_set_addr(cfg);
     for (int sn = 0; sn < 8; ++sn) {
         w8(Sn_RXBUF, SREG(sn), buffer_kib[sn]);
         w8(Sn_TXBUF, SREG(sn), buffer_kib[sn]);
@@ -124,26 +129,60 @@ void w5500_configure(const struct w5500_netcfg *cfg, const uint8_t buffer_kib[8]
     send_pending = 0;
 }
 
-int w5500_tcp_listen(int sn, uint16_t port)
+static void reset_state(int sn)
 {
-    command(sn, CR_CLOSE);
-    w8(Sn_MR, SREG(sn), 0x21);                      /* TCP, no delayed ACK */
-    w16(Sn_PORT, SREG(sn), port);
     w8(Sn_IR, SREG(sn), 0x1f);
     send_pending &= (uint8_t)~(1u << sn);
     queued[sn] = 0;
     consume(sn, 0xff);
+}
+
+int w5500_open(int sn, uint8_t mode, uint16_t port)
+{
+    command(sn, CR_CLOSE);
+    w8(Sn_MR, SREG(sn), mode);
+    w16(Sn_PORT, SREG(sn), port);
+    reset_state(sn);
     command(sn, CR_OPEN);
-    if (r8(Sn_SR, SREG(sn)) != W5500_SOCK_INIT) return -1;
+    uint8_t want = (mode & 0x0fu) == W5500_MODE_UDP ? W5500_SOCK_UDP : W5500_SOCK_INIT;
+    return r8(Sn_SR, SREG(sn)) == want ? 0 : -1;
+}
+
+void w5500_close(int sn)
+{
+    command(sn, CR_CLOSE);
+    reset_state(sn);
+}
+
+int w5500_tcp_listen(int sn, uint16_t port)
+{
+    if (w5500_open(sn, W5500_MODE_TCP_ND, port)) return -1;
     command(sn, CR_LISTEN);
     return r8(Sn_SR, SREG(sn)) == W5500_SOCK_LISTEN ? 0 : -1;
 }
+
+void w5500_set_peer(int sn, const uint8_t ip[4], uint16_t port)
+{
+    wr(0x0c, SREG(sn), ip, 4);                      /* Sn_DIPR */
+    w16(0x10, SREG(sn), port);                      /* Sn_DPORT */
+}
+
+int w5500_tcp_connect(int sn, const uint8_t ip[4], uint16_t port, uint16_t local_port)
+{
+    if (w5500_open(sn, W5500_MODE_TCP_ND, local_port)) return -1;
+    w5500_set_peer(sn, ip, port);
+    command(sn, CR_CONNECT);
+    return 0;
+}
+
+uint8_t w5500_mode(int sn) { return r8(Sn_MR, SREG(sn)); }
+uint16_t w5500_port(int sn) { return r16(Sn_PORT, SREG(sn)); }
 
 uint8_t w5500_status(int sn) { return r8(Sn_SR, SREG(sn)); }
 int w5500_can_send(int sn)
 {
     uint8_t sr = w5500_status(sn);
-    return sr == W5500_SOCK_ESTABLISHED || sr == W5500_SOCK_CLOSE_WAIT;
+    return sr == W5500_SOCK_ESTABLISHED || sr == W5500_SOCK_CLOSE_WAIT || sr == W5500_SOCK_UDP;
 }
 
 void w5500_peer(int sn, uint8_t ip[4], uint16_t *port)
@@ -164,6 +203,15 @@ uint16_t w5500_recv(int sn, void *buf, uint16_t n)
     w16(Sn_RX_RD, SREG(sn), (uint16_t)(ptr + n));
     command(sn, CR_RECV);
     return n;
+}
+
+void w5500_skip(int sn, uint16_t n)
+{
+    uint16_t avail = w5500_rx_available(sn);
+    if (n > avail) n = avail;
+    if (!n) return;
+    w16(Sn_RX_RD, SREG(sn), (uint16_t)(r16(Sn_RX_RD, SREG(sn)) + n));
+    command(sn, CR_RECV);
 }
 
 int w5500_write(int sn, const void *buf, uint16_t n)
@@ -198,7 +246,12 @@ static int wait_send_ok(int sn, uint32_t timeout_ms)
         }
         /* A FIN closes only the peer's sending direction. W5500 permits SEND
          * in CLOSE_WAIT; keep waiting for SEND_OK so the reply reaches it. */
-        if ((ir & IR_TIMEOUT) || !w5500_can_send(sn) || jiffies - start > timeout_ms) return -1;
+        if (ir & IR_TIMEOUT) {                      /* TCP gave up, or UDP found no ARP answer */
+            consume(sn, IR_TIMEOUT);
+            send_pending &= (uint8_t)~(1u << sn);
+            return -1;
+        }
+        if (!w5500_can_send(sn) || jiffies - start > timeout_ms) return -1;
         w5500_wait(sn, 1);
     }
 }
@@ -239,8 +292,5 @@ void w5500_disconnect(int sn, uint32_t timeout_ms)
     command(sn, CR_DISCON);
     uint32_t start = jiffies;
     while (w5500_status(sn) != W5500_SOCK_CLOSED && jiffies - start < timeout_ms) { }
-    command(sn, CR_CLOSE);
-    send_pending &= (uint8_t)~(1u << sn);
-    queued[sn] = 0;
-    consume(sn, 0xff);
+    w5500_close(sn);
 }

@@ -13,6 +13,7 @@ int net_recv(int sn, void *buf, uint16_t n, uint32_t timeout_ms)
         if (got) return got;
         if (w5500_status(sn) != W5500_SOCK_ESTABLISHED) return 0;   /* peer closed, or reset */
         if (timeout_ms && jiffies - start >= timeout_ms) return -ETIMEDOUT;
+        if (task_self()->killed) return -EINTR_TASK;   /* a killed program leaves at once */
         w5500_wait(sn, 100);
     }
 }
@@ -56,9 +57,14 @@ static void relisten(struct listener *l)
     }
 }
 
-int listener_poll(struct listener *l)
+int listener_poll(struct listener *l, int accept)
 {
     uint8_t sr = w5500_status(l->sn);
+    if (!accept) {
+        if (sr != W5500_SOCK_CLOSED) w5500_close(l->sn);
+        l->last_sr = W5500_SOCK_CLOSED;
+        return 0;
+    }
     if (sr != l->last_sr) { l->last_sr = sr; l->since = jiffies; }
     switch (sr) {
     case W5500_SOCK_ESTABLISHED:

@@ -155,11 +155,11 @@ void sched_tick(void)
 static void task_return(void) { task_exit(0); }
 
 struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
-                        uint32_t stack_bytes, uint8_t prio, int detached)
+                        uint32_t stack_bytes, uint8_t prio, int flags)
 {
     stack_bytes = (stack_bytes + 7u) & ~7u;
     if (stack_bytes < TASK_REDZONE + 128u || prio > TASK_PRIO_IDLE) return 0;
-    uint32_t *stack = kmalloc(stack_bytes);
+    uint32_t *stack = (flags & TASK_LONG_LIVED) ? kmalloc_high(stack_bytes) : kmalloc(stack_bytes);
     if (!stack) return 0;
     for (uint32_t i = 0; i < stack_bytes / 4u; ++i) stack[i] = STACK_FILL;
     uint32_t s = irq_save();
@@ -167,12 +167,13 @@ struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
     for (int i = 0; i < TASK_MAX && !t; ++i) if (tasks[i].state == TASK_UNUSED) t = &tasks[i];
     if (!t) { irq_restore(s); kfree(stack); return 0; }
     *t = (struct task){ .stack = stack, .stack_size = stack_bytes, .name = name, .pid = next_pid++,
-                        .prio = prio, .detached = (uint8_t)detached, .slice = SLICE_MS,
+                        .prio = prio, .detached = (uint8_t)(flags & TASK_DETACHED), .slice = SLICE_MS,
                         .ppid = running ? cur()->pid : 0 };
     t->sp = arch_task_stack_init(stack + stack_bytes / 4u, entry, arg, task_return);
     t->tty = running ? cur()->tty : 0;
     if (running && cur()->cwd) {                 /* inherit the working directory */
-        t->cwd = kmalloc(strlen(cur()->cwd) + 1);
+        uint32_t n = (uint32_t)strlen(cur()->cwd) + 1u;
+        t->cwd = (flags & TASK_LONG_LIVED) ? kmalloc_high(n) : kmalloc(n);
         if (t->cwd) strcpy(t->cwd, cur()->cwd);
     }
     t->state = TASK_READY;

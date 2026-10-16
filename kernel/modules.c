@@ -5,16 +5,9 @@
 #include "../arch/nuc140/arch.h"
 #include "../drivers/ch376.h"
 #include "../drivers/w5500.h"
+#include "../net/net.h"
 
 struct modules_state modules;
-
-/* M0 static network: the NanoPi test peer is 198.18.0.1/30. */
-static const struct w5500_netcfg netcfg = {
-    .mac = { 0x02, 0x37, 0x65, 0x55, 0x00, 0x01 },     /* locally administered */
-    .ip = { 198, 18, 0, 2 }, .mask = { 255, 255, 255, 252 }, .gateway = { 0, 0, 0, 0 },
-};
-/* Socket plan (net.h): 0 diag, 1-3 telnet, 4 HTTP. 16 KiB per direction in total. */
-static const uint8_t buffers_kib[8] = { 8, 2, 2, 2, 2, 0, 0, 0 };
 
 void modules_poll(void)
 {
@@ -50,9 +43,10 @@ void modules_poll(void)
     if (w != modules.w5500) {
         modules.w5500 = (uint8_t)w;
         if (w) {
-            w5500_configure(&netcfg, buffers_kib);    /* sockets closed: servers re-listen */
+            w5500_configure(&net_cfg, net_buffers_kib);    /* sockets closed: servers re-listen */
             board_w5500_irq(1);
-            kprintf("w5500: present, ip %u.%u.%u.%u/30\n", netcfg.ip[0], netcfg.ip[1], netcfg.ip[2], netcfg.ip[3]);
+            kprintf("w5500: present, ip %u.%u.%u.%u/%u\n", net_cfg.ip[0], net_cfg.ip[1], net_cfg.ip[2], net_cfg.ip[3],
+                    net_prefix(net_cfg.mask));
         } else kprintf("w5500: not responding\n");
     }
     uint8_t link = w ? (uint8_t)((w5500_phy() & 7u) | 8u) : 0;

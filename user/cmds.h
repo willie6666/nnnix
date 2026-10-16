@@ -23,5 +23,13 @@ int cmd_head(int argc, char **argv);
 int cmd_tail(int argc, char **argv);
 int cmd_grep(int argc, char **argv);
 int cmd_hexdump(int argc, char **argv);
+int cmd_date(int argc, char **argv);
+int cmd_ifconfig(int argc, char **argv);
+int cmd_dhcp(int argc, char **argv);
+int cmd_service(int argc, char **argv);
+int cmd_netstat(int argc, char **argv);
+int cmd_nc(int argc, char **argv);
+int cmd_ntpdate(int argc, char **argv);
+int cmd_ed(int argc, char **argv);
 
 #endif

@@ -1,4 +1,4 @@
-# Shell scripts, pipes, jobs and file transfers (M5)
+# User environment: shell, editor, clock and network (M5)
 
 The LCD/keyboard and telnet consoles use the same `nsh`. Commands remain built
 into the firmware; scripts are text files on littlefs or the USB drive.
@@ -88,8 +88,9 @@ cat /home/boot.txt
 ```
 
 Variables in `/etc/rc` belong to the boot script, not to later interactive
-sessions. The network still uses the static address `198.18.0.2/30` from M4;
-network configuration and service control in `/etc/rc` are future M5 work.
+sessions. Logins (LCD and telnet) start once `/etc/rc` has finished, or after
+10 s if it is still running. A typical network setup is shown under
+[Network](#network) below.
 
 ## Text tools
 
@@ -157,3 +158,117 @@ the creation/replacement status codes in
 [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.4).
 W5500 CLOSE_WAIT data transfer is described in the
 [WIZnet datasheet](https://docs.wiznet.io/img/products/w5500/W5500_ds_v110e.pdf).
+
+
+## Editor: ed
+
+```
+ed [-s] [FILE]
+```
+
+A line editor in the style of UNIX `ed`, which suits the 21x8 LCD. `*` is the
+command prompt; `-s` turns off the prompt and byte counts for scripts, such as
+`ed -s /home/notes < /home/edits`. The text lives in one heap block, so the
+size of a file that can be edited is bounded by free RAM: growing the buffer
+needs the old and the new block at once, so about 2 KiB with one telnet session
+open. "? out of memory" leaves the text unchanged.
+
+| Addresses | |
+| --- | --- |
+| `N` `.` `$` | line N, the current line, the last line |
+| `+N` `-N` | relative to the current line (`+` alone is +1) |
+| `/text/` | next line containing the literal text, wrapping around |
+| `A,B` `,` `;` | a range; `,` is `1,$` and `;` is `.,$` |
+
+| Commands | |
+| --- | --- |
+| (address only) | print that line; an empty line prints the next one |
+| `p` `n` `z` | print, print with line numbers, print a page of 7 lines |
+| `a` `i` `c` | append after, insert before, change; input ends with a line holding only `.` |
+| `d` `j` | delete lines, join lines |
+| `s/old/new/[g][p]` | replace literal text (any delimiter), all occurrences with `g` |
+| `=` | line number (`$` by default) |
+| `w [FILE]` `wq` | write the buffer (or a range); write and quit |
+| `q` `Q` | quit; `q` warns once about unsaved changes, `Q` does not |
+| `e FILE` `r [FILE]` `f [FILE]` | edit another file, read a file in after a line, show or set the file name |
+
+Errors print `? ` and a reason. End of input behaves like `q`. There are no
+regular expressions, undo, marks, `m`/`t` or `!`.
+
+## Clock
+
+```
+date                      local time, or UTC without /etc/tz
+date -u                   UTC
+date +%s                  seconds since 1970-01-01 UTC
+date -s '2026-10-16 14:30[:00]'   set the clock (local time)
+ntpdate 198.18.0.1        set the clock from an (S)NTP server
+echo +8 > /etc/tz         local offset: +8, -5, +05:30 or +0530
+```
+
+The NUC140 RTC runs from the board's 32.768 kHz crystal. It keeps counting
+through resets and firmware updates but not through power loss: the chip has no
+backup supply, so after power-up the clock starts from its reset value (2005)
+until `date -s` or `ntpdate` sets it. If the crystal does not start within 5 s,
+the kernel log says so and the time is kept with the system timer instead.
+`ntpdate` takes an IP address (there is no DNS resolver yet), tries three times
+with a 2 s timeout, and steps the clock; it does not slew it.
+
+## Network
+
+```
+ifconfig                                   show the interface
+ifconfig eth0 192.168.1.50/24 gw 192.168.1.1 dns 192.168.1.1
+dhcp [-t SECONDS]                          get an address (default: wait 20 s)
+netstat                                    the eight W5500 sockets
+service [telnetd|httpd start|stop]         network services
+nc HOST PORT        nc -l PORT             TCP client / server for one connection
+nc -u HOST PORT     nc -u -l PORT          the same over UDP
+```
+
+At power-up the board uses the static address `198.18.0.2/30` (no gateway),
+so it is reachable before `/etc/rc` runs, and both services are on. `/etc/rc`
+can then configure the network, for example:
+
+```
+service telnetd stop
+ifconfig eth0 192.168.1.50/24 gw 192.168.1.1
+dhcp -t 15
+service telnetd start
+```
+
+`dhcp` waits for the Ethernet link, then asks for a lease; if no server answers
+(three tries over 14 s) the current address stays. A lease is renewed at half
+its time (at most daily) by the kernel daemon, retried every minute if the
+server is gone; at the end of the lease a new request starts and the old
+address is kept meanwhile. Requests ask for broadcast replies, because the W5500
+only accepts unicast frames for its current address. `ifconfig` with an address
+stops DHCP.
+
+`service telnetd stop` stops accepting logins; sessions already open continue.
+The diag test service on TCP port 5000 cannot be stopped.
+
+Socket plan (W5500 buffer per direction): 0 diag (4 KiB), 1-3 telnet (2 KiB
+each), 4 HTTP (2 KiB), 5 and 6 for programs such as `nc` and `ntpdate` (2 and
+1 KiB), 7 DHCP (1 KiB). So two `nc`/`ntpdate` commands can run at once.
+
+`nc` connects (or waits for one connection) and then copies standard input to
+the socket and the socket to standard output. With the terminal as input it
+runs interactively until the peer closes, Ctrl-D or Ctrl-C; typed lines are
+sent as you press Enter. With a file or pipe as input it sends all of it and
+then prints what arrives until the peer closes (UDP: until 2 s of silence):
+
+```
+echo hello | nc 198.18.0.1 7000
+nc -l 7000 > /home/upload.bin
+```
+
+A UDP read returns one datagram and makes its sender the destination of the
+next write, so `nc -u -l PORT` answers whoever spoke last. W5500 sockets do not
+answer a SYN when no socket listens: a stopped service or closed port looks
+like a timeout, not a refusal, from the other side.
+
+Programs use sockets through system calls (`socket`, `connect`, `listen`,
+`sockinfo`, then `read`/`write`/`close` like files; see `lib/sys.h`). `connect`
+and `listen` do not wait: programs poll `sockinfo` for the state, which keeps
+Ctrl-C working while they wait.

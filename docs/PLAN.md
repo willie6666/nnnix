@@ -3,9 +3,8 @@
 **nnnix**: NuvotoN NUC UNIX (NuvotoN Nuc NIX), a small UNIX-like operating system for the
 NU-LB_002 board (NUC140VE3CN).
 
-Created 2026-10-15. Status: **M4 done; M5 in progress** (2026-10-16): scripts, text tools, HTTP transfer (M5a) and pipes, jobs, Ctrl-C (M5b) are done; the editor, network setup and RTC remain.
-The first M5 part adds shell scripts, variables, text tools and HTTP file transfer;
-pipes/jobs, editing, network configuration/DHCP and RTC remain pending.
+Created 2026-10-15. Status: **M5 done** (2026-10-16): scripts, text tools, HTTP transfer (M5a), pipes, jobs,
+Ctrl-C (M5b), and the editor, clock and network tools (M5c). Next: M6 loadable programs.
 
 ## 1. Goals
 
@@ -94,7 +93,8 @@ Flash 128 KiB targets: kernel + drivers <= 45 KiB, file systems <= 20 KiB, shell
 | SPI2 -> W25Q16 (CS PD0 as GPIO, CLK PD1, MISO PD2, MOSI PD3) | onboard | Verified |
 | SPI3 -> LCD (CS PD8 as GPIO, CLK PD9, MOSI PD11) | PD8-PD11 (onboard); PD14 left alone | Verified |
 | LED | PC12 | Verified |
-| Buzzer, keys, EEPROM, RTC crystal | Per board documentation | To verify (R4) |
+| RTC crystal (32.768 kHz, X32I/X32O) | onboard | Verified in M5 |
+| Buzzer, keys, EEPROM | Per board documentation | To verify (R4) |
 
 ## 6. File system layout
 
@@ -325,6 +325,38 @@ or control telnetd; those parts of the final M5 acceptance remain open.
 - Costs: about 600 B less free heap than M5a (job tables, task fields, type-ahead, parse buffer); the free-RAM floor
   is now 4800 B with the console shell and one telnet session (measured 5168 B).
 
+**M5c result (2026-10-16)**: `make test` 102/102, `make host-test` 1440 checks plus 80 243 date conversions
+compared with the host C library. This completes M5 and its acceptance: a boot script that stops telnetd, sets the
+address, gets a DHCP lease and starts telnetd again works after a reboot (lease 2.4 s after power-up), and files
+uploaded from the NanoPi land in `/home` (M5a).
+- RTC (R4): the onboard 32.768 kHz crystal starts and the RTC runs from it. It keeps counting through resets and
+  firmware updates (verified across reboots within 1 s) but not through power loss; the NUC140 has no backup
+  supply. Without the crystal the clock falls back to the system timer. `date` (UTC or the `/etc/tz` offset),
+  `date -s`, `date +%s`; `ntpdate` (SNTP, IP address only).
+- `ed`: a line editor core (`user/edcore.c`, 77 host checks) with literal search and substitution, sized for the
+  21x8 LCD (`z` pages 7 lines); the buffer is one heap block that grows in 256-byte steps.
+- Network configuration: the interface starts with the static test address so the board is reachable before
+  `/etc/rc`; `ifconfig` sets address, prefix, gateway and DNS at run time without disturbing open sockets.
+- DHCP client in the kernel daemon (no task, no packet buffer: packets are built in and parsed from the W5500
+  buffers in 8-byte pieces): DISCOVER/OFFER/REQUEST/ACK with broadcast replies, renewal at half the lease, retry
+  and fallback that keep the old address. kd stack peak 724/1024 B with DHCP.
+- Sockets for programs: W5500 sockets 5 and 6 as files (socket, connect, listen, sockinfo system calls; reads and
+  writes go through the VFS, so redirection and pipes work). `nc` (TCP/UDP, client/server, interactive with a
+  typing child task) and `ntpdate` use them; `netstat` lists all eight sockets; `service` starts and stops telnetd
+  and httpd.
+- W5500 buffers are now 4/2/2/2/2/2/1/1 KiB (was 8/2/2/2/2/0/0/0), so diag sends at 555 KiB/s instead of 627.
+- Fixes found by the new tests: a program killed while reading a telnet or LCD terminal only left after the next
+  typed line (terminal input waits now see the kill); a UDP send that timed out (no ARP answer) blocked every later
+  send on that socket.
+- Heap fragmentation: a boot script or a restarted console shell left long-lived stacks in the middle of the heap,
+  and a pipeline then failed with 5 KiB free in two pieces. Login shells, their state and working directories now
+  come from the top of the heap (`kmalloc_high`, `sys_alloc_long`); after the full test run the heap is one block.
+- Costs: 116 B static RAM (heap 11944 B), about 16 KiB code (83 KiB total). Free heap with the console shell and
+  one telnet session is 5056 B (M5b: 5168 B; floor 4800 B).
+- Open: in one of five full test runs the second telnet connection of the telnet tests was accepted only after
+  about 5 s instead of 0.7 s, so that section timed out. It did not recur in eight repeated console + telnet runs;
+  the half-open re-arm in the listener (section M2) is the first suspect.
+
 ### M6 Loadable programs
 - Executable format `NXE`: header + position-independent code (clang `-fropi -frwpi`, R9 as the data base) + relocations.
 - Loader: read from the file system into RAM and run, about 4 KiB maximum; `exec`/`spawn` system calls.
@@ -363,7 +395,7 @@ Repository: <https://github.com/willie6666/nnnix>; at least one commit and tag p
 | R1 | LCD controller initialisation sequence and SPI3 framing. Done in M3; PD14 (backlight on this board revision) is left at its reset state | M3 |
 | R2 | Onboard SPI flash: W25Q16 (ef4015, 2 MiB) on SPI2. Done in M4 | M4 |
 | R3 | The RS-232 transceiver on PB0 and how to isolate it; fallback: software UART RX or another pin | M7 |
-| R4 | RTC 32.768 kHz crystal, buzzer, keys, EEPROM pins | M5 |
+| R4 | RTC 32.768 kHz crystal: present, stable within 0.3 s, RTC counts through resets. Done in M5. Buzzer, keys, EEPROM pins remain | M5/M7 |
 | R5 | littlefs on the Cortex-M0: 19.5 KiB code, about 2.2 KiB RAM with fsd. Done in M4 | M4 |
 | R6 | Whether clang's ROPI/RWPI works for thumbv6m | M6 |
 | R7 | W5500 interrupts (Sn_IMR/SIMR) with the PB2 GPIO interrupt, measured | M2 |

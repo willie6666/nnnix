@@ -51,9 +51,11 @@ enum {
     SYS_SYSCTL  = 39,  /* sysctl(NN_CTL_*, value) -> value; a negative value only reads */
     SYS_MKFS    = 40,  /* mkfs("/"): format the flash; only when it did not mount (EBUSY otherwise) */
     SYS_EXEC    = 41,  /* exec(const struct nn_exec *) -> pid: load an NXE program as a child task */
+    SYS_FWUPDATE = 42, /* fwupdate(path, NN_FW_*, struct nn_fwinfo *): stage a firmware image, or report */
     SYS_COUNT
 };
 #define SYS_REBOOT_MAGIC 0x1d0cu
+#define SYS_REBOOT_CHIP  0x1d0du             /* like a power-on reset: boots as CONFIG0 says */
 
 /* Error results are negative errno values. */
 #define SYS_ENOENT       (-2)
@@ -109,6 +111,19 @@ struct nn_exec {
     int argc, fd_in, fd_out;
 };
 #define SYS_ENOEXEC (-8)                   /* not a valid NXE file */
+
+/* Firmware updates (lib/fwupdate.h): fwupdate(path, 0, 0) copies an APROM
+ * image into the update area; fwupdate(0, NN_FW_REBOOT, 0) restarts through
+ * the LDROM bootloader, which installs it; fwupdate(0, 0, &info) reports. */
+#define NN_FW_REBOOT 1
+#define NN_FW_CANCEL 2                     /* fwupdate(0, NN_FW_CANCEL, 0): forget a staged image */
+enum { NN_FW_NONE, NN_FW_STAGED, NN_FW_DONE };
+struct nn_fwinfo {
+    uint32_t state, size, crc;         /* the update area's record */
+    uint8_t bootloader;                /* LDROM holds a program */
+    uint8_t boot_ldrom;                /* CONFIG0 starts the chip in LDROM */
+    uint8_t legacy_fs;                 /* "/" still covers the update area (mkfs / first) */
+};
 
 /* Network. Sockets are W5500 hardware sockets; connect and listen do not wait:
  * poll sockinfo until the state is NN_SS_ESTABLISHED (or the socket closed).
@@ -204,6 +219,7 @@ static inline int sys_klog(uint32_t *pos, char *buf, size_t len)
     return NN_SYSCALL3(SYS_KLOG, (uintptr_t)pos, (uintptr_t)buf, len);
 }
 static inline void sys_reboot(void) { (void)NN_SYSCALL1(SYS_REBOOT, SYS_REBOOT_MAGIC); }
+static inline void sys_reboot_chip(void) { (void)NN_SYSCALL1(SYS_REBOOT, SYS_REBOOT_CHIP); }
 static inline int sys_open(const char *path, int flags) { return NN_SYSCALL2(SYS_OPEN, (uintptr_t)path, flags); }
 static inline int sys_close(int fd) { return NN_SYSCALL1(SYS_CLOSE, fd); }
 static inline int sys_lseek(int fd, int32_t off, int whence) { return NN_SYSCALL3(SYS_LSEEK, fd, off, whence); }
@@ -240,5 +256,9 @@ static inline int sys_netcfg(struct nn_netcfg *c, int op) { return NN_SYSCALL2(S
 static inline int sys_sysctl(int key, int value) { return NN_SYSCALL2(SYS_SYSCTL, key, value); }
 static inline int sys_mkfs(const char *path) { return NN_SYSCALL1(SYS_MKFS, (uintptr_t)path); }
 static inline int sys_exec(const struct nn_exec *e) { return NN_SYSCALL1(SYS_EXEC, (uintptr_t)e); }
+static inline int sys_fwupdate(const char *path, int flags, struct nn_fwinfo *info)
+{
+    return NN_SYSCALL3(SYS_FWUPDATE, (uintptr_t)path, flags, (uintptr_t)info);
+}
 
 #endif

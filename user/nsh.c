@@ -126,11 +126,15 @@ static int cmd_clear(int argc, char **argv)
     return 0;
 }
 
+/* reboot: restart APROM. reboot -p: a chip reset, like power-on, which starts
+ * wherever CONFIG0 says (the bootloader once it is set to LDROM). */
 static int cmd_reboot(int argc, char **argv)
 {
-    (void)argc; (void)argv;
+    int chip = argc == 2 && !strcmp(argv[1], "-p");
+    if (argc > 1 && !chip) { printf("usage: reboot [-p]\n"); return 1; }
     printf("rebooting\n");
     sys_sleep(100);                  /* let the line reach the terminal */
+    if (chip) sys_reboot_chip();
     sys_reboot();
     return 1;
 }
@@ -156,6 +160,7 @@ static const struct command commands[] = {
     { "cd", cmd_cd, "change directory" },
     { "df", cmd_df, "file system space" },
     { "mkfs", cmd_mkfs, "format / if it did not mount" },
+    { "fwupdate", cmd_fwupdate, "install firmware: [-n] FILE, -c" },
     { "mkfile", cmd_mkfile, "NAME SIZE test file" },
     { "sum", cmd_sum, "CRC-32 of files" },
     { "wc", cmd_wc, "count lines, words, bytes" },
@@ -181,7 +186,7 @@ static const struct command commands[] = {
     { "kill", 0, "kill %JOB or PID" },
     { "wait", 0, "wait for background jobs" },
     { "clear", cmd_clear, "clear the screen" },
-    { "reboot", cmd_reboot, "restart the board" },
+    { "reboot", cmd_reboot, "restart (-p: as at power-on)" },
     { "exit", 0, "leave the shell" },
 };
 

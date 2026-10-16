@@ -75,6 +75,7 @@ struct vreq {
     uint32_t n;
     int32_t off;
     int arg;
+    int (*call)(void *ctx);          /* vfs_in_fsd */
 };
 
 static struct vreq *queue_head, *queue_tail;
@@ -301,6 +302,13 @@ int vfs_rename(const char *from, const char *to)
 }
 
 static int do_mkfs(struct vreq *r) { return rootfs_format(r->m); }
+static int do_call(struct vreq *r) { return r->call(r->buf); }
+
+int vfs_in_fsd(int (*fn)(void *ctx), void *ctx)
+{
+    struct vreq r = { .fn = do_call, .m = &mounts[MOUNTS - 1], .call = fn, .buf = ctx };
+    return run(&r);
+}
 
 int vfs_mkfs(const char *path)
 {

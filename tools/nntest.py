@@ -946,6 +946,72 @@ def m6_tests(ns, serial, report):
         t.send('exit\r\n'); t.wait_closed(); t.close()
 
 
+def m7_tests(ns, serial, report, image):
+    """Firmware update through the LDROM bootloader (CONFIG0 set to start in LDROM)."""
+    data = image.read_bytes()
+    padded = data + b'\xff' * (-len(data) % 4)
+    crc = f'{zlib.crc32(padded) & 0xffffffff:08x}'
+    statuses = [ns.call(http_request, 'PUT', '/home/nnnix.bin', data)[0],
+                ns.call(http_request, 'PUT', '/home/notfw.bin', b'this is not a firmware image\n' * 4)[0]]
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    info = t.cmd('fwupdate')
+    report.add('fwupdate status', 'bootloader: in LDROM' in info and 'power-on boot: LDROM' in info
+               and all(s in (201, 204) for s in statuses), info.strip().replace('\r\n', ' | '))
+    out = t.cmd('fwupdate -n /home/notfw.bin', 20) + t.cmd('fwupdate -n /home/missing.bin')
+    report.add('fwupdate refuses', 'not an APROM image' in out and 'no such file' in out, out.strip().replace('\r\n', ' | '))
+
+    def update():
+        t = Telnet(ns)
+        t.read_until(Telnet.PROMPT)
+        mark = len(serial.lines)
+        started = time.monotonic()
+        t.send('fwupdate /home/nnnix.bin\r\n')
+        t.read_until('restarting through the bootloader', 30)
+        t.close()
+        installing = serial.wait_for(r'boot: installing update', 60, mark)
+        done = serial.wait_for(r'boot: APROM written and verified', 60, mark)
+        up = serial.wait_for(r'telnetd: listening', 30, done or mark)
+        return None not in (installing, done, up), time.monotonic() - started
+
+    ok, took = update()
+    t = Telnet(ns, connect_within=20)
+    t.read_until(Telnet.PROMPT)
+    info = t.cmd('fwupdate')
+    report.add('fwupdate install', ok and f'installed, {len(padded)} bytes, crc {crc}' in info,
+               f'staged, installed by the bootloader, back in {took:.0f} s')
+
+    # Interrupted: stage only, then (connecting halts the chip at the bootloader's
+    # entry) let the bootloader work for 1 s and reset it in the middle.
+    out = t.cmd('fwupdate -n /home/nnnix.bin', 30)
+    t.send('exit\r\n'); t.wait_closed(); t.close()
+    mark = len(serial.lines)
+    flasher.run_openocd(['resume', 'sleep 1000', 'reset run', 'shutdown'])
+    first = serial.wait_for(r'boot: installing update', 30, mark)
+    again = serial.wait_for(r'boot: installing update', 30, first + 1) if first is not None else None
+    finished = serial.lines[mark:first + 1 if again is None else again] if first is not None else []
+    done = serial.wait_for(r'boot: APROM written and verified', 60, again or mark)
+    up = serial.wait_for(r'telnetd: listening', 30, done or mark)
+    cut = not any('written and verified' in line for line in finished)
+    report.add('fwupdate interrupted', 'staged' in out and None not in (first, again, done, up) and cut,
+               'reset 1 s into the installation: started again and finished')
+
+    t = Telnet(ns, connect_within=20)
+    t.read_until(Telnet.PROMPT)
+    mark = len(serial.lines)
+    t.send('reboot -p\r\n')
+    t.wait_closed(10)
+    t.close()
+    through = serial.wait_for(r'boot: starting APROM', 20, mark)
+    cause = serial.wait_for(r'reset cause .*power-on', 10, through or mark)
+    serial.wait_for(r'telnetd: listening', 30, cause or mark)
+    report.add('power-on path', None not in (through, cause), 'chip reset: bootloader, then APROM')
+    t = Telnet(ns, connect_within=20)
+    t.read_until(Telnet.PROMPT)
+    t.cmd('rm /home/nnnix.bin'); t.cmd('rm /home/notfw.bin')
+    t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
 # ---- M5c: clock, editor and network tools ----
 
 NTP_TIME = 1893553445                 # 2030-01-02 03:04:05 UTC
@@ -1383,6 +1449,13 @@ def main():
             except (OSError, TimeoutError, ConnectionError) as exc:
                 traceback.print_exc()
                 report.add('M6 programs', False, repr(exc))
+
+            if args.flash:
+                try:
+                    m7_tests(ns, serial, report, args.flash)
+                except (OSError, TimeoutError, ConnectionError) as exc:
+                    traceback.print_exc()
+                    report.add('M7 firmware update', False, repr(exc))
 
             try:
                 m5c_tests(ns, serial, report, args.iface)

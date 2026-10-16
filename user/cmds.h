@@ -33,5 +33,6 @@ int cmd_ntpdate(int argc, char **argv);
 int cmd_ed(int argc, char **argv);
 int cmd_sysctl(int argc, char **argv);
 int cmd_mkfs(int argc, char **argv);
+int cmd_fwupdate(int argc, char **argv);
 
 #endif

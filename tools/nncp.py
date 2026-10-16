@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Transfer files to/from nnnix's /home over HTTP (TCP port 8080).
+"""Transfer files to/from nnnix's /home or /bin over HTTP (TCP port 8080).
 
 An existing route can be used directly. --iface temporarily isolates an unused
 Ethernet adapter, as nntest does, and requires root.
@@ -71,8 +71,8 @@ def main():
     parser.add_argument('dest')
     args = parser.parse_args()
     remote = args.source if args.action == 'get' else args.dest
-    if not remote.startswith('/home/'):
-        parser.error('remote path must start with /home/')
+    if not remote.startswith(('/home/', '/bin/')):
+        parser.error('remote path must start with /home/ or /bin/')
     if args.iface and args.host != '198.18.0.2':
         parser.error('--iface uses the isolated 198.18.0.0/30 test network')
     if args.iface and os.geteuid() != 0:

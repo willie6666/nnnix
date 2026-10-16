@@ -15,6 +15,7 @@
 #include "../net/telnetd.h"
 #include "console.h"
 #include "exec.h"
+#include "fwupdate.h"
 #include "../lib/nnlib.h"
 
 static int32_t sys_exit_k(int32_t code) { task_exit(code); }
@@ -52,8 +53,9 @@ static int32_t sys_klog_k(uint32_t *pos, char *buf, uint32_t len) { return (int3
 
 static int32_t sys_reboot_k(uint32_t magic)
 {
-    if (magic != SYS_REBOOT_MAGIC) return SYS_EBADF;
-    kprintf("reboot requested by pid %u\n", task_self()->pid);
+    if (magic != SYS_REBOOT_MAGIC && magic != SYS_REBOOT_CHIP) return SYS_EBADF;
+    kprintf("reboot requested by pid %u%s\n", task_self()->pid, magic == SYS_REBOOT_CHIP ? " (chip reset)" : "");
+    if (magic == SYS_REBOOT_CHIP) arch_reboot_chip();
     arch_reboot();
 }
 
@@ -130,6 +132,11 @@ int spawn_child(const struct nn_spawn *req, void *image)
 
 static int32_t sys_spawn_k(const struct nn_spawn *req) { return spawn_child(req, 0); }
 static int32_t sys_exec_k(const struct nn_exec *req) { return exec_program(req); }
+static int32_t sys_fwupdate_k(const char *path, int32_t flags, struct nn_fwinfo *info)
+{
+    if (!path && !info && !(flags & (NN_FW_REBOOT | NN_FW_CANCEL))) return SYS_EINVAL;
+    return fw_update(path, flags, info);
+}
 
 static int32_t sys_wait_k(int32_t pid, int *status, uint32_t timeout_ms)
 {
@@ -229,6 +236,7 @@ static const uintptr_t table[SYS_COUNT] = {
     [SYS_SYSCTL] = (uintptr_t)sys_sysctl_k,
     [SYS_MKFS] = (uintptr_t)sys_mkfs_k,
     [SYS_EXEC] = (uintptr_t)sys_exec_k,
+    [SYS_FWUPDATE] = (uintptr_t)sys_fwupdate_k,
 };
 
 /* Called from SVC_Handler with the caller's exception frame:

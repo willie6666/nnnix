@@ -342,3 +342,33 @@ and Ctrl-C or `kill` stops them; their RAM (code, data, stack, and anything
 they allocated) comes back when they end. A file that is not a valid NXE
 program, or was damaged in transfer (CRC check), is refused with "not an
 executable". See [sdk/README.md](../sdk/README.md) for writing programs.
+
+## Firmware updates
+
+The board's LDROM holds a bootloader, and CONFIG0 makes the chip start in it at
+power-on. From the NanoPi, one command updates the firmware:
+
+```
+sudo python3 tools/nnupdate.py --iface eth1 build/nnnix.bin
+```
+
+It uploads the image to `/home/nnnix.bin` and runs `fwupdate` there:
+
+```
+fwupdate FILE        stage FILE and restart through the bootloader, which installs it
+fwupdate -n FILE     stage only: installed at the next boot through the bootloader
+fwupdate -c          cancel a staged image
+fwupdate             the update area, the bootloader and CONFIG0
+reboot -p            restart like power-on (through the bootloader)
+```
+
+The image goes to an area at the end of the SPI flash, outside the file
+system, and is read back before it counts as staged. The bootloader then
+writes APROM and verifies it; if a reset or power loss interrupts that, it
+starts over at the next power-on. The old firmware keeps running if anything
+fails before the restart. `reboot` (without `-p`) restarts APROM directly.
+
+A staged image is also installed after programming APROM with Nu-Link (the
+programmer resets the chip through the bootloader): `fwupdate -c` first if that
+is not wanted. `tools/flash.py --boot aprom` sets CONFIG0 back to the factory
+setting (start in APROM); `--show` reads CONFIG0, CONFIG1 and LDROM.

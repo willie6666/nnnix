@@ -5,7 +5,8 @@ NU-LB_002 board (NUC140VE3CN).
 
 Created 2026-10-15. Status: **M5 done** (2026-10-16): scripts, text tools, HTTP transfer (M5a), pipes, jobs,
 Ctrl-C (M5b), and the editor, clock and network tools (M5c); then a second RAM diet with run-time settings.
-**M6 done**: loadable programs (NXE files built with `sdk/`). Next: M7 (optional items).
+**M6 done**: loadable programs (NXE files built with `sdk/`). M7: the LDROM bootloader and network firmware
+updates are done; the other M7 items remain optional.
 
 ## 1. Goals
 
@@ -459,8 +460,35 @@ firmware.
 
 ### M7 Optional
 - Two-way serial console (depends on R3).
-- LDROM bootloader: program a new APROM image from the W25X16, enabling `nnupdate` kernel updates over the network and "installing" programs into APROM to execute in place. **This changes the CONFIG0 boot selection and needs the owner's explicit consent first.**
+- LDROM bootloader: program a new APROM image from the W25X16, enabling `nnupdate` kernel updates over the network and "installing" programs into APROM to execute in place. **This changes the CONFIG0 boot selection and needs the owner's explicit consent first.** Done (consent given 2026-10-16), see below.
 - Watchdog, brown-out handling, simple login (`/etc/passwd`).
+
+**Firmware update result (2026-10-16)**: `make test` 130/130 (5 new update checks), `make host-test` 1536 checks plus
+the date conversions (28 new bootloader checks against modelled NOR flashes).
+- Board state: LDROM was empty (read through ISP, all 0xff; logged in `logs/2026-10-16_ldrom-backup/`) and now
+  holds the bootloader (`boot/`, 2.2 KiB of 4 KiB). **CONFIG0 changed from 0xffffffff to 0xffffff7f**: only CBS,
+  so the chip starts in LDROM at power-on; CONFIG1 and the lock bit are unchanged. `tools/flash.py --boot aprom`
+  restores the factory setting, `--show` reads both words.
+- SPI flash layout: littlefs now ends at 0x1df000 (1916 KiB); a record sector and a 128 KiB image area follow
+  (`lib/fwupdate.h`). A file system made by older firmware is detected and still mounted, but updates wait for
+  `mkfs /` (allowed for such a file system when no file is open on it).
+- `fwupdate FILE` checks the image's vectors, copies it to the image area (in fsd, which owns the SPI flash),
+  reads it back, writes the record (state "staged") last, and restarts through the bootloader (ISPCON.BS +
+  system reset). The bootloader checks the image CRC, erases and writes APROM through ISP, verifies the APROM
+  CRC, marks the record "done" (bits only cleared, no erase) and starts APROM by clearing BS and resetting.
+  A record still "staged" is installed again at the next boot, so an interrupted installation finishes; a "done"
+  image restores APROM if APROM no longer holds a firmware; damaged images or records are ignored.
+  `tools/nnupdate.py` does upload, `fwupdate` and the wait in one step (back in about 9 s for 93 KB).
+- Measured on the board: an installation interrupted 1 s in (OpenOCD reset) started again and finished; a chip
+  reset (`reboot -p`, like power-on) goes through the bootloader.
+- Findings on this C-revision chip: a reset through the reset pin (OpenOCD) reloads ISPCON.BS from CONFIG0, so
+  without CBS = LDROM an interrupted installation left a half-written APROM (recovered by setting CONFIG0, after
+  which the bootloader finished it); LDROM and CONFIG can only be changed while the chip runs from APROM;
+  OpenOCD's on-chip algorithms (programming, verify CRC) only work with the chip halted at a reset entry, not
+  inside running firmware; while the bootloader works, the W5500 still accepts connections on the old
+  firmware's sockets. `tools/flash.py` handles all of these (vector-catch reset into APROM's entry).
+- A staged image is installed by the next boot through the bootloader, also right after programming APROM with
+  Nu-Link: `fwupdate -c` cancels it. `fwupdate` cancels it itself if the restart fails.
 
 ## 8. Source layout
 

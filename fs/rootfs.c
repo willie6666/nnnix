@@ -3,6 +3,7 @@
 #include "vfs.h"
 #include "../third_party/littlefs/lfs.h"
 #include "../drivers/spiflash.h"
+#include "../lib/fwupdate.h"
 #include "../kernel/klog.h"
 #include "../kernel/kmem.h"
 #include "../lib/string.h"
@@ -17,6 +18,7 @@ int lfs_port_sync(const struct lfs_config *c);
 static lfs_t lfs;
 static uint8_t read_cache[CACHE], prog_cache[CACHE], lookahead[16];
 static int mounted;
+static int legacy;                   /* made before the update area existed: covers the whole flash */
 static struct lfs_config cfg = {
     .read = lfs_port_read, .prog = lfs_port_prog, .erase = lfs_port_erase, .sync = lfs_port_sync,
     .read_size = 16, .prog_size = 16, .block_size = SPIFLASH_SECTOR,
@@ -64,33 +66,54 @@ static int format(uint32_t size)
     return 0;
 }
 
+/* littlefs ends where the firmware update area starts (lib/fwupdate.h). */
+static uint32_t fs_bytes(uint32_t size) { return size < FW_FS_END ? size : FW_FS_END; }
+
 /* A blank flash is formatted; any other mount failure (a read error, damage, a
  * different format) leaves the data alone: "/" stays unavailable until
- * someone runs mkfs. */
+ * someone runs mkfs. A file system from before the update area (the whole
+ * flash) is still mounted, but firmware updates wait for mkfs. */
 int rootfs_mount(struct mount *m)
 {
     (void)m;
     uint32_t size = spiflash_size();
     if (!size) { kprintf("rootfs: no SPI flash\n"); return SYS_ENODEV; }
-    cfg.block_count = size / SPIFLASH_SECTOR;
+    cfg.block_count = fs_bytes(size) / SPIFLASH_SECTOR;
     int e = lfs_mount(&lfs, &cfg);
-    if (!e) { mounted_now(size); return 0; }
+    if (!e) { mounted_now(fs_bytes(size)); return 0; }
+    cfg.block_count = 0;                             /* whatever the superblock says */
+    if (!lfs_mount(&lfs, &cfg)) {
+        if (lfs.block_count * SPIFLASH_SECTOR > fs_bytes(size)) {
+            legacy = 1;
+            kprintf("rootfs: this file system covers the firmware update area; back up files, then mkfs /\n");
+            mounted_now(lfs.block_count * SPIFLASH_SECTOR);
+            return 0;
+        }
+        lfs_unmount(&lfs);
+    }
+    cfg.block_count = fs_bytes(size) / SPIFLASH_SECTOR;
     if (!flash_blank()) {
         kprintf("rootfs: mount failed (%d); the flash is not blank, so it is left alone (mkfs / formats it)\n", e);
         return e;
     }
-    kprintf("rootfs: blank flash, formatting %u KiB\n", size / 1024u);
-    return format(size);
+    kprintf("rootfs: blank flash, formatting %u KiB\n", fs_bytes(size) / 1024u);
+    return format(fs_bytes(size));
 }
+
+int rootfs_legacy(void) { return legacy; }
 
 int rootfs_format(struct mount *m)
 {
     (void)m;
-    if (mounted) return SYS_EBUSY;                  /* only to recover a flash that did not mount */
+    /* Only to recover a flash that did not mount, or to move an old file
+     * system out of the update area while no file is open on it. */
+    if (mounted && !(legacy && !lfs.mlist)) return SYS_EBUSY;
     uint32_t size = spiflash_size();
     if (!size) return SYS_ENODEV;
-    kprintf("rootfs: formatting %u KiB on request\n", size / 1024u);
-    return format(size);
+    if (mounted) { lfs_unmount(&lfs); mounted = 0; legacy = 0; }
+    cfg.block_count = fs_bytes(size) / SPIFLASH_SECTOR;
+    kprintf("rootfs: formatting %u KiB on request\n", fs_bytes(size) / 1024u);
+    return format(fs_bytes(size));
 }
 
 static int rfs_open(struct mount *m, const char *path, int flags, struct file *f)
@@ -189,8 +212,8 @@ static int rfs_statfs(struct mount *m, struct nn_statfs *s)
     lfs_ssize_t used = lfs_fs_size(&lfs);
     if (used < 0) return (int)used;
     s->block_size = cfg.block_size;
-    s->blocks = cfg.block_count;
-    s->free_blocks = cfg.block_count - (uint32_t)used;
+    s->blocks = lfs.block_count;                     /* cfg.block_count is 0 for a legacy layout */
+    s->free_blocks = lfs.block_count - (uint32_t)used;
     return 0;
 }
 

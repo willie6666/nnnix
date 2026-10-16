@@ -26,6 +26,9 @@ void fault_report_last(void);        /* print the crash record left by a previou
 const char *fault_last_report(void); /* that report as text, "" if the last boot was clean */
 void fault_trigger(void) __attribute__((noreturn));
 void arch_reboot(void) __attribute__((noreturn));
+void arch_reboot_bootloader(void) __attribute__((noreturn));   /* through LDROM (fmc.c) */
+void arch_reboot_chip(void) __attribute__((noreturn));         /* like power-on */
+uint32_t fmc_read(uint32_t addr);                              /* LDROM 0x100000, CONFIG 0x300000 */
 
 static inline void irq_disable(void) { __asm volatile("cpsid i" ::: "memory"); }
 static inline void irq_enable(void) { __asm volatile("cpsie i" ::: "memory"); }

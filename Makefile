@@ -23,7 +23,7 @@ LDFLAGS = -nostdlib -fuse-ld=lld -Wl,-T,arch/nuc140/link.ld,--gc-sections,-Map,b
 SRCS = $(wildcard arch/nuc140/*.c kernel/*.c drivers/*.c lib/*.c net/*.c fs/*.c user/*.c) third_party/littlefs/lfs.c
 OBJS = $(SRCS:%.c=build/%.o)
 
-.PHONY: all flash test host-test size clean sdk
+.PHONY: all flash test host-test size clean sdk boot
 all: build/nnnix.bin
 
 build/%.o: %.c
@@ -52,6 +52,19 @@ FORCE:
 flash: build/nnnix.bin
 	$(PYTHON) tools/flash.py build/nnnix.bin
 
+# LDROM bootloader (boot/): at most 4 KiB.
+BOOT_OBJS = build/boot/boot.o build/boot/update.o
+build/boot/%.o: boot/%.c lib/fwupdate.h boot/update.h
+	@mkdir -p $(dir $@)
+	$(CLANG) $(CFLAGS) -DBOOT_VERSION='"$(VERSION)"' -c $< -o $@
+build/boot.elf: $(BOOT_OBJS) boot/link.ld
+	$(CLANG) $(CFLAGS) -nostdlib -fuse-ld=lld -Wl,-T,boot/link.ld,--gc-sections $(BOOT_OBJS) -o $@
+build/boot.bin: build/boot.elf
+	$(OBJCOPY) -O binary $< $@
+	@test $$(stat -c %s $@) -le 4096 || { echo "boot.bin is larger than LDROM (4 KiB)"; exit 1; }
+	@echo "boot.bin: $$(stat -c %s $@) bytes of 4096"
+boot: build/boot.bin
+
 # Loadable example programs (sdk/), built before the tests upload them.
 sdk:
 	$(MAKE) -C sdk
@@ -60,7 +73,7 @@ test: build/nnnix.bin sdk
 	sudo $(PYTHON) tools/nntest.py --flash build/nnnix.bin
 
 HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty build/host/test_console build/host/test_shparse build/host/test_http \
-             build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs
+             build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs build/host/test_boot
 build/host/test_lib: tests/host/test_lib.c lib/fmt.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin $^ -o $@
@@ -86,6 +99,9 @@ build/host/test_time: tests/host/test_time.c lib/time.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_ed: tests/host/test_ed.c user/edcore.c lib/fmt.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_boot: tests/host/test_boot.c boot/update.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 LFS_HOST = -DLFS_CONFIG=lfs_port.h -DLFS_NAME_MAX=31 -Ifs -Ithird_party/littlefs

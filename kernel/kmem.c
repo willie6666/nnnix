@@ -135,6 +135,20 @@ static void *find_owned(uint16_t owner)
     return 0;
 }
 
+int kmem_reown(uint16_t from, uint16_t to)
+{
+    int n = 0;
+    uint32_t s = LOCK();
+    struct block *f = free_list;
+    for (char *p = heap_base; p < heap_limit; p += ((struct block *)p)->size) {
+        struct block *b = (struct block *)p;
+        if (b == f) { f = f->next; continue; }
+        if (b->tag == USED(from)) { b->tag = USED(to); ++n; }
+    }
+    UNLOCK(s);
+    return n;
+}
+
 int kmem_free_owned(uint16_t owner)
 {
     int n = 0;

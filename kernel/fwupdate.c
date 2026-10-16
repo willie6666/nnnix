@@ -8,6 +8,7 @@
 #include "klog.h"
 #include "task.h"
 #include "sync.h"
+#include "tty.h"
 #include "../arch/nuc140/arch.h"
 #include "../drivers/spiflash.h"
 #include "../fs/vfs.h"
@@ -115,25 +116,28 @@ static struct mutex busy;
 
 int fw_update(const char *path, int flags, struct nn_fwinfo *info)
 {
-    if (!path && !(flags & (NN_FW_REBOOT | NN_FW_CANCEL))) return status(info);
+    if (!path && !(flags & NN_FW_CANCEL)) return status(info);
     /* The update area is still file system space in a legacy layout. */
-    if (!(flags & NN_FW_REBOOT) && rootfs_legacy()) return SYS_ENOSPC;
+    if (rootfs_legacy()) return SYS_ENOSPC;
+    if ((flags & NN_FW_REBOOT) && !bootloader_present()) return SYS_ENODEV;
     if (!mutex_trylock(&busy)) return SYS_EBUSY;
     int e;
-    if (flags & NN_FW_REBOOT) {                      /* restart through the bootloader */
-        e = SYS_ENODEV;
-        if (bootloader_present()) {
-            kprintf("fwupdate: restarting through the bootloader\n");
-            msleep(100);                             /* let the log reach the serial port */
-            arch_reboot_bootloader();
-        }
-    } else if (flags & NN_FW_CANCEL) {               /* an erased record stages nothing */
+    if (!path) {                                     /* cancel: an erased record stages nothing */
         e = flash(ERASE, FW_RECORD_ADDR, 0, SPIFLASH_SECTOR);
         if (!e) kprintf("fwupdate: staged image cancelled\n");
     } else {
         uint8_t *buf = kmalloc(CHUNK);
         e = buf ? stage(path, buf) : SYS_ENOMEM;
         kfree(buf);
+        /* Restart while still holding the operation, so the image the
+         * bootloader finds is the one just staged. */
+        if (!e && (flags & NN_FW_REBOOT)) {
+            static const char msg[] = "staged; restarting through the bootloader\n";
+            if (task_self()->tty) tty_write(task_self()->tty, msg, sizeof msg - 1);
+            kprintf("fwupdate: restarting through the bootloader\n");
+            msleep(300);                             /* let the line reach the terminal and the log */
+            arch_reboot_bootloader();
+        }
     }
     mutex_unlock(&busy);
     return e;

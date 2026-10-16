@@ -45,9 +45,10 @@ Put it in `sdk/examples/` (or build it from the current directory with
 - `printf`, `snprintf`, `puts`, `mem*`, `str*`, `errstr`, `malloc`/`free`
   (blocks still allocated are freed when the program ends) and `exit`;
 - `sys_spawn` starts a function of the program as another task
-  (`examples/spawn.c`); it shares the program's RAM image, which stays until
-  the last of them has ended. When the program ends, its children are stopped
-  at their next system call.
+  (`examples/spawn.c`); it shares the program's RAM image and its malloc'd
+  memory, which stay until the last of them has ended. When the program ends,
+  its children are stopped at their next system call.
+- `examples/memtest.c` checks that heap blocks keep their contents over time.
 
 The C library is not linked into the program: it is the firmware's own code in
 flash, reached through a function table that `_start` receives

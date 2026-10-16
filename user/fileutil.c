@@ -384,18 +384,12 @@ int cmd_fwupdate(int argc, char **argv)
     sys_fwupdate(0, 0, &info);
     if (reboot && !info.bootloader) { printf("fwupdate: no bootloader in LDROM\n"); return 1; }
     printf("staging %s\n", argv[i]);
-    int e = sys_fwupdate(argv[i], 0, 0);
+    int e = sys_fwupdate(argv[i], reboot ? NN_FW_REBOOT : 0, 0);      /* with -n: stage only */
     if (e == SYS_ENOSPC) { printf("fwupdate: / covers the update area: back up files, then mkfs /\n"); return 1; }
     if (e == SYS_EBUSY) { printf("fwupdate: another update operation is running\n"); return 1; }
+    if (e == SYS_ENODEV) { printf("fwupdate: no bootloader in LDROM\n"); return 1; }
     if (e == SYS_ENOEXEC) { printf("fwupdate: %s is not an APROM image\n", argv[i]); return 1; }
     if (e) return fail("fwupdate", argv[i], e);
-    if (reboot) {
-        printf("staged; restarting through the bootloader\n");
-        sys_sleep(200);                              /* let the line reach the terminal */
-        e = sys_fwupdate(0, NN_FW_REBOOT, 0);
-        sys_fwupdate(0, NN_FW_CANCEL, 0);            /* did not restart: leave nothing staged behind */
-        return fail("fwupdate", "restart (update cancelled)", e);
-    }
     printf("staged; it is installed at the next boot through the bootloader\n");
     return 0;
 }

@@ -113,8 +113,10 @@ struct nn_exec {
 #define SYS_ENOEXEC (-8)                   /* not a valid NXE file */
 
 /* Firmware updates (lib/fwupdate.h): fwupdate(path, 0, 0) copies an APROM
- * image into the update area; fwupdate(0, NN_FW_REBOOT, 0) restarts through
- * the LDROM bootloader, which installs it; fwupdate(0, 0, &info) reports. */
+ * image into the update area; with NN_FW_REBOOT it then restarts through the
+ * LDROM bootloader, which installs it (one operation: nothing can stage
+ * another image in between). fwupdate(0, NN_FW_CANCEL, 0) cancels;
+ * fwupdate(0, 0, &info) reports. */
 #define NN_FW_REBOOT 1
 #define NN_FW_CANCEL 2                     /* fwupdate(0, NN_FW_CANCEL, 0): forget a staged image */
 enum { NN_FW_NONE, NN_FW_STAGED, NN_FW_DONE };

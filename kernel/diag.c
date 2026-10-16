@@ -153,8 +153,8 @@ static const char *const state_names[] = { "-", "run", "sleep", "wait", "zombie"
 
 static void demo_hang(void *arg)
 {
-    (void)arg;
-    for (;;) { }
+    uint32_t ms = (uint32_t)(uintptr_t)arg, start = jiffies;
+    while (!ms || jiffies - start < ms) { }         /* 0: forever */
 }
 
 static void ps_text(void)
@@ -284,9 +284,9 @@ static void session(void)
     case 'O':
         report(task_spawn("ovf", demo_overflow, 0, 512, 4, 1) ? "overflow task started\n" : "spawn failed\n");
         break;
-    case 'W':                                        /* starve everything below priority 0: the watchdog resets */
-        kprintf("diag: starving the kernel daemon (watchdog %d s)\n", wdt_seconds());
-        task_spawn("hang", demo_hang, 0, 256, 0, 1);
+    case 'W':                                        /* starve everything below priority 0 for LENGTH ms (0: forever) */
+        kprintf("diag: starving the kernel daemon for %u ms (watchdog %d s)\n", length, wdt_seconds());
+        task_spawn("hang", demo_hang, (void *)(uintptr_t)length, 256, 0, 1);
         break;
     case 'F':
     case 'X':

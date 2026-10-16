@@ -110,7 +110,9 @@ int main(void)
     CHECK_EQ_INT(kmem_free_owned(7), 0);
     CHECK_EQ_INT(kmem_free_owned(0), 0);               /* kernel blocks are never "owned" */
     memset(k1, 0x11, 40); memset(b1, 0x22, 56);        /* still usable */
-    CHECK_EQ_INT(kmem_free_owned(9), 1);
+    CHECK_EQ_INT(kmem_reown(9, 12), 1);               /* handed on: 9 owns nothing now */
+    CHECK_EQ_INT(kmem_free_owned(9), 0);
+    CHECK_EQ_INT(kmem_free_owned(12), 1);
     kfree(k1);
     kmem_stats(&s);
     CHECK_EQ_INT(s.free, sizeof heap);

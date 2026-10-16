@@ -136,7 +136,7 @@ static int32_t sys_spawn_k(const struct nn_spawn *req) { return spawn_child(req,
 static int32_t sys_exec_k(const struct nn_exec *req) { return exec_program(req); }
 static int32_t sys_fwupdate_k(const char *path, int32_t flags, struct nn_fwinfo *info)
 {
-    if (!path && !info && !(flags & (NN_FW_REBOOT | NN_FW_CANCEL))) return SYS_EINVAL;
+    if (!path && !info && !(flags & NN_FW_CANCEL)) return SYS_EINVAL;
     return fw_update(path, flags, info);
 }
 

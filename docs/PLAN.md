@@ -454,6 +454,15 @@ firmware.
   transfers, `nc`, `/proc`, log-in/log-out): the heap was identical at every check (one free block), and no panic,
   fault or reset occurred.
 
+**Review fixes (2026-10-17)**: a review of `bbfc415..366d4b3` reported three problems; all confirmed and fixed,
+`make test` 134/134.
+
+| ID | Problem | Fix |
+| --- | --- | --- |
+| R22 | When a loaded program ended while a child it spawned still ran, the program's malloc'd memory was freed at once, although the child can use it through the program's globals (reproduced on the board: `spawn share` then `memtest` gave a HardFault on the old firmware) | the memory passes to a living relative sharing the image (`kmem_reown`), and is freed with the last of them |
+| R21 | `sysctl watchdog` changed write-protected registers with interrupts on; the kernel daemon's kick in between locked the protection again, so turning the watchdog off could report success while it kept counting | the register writes and the state change happen with interrupts off and are read back; a test turns it off after 40 changes and starves the daemon for 10 s without a reset |
+| R18 (follow-up) | `fwupdate FILE` staged and restarted in two system calls; another task could stage a different image in between | one system call stages and restarts while holding the update lock; the kernel writes "restarting" to the terminal |
+
 ### M6 Loadable programs
 - Executable format `NXE`: header + image linked at 0 + a table of words to relocate (see the result below).
 - Loader: read from the file system into RAM and run, about 4 KiB maximum; `exec`/`spawn` system calls.

@@ -898,7 +898,7 @@ def review_tests(ns, serial, report, iface):
 def m6_tests(ns, serial, report):
     """Loadable programs: SDK-built NXE files uploaded to /bin and run by the shell."""
     sdk = REPO / 'sdk/build'
-    programs = {name: (sdk / f'{name}.nxe').read_bytes() for name in ('hello', 'upper', 'primes', 'spawn')}
+    programs = {name: (sdk / f'{name}.nxe').read_bytes() for name in ('hello', 'upper', 'primes', 'spawn', 'memtest')}
     statuses = [ns.call(http_request, 'PUT', f'/bin/{name}', data)[0] for name, data in programs.items()]
     bad = bytearray(programs['hello'])
     bad[40] ^= 0xff                                   # inside the image: the CRC no longer matches
@@ -941,10 +941,16 @@ def m6_tests(ns, serial, report):
         mark = len(serial.lines)
         out += t.cmd('spawn') + t.cmd('primes 20000', 10)
         time.sleep(3)
+        # The worker keeps writing into the program's malloc'd buffer after the
+        # program has ended: that buffer must not go to primes' sieve meanwhile.
+        # memtest's blocks would take that buffer if it were freed early, and the
+        # worker's 0xff writes would then show up in them.
+        out += t.cmd('spawn share') + t.cmd('memtest 3000', 10)
+        time.sleep(6)                                 # the worker ends (killed at its printf)
         alive = t.cmd('uname')
         fault = serial.wait_for(r'HardFault|PANIC', 1, mark)
         report.add('program children', 'worker done' in out and 'nnnix' in alive and fault is None
-                   and '2262 primes' in out, out.strip().replace('\r\n', ' | '))
+                   and '2262 primes' in out and 'intact' in out, out.strip().replace('\r\n', ' | '))
         out = t.cmd('cp /bin/hello /usb/hello.nxe', 10) + t.cmd('/usb/hello.nxe from usb', 10)
         t.cmd('rm /usb/hello.nxe')
         report.add('program from usb', 'argv[1] = from' in out, out.strip().replace('\r\n', ' | '))
@@ -1517,11 +1523,22 @@ def main():
                            serial.lines[crash] if crash is not None else 'no overflow panic reported')
                 serial.wait_for(r'telnetd: listening', 30, rebooted or mark)
 
-                # Watchdog: a task that never yields above the kernel daemon starves it.
+                # Watchdog: a task that does not yield above the kernel daemon starves it.
+                # Turned off (after toggling it while the daemon kicks), 10 s of that is harmless.
                 t = Telnet(ns, connect_within=20)
                 t.read_until(Telnet.PROMPT)
+                toggles = ''.join(t.cmd(f'sysctl watchdog={v}') for v in (7, 0) * 20)
+                mark = len(serial.lines)
+                try:
+                    ns.call(request, b'W', 4, 10000, b'', None, 3)
+                except OSError:
+                    pass                                  # no reply while everything below it starves
+                time.sleep(9)
+                off_ok = serial.wait_for(r'reset cause', 3, mark) is None and 'nnnix' in t.cmd('uname', 10)
                 setting = t.cmd('sysctl watchdog=7')
                 t.close()
+                report.add('watchdog off', off_ok and toggles.count('watchdog=0') == 20,
+                           'turned off after 40 changes: 10 s without the kernel daemon, no reset')
                 mark = len(serial.lines)
                 started = time.monotonic()
                 try:

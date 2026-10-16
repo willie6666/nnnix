@@ -283,8 +283,17 @@ static void task_free(struct task *t)
     struct loaded_image *image = t->image;
     uint16_t t_pid = t->pid;
     note_peak(t->stack_size, stack_peak(t));
-    if (image && --image->refs) image = 0;          /* still used by a relative */
-    int left = kmem_free_owned(t->pid);
+    int left = 0;
+    if (image && --image->refs) {
+        /* Still used by a relative (a child it spawned, which may still run
+         * until its next system call): the program's heap may be shared
+         * through its globals, so it passes to that relative instead. */
+        for (int i = 0; i < TASK_MAX; ++i)
+            if (tasks[i] && tasks[i] != t && tasks[i]->image == image) { kmem_reown(t->pid, tasks[i]->pid); break; }
+        image = 0;
+    } else {
+        left = kmem_free_owned(t->pid);
+    }
     for (int i = 0; i < TASK_MAX; ++i) if (tasks[i] == t) tasks[i] = 0;
     kfree(cwd);
     kfree(owned);

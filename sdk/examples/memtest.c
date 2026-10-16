@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* memtest [MS]: fill heap blocks with a pattern, wait MS milliseconds (default
- * 3000), and check that nothing else wrote into them. */
+ * 3000), and check that nothing else wrote into them. Fails if it could not
+ * allocate a single block (nothing would have been tested). */
 #include "nnnix.h"
 
 #define BLOCK 256u
@@ -17,6 +18,7 @@ int main(int argc, char **argv)
     int n = 0;
     for (; n < BLOCKS && (b[n] = malloc(BLOCK)); ++n)
         for (uint32_t i = 0; i < BLOCK; ++i) b[n][i] = (uint8_t)(i * 7u + (uint32_t)n);
+    if (!n) { printf("memtest: no memory to test\n"); return 2; }
     sys_sleep(ms);
     int bad = 0;
     for (int k = 0; k < n; ++k)

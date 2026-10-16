@@ -945,12 +945,15 @@ def m6_tests(ns, serial, report):
         # program has ended: that buffer must not go to primes' sieve meanwhile.
         # memtest's blocks would take that buffer if it were freed early, and the
         # worker's 0xff writes would then show up in them.
-        out += t.cmd('spawn share') + t.cmd('memtest 3000', 10)
+        shared = t.cmd('spawn share') + t.cmd('memtest 3000', 10)
+        out += shared
+        tested = re.search(r'memtest: (\d+) blocks of 256 B, intact', shared)
         time.sleep(6)                                 # the worker ends (killed at its printf)
         alive = t.cmd('uname')
         fault = serial.wait_for(r'HardFault|PANIC', 1, mark)
         report.add('program children', 'worker done' in out and 'nnnix' in alive and fault is None
-                   and '2262 primes' in out and 'intact' in out, out.strip().replace('\r\n', ' | '))
+                   and '2262 primes' in out and re.match(r'worker \d+ started', shared) is not None
+                   and tested is not None and int(tested[1]) > 0, out.strip().replace('\r\n', ' | '))
         out = t.cmd('cp /bin/hello /usb/hello.nxe', 10) + t.cmd('/usb/hello.nxe from usb', 10)
         t.cmd('rm /usb/hello.nxe')
         report.add('program from usb', 'argv[1] = from' in out, out.strip().replace('\r\n', ' | '))

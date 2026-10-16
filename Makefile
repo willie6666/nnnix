@@ -54,7 +54,7 @@ flash: build/nnnix.bin
 
 # LDROM bootloader (boot/): at most 4 KiB.
 BOOT_OBJS = build/boot/boot.o build/boot/update.o
-build/boot/%.o: boot/%.c lib/fwupdate.h boot/update.h
+build/boot/%.o: boot/%.c lib/fwupdate.h boot/update.h build/.version
 	@mkdir -p $(dir $@)
 	$(CLANG) $(CFLAGS) -DBOOT_VERSION='"$(VERSION)"' -c $< -o $@
 build/boot.elf: $(BOOT_OBJS) boot/link.ld

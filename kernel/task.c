@@ -75,6 +75,16 @@ int sched_block(struct waitq *q, uint32_t timeout_ms, uint32_t primask)
     return t->wait_result;
 }
 
+int sched_block_interruptible(struct waitq *q, uint32_t timeout_ms, uint32_t primask)
+{
+    struct task *t = cur();
+    if (t->killed) { irq_restore(primask); return -EINTR_TASK; }
+    t->interruptible = 1;
+    int r = sched_block(q, timeout_ms, primask);
+    t->interruptible = 0;
+    return r;
+}
+
 /* ---- scheduling ---- */
 static int stack_ok(const struct task *t)
 {
@@ -157,7 +167,8 @@ struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
     for (int i = 0; i < TASK_MAX && !t; ++i) if (tasks[i].state == TASK_UNUSED) t = &tasks[i];
     if (!t) { irq_restore(s); kfree(stack); return 0; }
     *t = (struct task){ .stack = stack, .stack_size = stack_bytes, .name = name, .pid = next_pid++,
-                        .prio = prio, .detached = (uint8_t)detached, .slice = SLICE_MS };
+                        .prio = prio, .detached = (uint8_t)detached, .slice = SLICE_MS,
+                        .ppid = running ? cur()->pid : 0 };
     t->sp = arch_task_stack_init(stack + stack_bytes / 4u, entry, arg, task_return);
     t->tty = running ? cur()->tty : 0;
     if (running && cur()->cwd) {                 /* inherit the working directory */
@@ -175,6 +186,16 @@ void task_exit(int code)
     vfs_task_exit();                 /* close files while this task can still block */
     uint32_t s = irq_save();
     struct task *t = cur();
+    for (int i = 0; i < TASK_MAX; ++i) {          /* hang up the children */
+        struct task *c = &tasks[i];
+        if (c->state == TASK_UNUSED || c == t || c->ppid != t->pid) continue;
+        c->detached = 1;
+        c->ppid = 0;
+        if (c->user && c->state != TASK_ZOMBIE) {
+            c->killed = 1;
+            if (c->interruptible) sched_wake(c, -EINTR_TASK);
+        }
+    }
     t->exit_code = code;
     t->state = TASK_ZOMBIE;
     struct task *w;
@@ -188,11 +209,14 @@ static void task_free(struct task *t)
 {
     uint32_t *stack = t->stack;
     char *cwd = t->cwd;
+    void *owned = t->owned;
     t->state = TASK_UNUSED;
     t->stack = 0;
     t->cwd = 0;
+    t->owned = 0;
     kfree(stack);
     kfree(cwd);
+    kfree(owned);
 }
 
 int task_join(struct task *t, uint32_t *cpu_ms)
@@ -227,7 +251,56 @@ void msleep(uint32_t ms)
 void task_sleep(uint32_t ms)
 {
     uint32_t s = irq_save();
-    sched_block(0, ms ? ms : 1, s);
+    sched_block_interruptible(0, ms ? ms : 1, s);
+}
+
+static struct task *find(uint16_t pid)
+{
+    for (int i = 0; i < TASK_MAX; ++i)
+        if (tasks[i].state != TASK_UNUSED && tasks[i].pid == pid) return &tasks[i];
+    return 0;
+}
+
+int task_kill(uint16_t pid)
+{
+    uint32_t s = irq_save();
+    struct task *t = find(pid);
+    int r = 0;
+    if (!t || t->state == TASK_ZOMBIE) r = -ESRCH;
+    else if (!t->user) r = -1;                   /* kernel tasks cannot be killed */
+    else {
+        t->killed = 1;
+        if (t->interruptible) sched_wake(t, -EINTR_TASK);
+    }
+    irq_restore(s);
+    return r;
+}
+
+int task_wait_pid(uint16_t pid, int *status, uint32_t timeout_ms)
+{
+    uint32_t s = irq_save();
+    struct task *t = find(pid), *self = cur();
+    if (!t || t->ppid != self->pid || t->detached) { irq_restore(s); return -ECHILD; }
+    if (t->state != TASK_ZOMBIE && timeout_ms) {
+        int r = sched_block_interruptible(&t->exit_wq, timeout_ms == UINT32_MAX ? 0 : timeout_ms, s);
+        s = irq_save();
+        if (r == -EINTR_TASK) { irq_restore(s); return r; }
+    }
+    if (t->state != TASK_ZOMBIE) { irq_restore(s); return 0; }
+    irq_restore(s);
+    int code = task_join(t, 0);
+    if (status) *status = code;
+    return pid;
+}
+
+int task_tty_users(const struct tty *tty)
+{
+    int n = 0;
+    uint32_t s = irq_save();
+    for (int i = 0; i < TASK_MAX; ++i)
+        if (tasks[i].state != TASK_UNUSED && tasks[i].state != TASK_ZOMBIE && tasks[i].tty == tty) ++n;
+    irq_restore(s);
+    return n;
 }
 
 int task_list(struct task_info *out, int max, int skip)

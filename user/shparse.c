@@ -10,24 +10,30 @@ int sh_name_char(char c, int first)
 static int blank(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 static int special(char c) { return c == '<' || c == '>' || c == '|' || c == '&' || c == ';'; }
 
-const char *sh_parse(const char *p, struct sh_command *o,
-                    const char *(*lookup)(void *, const char *), void *ctx)
+/* One command, up to the end of the line or a control operator (| & ;),
+ * which is stored in *term (0 at the end) and left unconsumed. */
+struct target { char *words; int *used; char **argv; struct sh_redir *redir; int *argc, *nredir; };
+
+static const char *parse_one(const char **pp, struct target *o, char *term,
+                             const char *(*lookup)(void *, const char *), void *ctx)
 {
-    int used = 0, pending = -1;
-    o->argc = o->nredir = 0;
+    const char *p = *pp;
+    int used = *o->used, pending = -1;
+    *o->argc = *o->nredir = 0;
     o->argv[0] = 0;
+    *term = 0;
     for (;;) {
         while (blank(*p)) ++p;
         if (!*p || *p == '#') break;
+        if (special(*p) && *p != '<' && *p != '>') { *term = *p; break; }
         if (special(*p)) {
             char op = *p++;
-            if (op != '<' && op != '>') return "pipes, jobs and command lists are not supported yet";
             if (pending >= 0) return "missing redirection file";
-            if (o->nredir == SH_REDIRS) return "too many redirections";
+            if (*o->nredir == SH_REDIRS) return "too many redirections";
             int append = op == '>' && *p == '>';
             if (append) ++p;
             if (*p == op) return "unsupported redirection";
-            pending = o->nredir++;
+            pending = (*o->nredir)++;
             o->redir[pending].target = (unsigned char)(op == '>');
             o->redir[pending].append = (unsigned char)append;
             continue;
@@ -74,10 +80,50 @@ const char *sh_parse(const char *p, struct sh_command *o,
             o->redir[pending].path = word;
             pending = -1;
         } else {
-            if (o->argc == SH_ARGS - 1) return "too many arguments";
-            o->argv[o->argc++] = word;
-            o->argv[o->argc] = 0;
+            if (*o->argc == SH_ARGS - 1) return "too many arguments";
+            o->argv[(*o->argc)++] = word;
+            o->argv[*o->argc] = 0;
         }
     }
+    *pp = p;
+    *o->used = used;
     return pending >= 0 ? "missing redirection file" : 0;
+}
+
+const char *sh_parse(const char *p, struct sh_command *o,
+                     const char *(*lookup)(void *, const char *), void *ctx)
+{
+    char term;
+    int used = 0;
+    struct target t = { o->words, &used, o->argv, o->redir, &o->argc, &o->nredir };
+    const char *e = parse_one(&p, &t, &term, lookup, ctx);
+    if (e) return e;
+    return term ? "pipes, jobs and command lists are not supported here" : 0;
+}
+
+const char *sh_parse_line(const char *p, struct sh_pipeline *pl,
+                          const char *(*lookup)(void *, const char *), void *ctx)
+{
+    int used = 0;
+    pl->count = pl->background = 0;
+    for (;;) {
+        char term;
+        if (pl->count == SH_STAGES) return "pipeline too long";
+        struct sh_stage *st = &pl->cmd[pl->count];
+        struct target t = { pl->words, &used, st->argv, st->redir, &st->argc, &st->nredir };
+        const char *e = parse_one(&p, &t, &term, lookup, ctx);
+        if (e) return e;
+        if (st->argc) ++pl->count;
+        else if (term || pl->count) return "missing command";   /* "| x", "x |", "&" */
+        if (!term) return 0;
+        ++p;                                   /* consume the operator */
+        if (term == ';') return "command lists are not supported";
+        if (term == '&') {
+            while (blank(*p)) ++p;
+            if (*p && *p != '#') return "& must end the line";
+            pl->background = 1;
+            return 0;
+        }
+        if (*p == '|') return "|| is not supported";
+    }
 }

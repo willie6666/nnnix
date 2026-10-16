@@ -64,6 +64,9 @@ int vfs_chdir(const char *path);
 int vfs_getcwd(char *buf, uint32_t n);
 int vfs_statfs(const char *path, struct nn_statfs *s);
 int vfs_dup2(int fd, int target);
+int vfs_pipe(int fds[2]);            /* read end, write end */
+int vfs_install(struct file *f);     /* lowest free fd from 3 */
+struct file *vfs_get(int fd);
 int vfs_fd_is_open(int fd);          /* for read/write: fd 0-2 unset means the terminal */
 void vfs_task_exit(void);            /* close the calling task's files */
 

@@ -9,6 +9,9 @@
 #define TASK_PRIO_IDLE  7
 #define TASK_REDZONE    128u         /* a saved sp this close to the stack bottom is an overflow */
 #define ETIMEDOUT       110
+#define EINTR_TASK      4
+#define ESRCH           3
+#define ECHILD          10
 
 enum task_state { TASK_UNUSED, TASK_READY, TASK_SLEEPING, TASK_BLOCKED, TASK_ZOMBIE };
 
@@ -26,6 +29,11 @@ struct task {
     uint16_t pid;
     uint8_t prio, state, detached, slice;
     uint8_t preempted, yielded;      /* round-robin bookkeeping */
+    uint8_t user;                    /* started by a program (spawn): may be killed */
+    uint8_t killed;                  /* exits at its next system call */
+    uint8_t interruptible;           /* current wait may be cut short by a kill */
+    uint16_t ppid;                   /* parent, for wait */
+    void *owned;                     /* kmalloc'd with the task, freed when it is reaped */
     int32_t wait_result, exit_code;
     uint32_t wake_at;                /* 0: no timeout */
     uint32_t last_run, cpu_ms;
@@ -59,6 +67,15 @@ void msleep(uint32_t ms);
 void task_exit(int code) __attribute__((noreturn));
 int  task_join(struct task *t, uint32_t *cpu_ms);   /* wait for exit, free it, return the exit code */
 int  task_list(struct task_info *out, int max, int skip);   /* skip the first `skip` tasks */
+
+/* Programs: a killed user task leaves at its next system call (no MMU: it can
+ * not be stopped at an arbitrary point safely); interruptible waits (sleep,
+ * pipes, terminal input, wait) end early with -EINTR. When a task exits, its
+ * children are killed and detached, like a hang-up. */
+int  task_kill(uint16_t pid);
+int  task_wait_pid(uint16_t pid, int *status, uint32_t timeout_ms);  /* pid, 0 if still running, <0 error */
+int  task_tty_users(const struct tty *tty);                          /* tasks using this terminal */
+int  sched_block_interruptible(struct waitq *q, uint32_t timeout_ms, uint32_t primask);
 uint32_t sched_switches(void);
 
 /* Low-level blocking used by sync.c. Call with interrupts saved by irq_save();

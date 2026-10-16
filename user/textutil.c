@@ -10,6 +10,7 @@ struct reader { int fd, pos, len; char buf[64]; };
 static int get(struct reader *r)
 {
     if (r->pos == r->len) {
+        if (nn_interrupted()) return SYS_EINTR;
         int n = sys_read(r->fd, r->buf, sizeof r->buf);
         if (n <= 0) return n < 0 ? n : -1;
         r->pos = 0; r->len = n;

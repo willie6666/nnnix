@@ -4,6 +4,7 @@
 
 /* Built-in commands of nsh: int cmd(int argc, char **argv), 0 on success. */
 const char *errstr(int e);
+int nn_interrupted(void);            /* Ctrl-C typed while this command ran */
 int cmd_ls(int argc, char **argv);
 int cmd_cat(int argc, char **argv);
 int cmd_cp(int argc, char **argv);

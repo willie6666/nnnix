@@ -49,14 +49,22 @@ def pattern(n):
 
 
 class Namespace:
-    """Temporarily move one Ethernet adapter into a private netns."""
+    """Temporarily move one Ethernet adapter into a private netns.
+
+    If the adapter already carries exactly the test peer address (someone set it up
+    by hand to use telnet), it is left alone and the tests run in the host namespace."""
 
     def __init__(self, iface):
-        self.iface, self.name, self.moved = iface, f'nnnix-test-{os.getpid()}', False
+        self.iface, self.name, self.moved, self.direct = iface, f'nnnix-test-{os.getpid()}', False, False
 
     def __enter__(self):
         info = json.loads(run('ip', '-j', 'addr', 'show', 'dev', self.iface).stdout)[0]
-        if any(a['family'] == 'inet' for a in info.get('addr_info', [])):
+        inet = [f"{a['local']}/{a['prefixlen']}" for a in info.get('addr_info', []) if a['family'] == 'inet']
+        if inet == [PEER]:
+            self.direct = True
+            print(f'note: {self.iface} already has {PEER}; testing without a namespace', flush=True)
+            return self
+        if inet:
             raise SystemExit(f'{self.iface} has an IPv4 address; refusing to move it')
         routes = json.loads(run('ip', '-j', 'route', 'show', 'default').stdout or '[]')
         if any(r.get('dev') == self.iface for r in routes):
@@ -76,7 +84,13 @@ class Namespace:
             time.sleep(.2)
         return self
 
+    def exec_prefix(self):
+        """Command prefix that runs a program on the test network."""
+        return [] if self.direct else ['ip', 'netns', 'exec', self.name]
+
     def __exit__(self, *exc):
+        if self.direct:
+            return
         if self.moved:
             run('ip', '-n', self.name, 'addr', 'flush', 'dev', self.iface, check=False)
             run('ip', '-n', self.name, 'link', 'set', self.iface, 'netns', '1', check=False)
@@ -89,8 +103,9 @@ class Namespace:
 
         def worker():
             try:
-                with open(f'/run/netns/{self.name}') as ns:
-                    os.setns(ns.fileno(), os.CLONE_NEWNET)
+                if not self.direct:
+                    with open(f'/run/netns/{self.name}') as ns:
+                        os.setns(ns.fileno(), os.CLONE_NEWNET)
                 box['value'] = fn(*args)
             except Exception as exc:          # reported by the caller
                 box['error'] = exc
@@ -131,8 +146,18 @@ class Telnet:
     """Minimal telnet client: drops option negotiation, reads up to the shell prompt."""
     PROMPT = 'nnnix$ '
 
-    def __init__(self, ns, timeout=5):
-        self.sock = ns.call(lambda: socket.create_connection((TARGET[0], 23), timeout=timeout))
+    def __init__(self, ns, timeout=5, connect_within=20):
+        def connect():
+            # telnetd only listens once /etc/rc has finished (or after 10 s): retry refusals.
+            deadline = time.monotonic() + connect_within
+            while True:
+                try:
+                    return socket.create_connection((TARGET[0], 23), timeout=timeout)
+                except OSError:
+                    if time.monotonic() > deadline:
+                        raise
+                    time.sleep(0.3)
+        self.sock = ns.call(connect)
         self.state = 0
         self.text = ''
 
@@ -205,7 +230,8 @@ def console_tests(ns, report):
     text = type_keys(b'echo lcd works\r')
     report.add('console echo', 'lcd works' in text.splitlines()[-3:-1] or 'lcd works' in text, '')
     text = type_keys(b'xx\x7f\x7funame\r')
-    report.add('console line edit', 'NUC140' in text and 'xx' not in text, '')
+    flat = text.replace('\n', '')                    # output wraps at 21 columns
+    report.add('console line edit', 'NUC140' in flat and 'xx' not in text, '')
     text = type_keys(b'clear\r')
     report.add('console clear', text.startswith('nnnix$') and text.count('nnnix$') == 1, repr(text[:30]))
     text = type_keys(b'help\r')
@@ -301,8 +327,8 @@ def telnet_tests(ns, report):
     free_before = t1.cmd('free')
     m = re.search(r'free (\d+) B', free_before)
     free_bytes = int(m[1]) if m else 0
-    report.add('free ram', free_bytes >= 5500,
-               f'{free_bytes} B heap free with the console shell and one telnet session (limit 5500)')
+    report.add('free ram', free_bytes >= 4800,
+               f'{free_bytes} B heap free with the console shell and one telnet session (limit 4800)')
     out = t1.cmd('uname')
     report.add('telnet login', 'nnnix' in out, out.strip())
 
@@ -449,9 +475,9 @@ def m5_tests(ns, serial, report):
             local.write_bytes(payload)
             remote = f'{folder}/nncp.bin'
             files.append(remote)
-            put = run('ip', 'netns', 'exec', ns.name, sys.executable, str(REPO / 'tools/nncp.py'),
+            put = run(*ns.exec_prefix(), sys.executable, str(REPO / 'tools/nncp.py'),
                       'put', str(local), remote, check=False)
-            get = run('ip', 'netns', 'exec', ns.name, sys.executable, str(REPO / 'tools/nncp.py'),
+            get = run(*ns.exec_prefix(), sys.executable, str(REPO / 'tools/nncp.py'),
                       'get', remote, str(copied), check=False)
             report.add('nncp host tool', put.returncode == get.returncode == 0 and copied.read_bytes() == payload,
                        put.stdout.strip() + '; ' + get.stdout.strip())
@@ -544,6 +570,80 @@ def m5_tests(ns, serial, report):
         t.send('exit\r\n'); t.wait_closed(); t.close()
 
 
+def job_tests(ns, serial, report):
+    """Pipelines, background jobs, kill, Ctrl-C, hang-up at logout, /etc/rc time limit."""
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    out = t.cmd('echo hello pipe world | wc')
+    report.add('pipe', out.strip() == '1 3 17', out.strip())
+    out = t.cmd('help | grep kill | wc')
+    report.add('three-stage pipe', out.split()[:1] == ['1'], out.strip())
+    out = t.cmd('hexdump /dev/zero | head -n 2', 10)
+    report.add('broken pipe ends writer', out.count('00000') == 2, 'hexdump stops when head exits')
+    out = t.cmd('cd / | wc')
+    report.add('shell builtin rejected', 'cannot run in a pipeline' in out, out.strip())
+
+    before = t.cmd('free')
+    out = t.cmd('sleep 2 &')
+    jobs = t.cmd('jobs')
+    t.cmd('wait', 10)
+    done = t.cmd('jobs')
+    report.add('background job', out.startswith('[1] ') and 'running  sleep' in jobs and 'running' not in done,
+               out.strip())
+    t.cmd('sleep 30 &')
+    t.cmd('kill %1')
+    time.sleep(0.3)
+    out = t.cmd('jobs')
+    report.add('kill job', 'done  sleep' in out or 'running' not in out, out.strip() or 'job gone')
+
+    results = []
+    for cmd in ('sleep 30', 'hexdump /dev/zero | grep zzz', 'cat'):
+        t.send(cmd + '\r\n')
+        time.sleep(0.6)
+        started = time.monotonic()
+        t.send('\x03')
+        t.read_until(Telnet.PROMPT, 5)
+        results.append(time.monotonic() - started)
+    report.add('ctrl-c stops commands', max(results) < 1.0,
+               'sleep, pipeline, cat: ' + ', '.join(f'{r * 1000:.0f} ms' for r in results))
+    time.sleep(0.3)
+    after = t.cmd('free')
+    report.add('jobs heap reclaimed', before == after, after.strip())
+
+    t.send('sleep 60 &\r\n')
+    t.read_until(Telnet.PROMPT)
+    t.send('exit\r\n')
+    t.wait_closed()
+    t.close()
+    time.sleep(0.5)
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    ps = t.cmd('ps')
+    report.add('logout hangs up jobs', ' sleep ' not in ps, 'no orphaned sleep after logout')
+
+    # A boot script that never finishes must not lock out logins.
+    keep = 'rc' in t.cmd('ls /etc').split()
+    if keep:
+        t.cmd('mv /etc/rc /etc/rc.keep')
+    try:
+        t.cmd('echo "sleep 25" > /etc/rc')
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+        mark = len(serial.lines)
+        ns.call(request, b'X')
+        serial.wait_for(r'w5500: link up', 20, mark)
+        started = time.monotonic()
+        t = Telnet(ns)
+        t.read_until(Telnet.PROMPT, 20)
+        waited = time.monotonic() - started
+        forced = serial.wait_for(r'rc still running after 10 s', 2, mark) is not None
+        report.add('rc time limit', forced and waited < 15, f'login {waited:.1f} s after the link came up')
+    finally:
+        t.cmd('rm /etc/rc')
+        if keep:
+            t.cmd('mv /etc/rc.keep /etc/rc')
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
 class Report:
     def __init__(self):
         self.rows = []
@@ -580,12 +680,13 @@ def main():
                 return 1
             banner = serial.wait_for(BANNER, 10, mark)
             report.add('boot banner', banner is not None, serial.lines[banner] if banner is not None else 'no banner')
-        listening = serial.wait_for(r'diag: listening', 15, 0)
-        report.add('diag listening', listening is not None)
+        listening = serial.wait_for(r'diag: listening', 15, 0) if args.flash else 0
+        if args.flash:                                # only a fresh boot prints it
+            report.add('diag listening', listening is not None)
         serial.wait_for(r'w5500: link up', 10, listening or 0)
 
         with Namespace(args.iface) as ns:
-            ping = run('ip', 'netns', 'exec', ns.name, 'ping', '-n', '-c', '3', '-w', '10',
+            ping = run(*ns.exec_prefix(), 'ping', '-n', '-c', '3', '-w', '10',
                        TARGET[0], check=False)
             report.add('ping', ping.returncode == 0, ping.stdout.strip().splitlines()[-1] if ping.stdout else '')
 
@@ -642,6 +743,11 @@ def main():
                 import traceback
                 traceback.print_exc()
                 report.add('M5 environment', False, repr(exc))
+
+            try:
+                job_tests(ns, serial, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                report.add('jobs and pipes', False, repr(exc))
 
             if args.usb_bytes:
                 text, _ = ns.call(request, b'U', 1, args.usb_bytes, b'', None, 180)

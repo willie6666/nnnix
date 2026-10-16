@@ -10,9 +10,15 @@
 
 #define ENV_MAX 8
 #define SCRIPT_MAX 3
+#define STAGES SH_STAGES             /* commands in one pipeline */
+#define JOBS 4
+#define CHILD_STACK 1152u
+
+struct job { int pid[STAGES]; char name[20]; };
 
 struct shell {
-    struct sh_command *cmd;        /* allocated only while executing a line */
+    struct sh_pipeline *cmd;       /* allocated only while executing a line */
+    struct job jobs[JOBS];
     char line[SH_LINE];
     char *env[ENV_MAX];             /* NAME=VALUE strings, local to this shell */
     int scripts[SCRIPT_MAX], depth, status;
@@ -90,6 +96,7 @@ static int cmd_uname(int argc, char **argv)
 static int cmd_sleep(int argc, char **argv)
 {
     uint32_t s = 0;
+    (void)nn_interrupted();          /* forget a ^C typed before this command */
     if (argc != 2 || !argv[1][0]) { printf("usage: sleep SECONDS\n"); return 1; }
     for (const char *p = argv[1]; *p; ++p) {
         if (*p < '0' || *p > '9' || s > (2147483u - (uint32_t)(*p - '0')) / 10u) {
@@ -97,7 +104,12 @@ static int cmd_sleep(int argc, char **argv)
         }
         s = s * 10u + (uint32_t)(*p - '0');
     }
-    sys_sleep(s * 1000u);
+    for (uint32_t ms = s * 1000u; ms; ) {           /* in steps, so Ctrl-C can stop it */
+        uint32_t step = ms < 100u ? ms : 100u;
+        sys_sleep(step);
+        ms -= step;
+        if (nn_interrupted()) return 130;
+    }
     return 0;
 }
 
@@ -149,6 +161,9 @@ static const struct command commands[] = {
     { "set", 0, "set NAME VALUE" },
     { "unset", 0, "remove a variable" },
     { "env", 0, "list shell variables" },
+    { "jobs", 0, "list background jobs" },
+    { "kill", 0, "kill %JOB or PID" },
+    { "wait", 0, "wait for background jobs" },
     { "clear", cmd_clear, "clear the screen" },
     { "reboot", cmd_reboot, "restart the board" },
     { "exit", 0, "leave the shell" },
@@ -241,29 +256,184 @@ static int script_line(struct shell *s)
     return bad ? SYS_EINVAL : got;
 }
 
+static const struct command *find_command(const char *name)
+{
+    for (unsigned i = 0; i < sizeof commands / sizeof commands[0]; ++i)
+        if (!strcmp(name, commands[i].name)) return &commands[i];
+    return 0;
+}
+
+/* ---- child programs: pipelines and background jobs ---- */
+
+/* Wait for the given children; Ctrl-C kills the ones still running.
+ * Returns the status of the last one (130 when interrupted). */
+static int wait_children(int *pid, int n)
+{
+    int status = 0, interrupted = 0, left = 0;
+    for (int i = 0; i < n; ++i) if (pid[i] > 0) ++left;
+    while (left) {
+        int first = 1;
+        for (int i = 0; i < n; ++i) {
+            if (pid[i] <= 0) continue;
+            int st = 0, r = sys_wait(pid[i], &st, first ? 50u : 0u);
+            first = 0;
+            if (r == 0) continue;
+            if (i == n - 1) status = r > 0 ? st : 1;
+            pid[i] = 0;
+            --left;
+        }
+        if (left && !interrupted && nn_interrupted()) {
+            for (int i = 0; i < n; ++i) if (pid[i] > 0) sys_kill(pid[i]);
+            printf("^C\n");
+            interrupted = 1;
+        }
+    }
+    return interrupted ? 130 : status;
+}
+
+static void reap_jobs(struct shell *s, int report)
+{
+    for (int j = 0; j < JOBS; ++j) {
+        struct job *job = &s->jobs[j];
+        int live = 0;
+        for (int i = 0; i < STAGES; ++i) {
+            if (job->pid[i] <= 0) continue;
+            int st;
+            if (sys_wait(job->pid[i], &st, 0) == 0) live = 1;
+            else job->pid[i] = 0;
+        }
+        if (job->name[0] && !live) {         /* also after "wait" already reaped it */
+            if (report) printf("[%d] done  %s\n", j + 1, job->name);
+            job->name[0] = 0;
+        }
+    }
+}
+
+static int job_command(struct shell *s, int argc, char **argv)
+{
+    if (!strcmp(argv[0], "jobs")) {
+        reap_jobs(s, 1);
+        for (int j = 0; j < JOBS; ++j)
+            if (s->jobs[j].name[0]) printf("[%d] running  %s\n", j + 1, s->jobs[j].name);
+        return 0;
+    }
+    if (!strcmp(argv[0], "wait")) {
+        for (int j = 0; j < JOBS; ++j) {
+            if (!s->jobs[j].name[0]) continue;
+            int r = wait_children(s->jobs[j].pid, STAGES);
+            if (r == 130) return 130;
+        }
+        reap_jobs(s, 1);
+        return 0;
+    }
+    /* kill %JOB | PID ... */
+    if (argc < 2) { printf("usage: kill %%JOB|PID ...\n"); return 1; }
+    int rc = 0;
+    for (int i = 1; i < argc; ++i) {
+        const char *a = argv[i] + (argv[i][0] == '%');
+        int v = 0;
+        for (const char *p = a; *p; ++p) v = *p >= '0' && *p <= '9' ? v * 10 + (*p - '0') : -1000000;
+        if (v <= 0) { printf("kill: %s: bad argument\n", argv[i]); rc = 1; continue; }
+        if (argv[i][0] == '%') {
+            if (v > JOBS || !s->jobs[v - 1].name[0]) { printf("kill: %s: no such job\n", argv[i]); rc = 1; continue; }
+            for (int k = 0; k < STAGES; ++k) if (s->jobs[v - 1].pid[k] > 0) sys_kill(s->jobs[v - 1].pid[k]);
+        } else {
+            int e = sys_kill(v);
+            if (e) { printf("kill: %d: %s\n", v, e == SYS_ESRCH ? "no such task" : "not permitted"); rc = 1; }
+        }
+    }
+    return rc;
+}
+
+/* Run n parsed commands connected by pipes, each in its own task. */
+static int run_children(struct shell *s, int n, int background)
+{
+    const struct command *c[STAGES];
+    int pipes[STAGES - 1][2], pid[STAGES] = { 0 }, ok = 1;
+    for (int i = 0; i < n; ++i) {
+        c[i] = find_command(s->cmd->cmd[i].argv[0]);
+        if (!c[i]) { printf("nsh: %s: command not found\n", s->cmd->cmd[i].argv[0]); return 127; }
+        if (!c[i]->run || c[i]->run == cmd_cd) {
+            printf("nsh: %s: cannot run in a pipeline or in the background\n", s->cmd->cmd[i].argv[0]);
+            return 2;
+        }
+    }
+    int job = -1;
+    if (background) {
+        reap_jobs(s, 0);
+        for (int j = 0; j < JOBS && job < 0; ++j) if (!s->jobs[j].name[0]) job = j;
+        if (job < 0) { printf("nsh: too many jobs\n"); return 1; }
+    }
+    for (int i = 0; i < n - 1; ++i) {
+        if (sys_pipe(pipes[i]) < 0) { printf("nsh: cannot create a pipe\n"); n = i + 1; ok = 0; break; }
+    }
+    for (int i = 0; ok && i < n; ++i) {
+        int in = i ? pipes[i - 1][0] : -1, out = i < n - 1 ? pipes[i][1] : -1, opened[SH_REDIRS], nopen = 0;
+        if (background && i == 0) {                  /* jobs must not read the terminal */
+            int null = sys_open("/dev/null", O_RDONLY);
+            if (null >= 0) { opened[nopen++] = null; in = null; }
+        }
+        for (int r = 0; r < s->cmd->cmd[i].nredir && ok; ++r) {
+            struct sh_redir *rd = &s->cmd->cmd[i].redir[r];
+            int fd = sys_open(rd->path, rd->target ? O_WRONLY | O_CREAT | (rd->append ? O_APPEND : O_TRUNC) : O_RDONLY);
+            if (fd < 0) { printf("nsh: %s: %s\n", rd->path, errstr(fd)); ok = 0; break; }
+            opened[nopen++] = fd;
+            if (rd->target) out = fd; else in = fd;
+        }
+        if (ok) {
+            struct nn_spawn sp = { c[i]->run, s->cmd->cmd[i].argv, s->cmd->cmd[i].argc, in, out, CHILD_STACK };
+            pid[i] = sys_spawn(&sp);
+            if (pid[i] < 0) { printf("nsh: %s: cannot start (%s)\n", s->cmd->cmd[i].argv[0], errstr(pid[i])); pid[i] = 0; ok = 0; }
+        }
+        for (int k = 0; k < nopen; ++k) sys_close(opened[k]);
+    }
+    for (int i = 0; i < n - 1; ++i) { sys_close(pipes[i][0]); sys_close(pipes[i][1]); }
+    if (!ok) {
+        for (int i = 0; i < n; ++i) if (pid[i] > 0) sys_kill(pid[i]);
+        wait_children(pid, n);
+        return 1;
+    }
+    if (!background) return wait_children(pid, n);
+    struct job *jb = &s->jobs[job];
+    for (int i = 0; i < STAGES; ++i) jb->pid[i] = i < n ? pid[i] : 0;
+    uint32_t k = 0;
+    for (int i = 0; i < n && k + 2 < sizeof jb->name; ++i) {
+        if (i) { jb->name[k++] = '|'; }
+        for (const char *p = s->cmd->cmd[i].argv[0]; *p && k + 1 < sizeof jb->name; ++p) jb->name[k++] = *p;
+    }
+    jb->name[k] = 0;
+    printf("[%d] %d\n", job + 1, pid[n - 1]);
+    return 0;
+}
+
 /* Returns one to leave the current input source. Scripts deliberately share
  * cwd and variables with their caller; no recursive C calls or extra stacks. */
 static int execute_line(struct shell *s)
 {
-    const char *error = sh_parse(s->line, s->cmd, lookup, s);
+    const char *error = sh_parse_line(s->line, s->cmd, lookup, s);
     if (error) { printf("nsh: %s\n", error); s->status = 2; return 0; }
-    int argc = s->cmd->argc;
-    char **argv = s->cmd->argv;
-    if (!argc) return 0;
+    int stages = s->cmd->count, background = s->cmd->background;
+    if (!stages) return 0;
+    if (stages > 1 || background) { s->status = run_children(s, stages, background); return 0; }
+    struct sh_stage *cmd = &s->cmd->cmd[0];
+    int argc = cmd->argc;
+    char **argv = cmd->argv;
+    if (!strcmp(argv[0], "jobs") || !strcmp(argv[0], "kill") || !strcmp(argv[0], "wait")) {
+        s->status = job_command(s, argc, argv);
+        return 0;
+    }
     int script = !strcmp(argv[0], "sh") || !strcmp(argv[0], "source") || !strcmp(argv[0], ".");
     if (script) {
-        if (argc != 2 || s->cmd->nredir) { printf("usage: sh FILE (without redirection)\n"); s->status = 2; }
+        if (argc != 2 || cmd->nredir) { printf("usage: sh FILE (without redirection)\n"); s->status = 2; }
         else s->status = push_script(s, argv[1], 0);
         return 0;
     }
     if (!strcmp(argv[0], "exit") || !strcmp(argv[0], "logout")) return 1;
-    const struct command *c = 0;
-    for (unsigned i = 0; i < sizeof commands / sizeof commands[0]; ++i)
-        if (!strcmp(argv[0], commands[i].name)) c = &commands[i];
+    const struct command *c = find_command(argv[0]);
     if (!c) { printf("nsh: %s: command not found\n", argv[0]); s->status = 127; return 0; }
     s->status = 0;
-    for (int i = 0; i < s->cmd->nredir; ++i) {
-        struct sh_redir *r = &s->cmd->redir[i];
+    for (int i = 0; i < cmd->nredir; ++i) {
+        struct sh_redir *r = &cmd->redir[i];
         int flags = r->target ? O_WRONLY | O_CREAT | (r->append ? O_APPEND : O_TRUNC) : O_RDONLY;
         int fd = sys_open(r->path, flags);
         if (fd < 0) { printf("nsh: %s: %s\n", r->path, errstr(fd)); s->status = 1; break; }
@@ -304,6 +474,7 @@ static void run_shell(int interactive)
                 continue;
             }
         } else {
+            reap_jobs(s, 1);
             printf("nnnix$ ");
             int n = sys_read(0, s->line, sizeof s->line - 1);
             if (!n) break;

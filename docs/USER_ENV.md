@@ -1,4 +1,4 @@
-# Shell scripts and file transfers (M5, first part)
+# Shell scripts, pipes, jobs and file transfers (M5)
 
 The LCD/keyboard and telnet consoles use the same `nsh`. Commands remain built
 into the firmware; scripts are text files on littlefs or the USB drive.
@@ -30,8 +30,37 @@ redirections. Syntax errors are rejected before files are opened.
 The interactive terminal accepts up to 94 characters per line. Script lines
 may contain up to 127 bytes; expanded words share a 192-byte buffer. Excess
 arguments, unclosed quotes and oversized expansions produce an error rather
-than executing a partial command. Pipes, `&` jobs and semicolon command lists
-are still pending in M5 and currently produce an explicit error.
+than executing a partial command. Semicolon command lists are not supported.
+
+## Pipes, background jobs and Ctrl-C
+
+```
+ls / | grep usb
+help | grep kill | wc
+hexdump /dev/zero | head -n 2
+sleep 30 &
+jobs
+kill %1
+wait
+```
+
+A pipeline has up to three commands joined by `|`; a trailing `&` runs it in the
+background. Every command of a pipeline or job runs in its own task with a
+1152-byte stack, connected by 128-byte kernel pipes, so each stage costs about
+1.2 KiB of RAM while it runs. A plain command without `|` or `&` runs inside
+the shell and costs nothing extra. Commands that change the shell itself (`cd`,
+`set`, `unset`, `env`, `sh`, `source`, `exit`, `jobs`, `kill`, `wait`) cannot be
+used in a pipeline or in the background.
+
+A background job reads `/dev/null` unless its input is redirected; its output
+still goes to the terminal. `jobs` lists running jobs, `kill %N` stops job N
+(`kill PID` stops any program task), and `wait` waits for all jobs. Finished jobs
+are reported before the next prompt. Logging out stops the session's jobs.
+
+Ctrl-C stops the foreground command or pipeline. Without memory protection a
+program cannot be stopped at an arbitrary point: it leaves at its next system
+call, and sleeping or waiting on a pipe, the terminal or a child ends at once.
+Writing to a pipe whose reader has gone also ends the writer, like SIGPIPE.
 
 ## Scripts and boot
 

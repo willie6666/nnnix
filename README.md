@@ -8,9 +8,23 @@ flash and a USB drive, and later stand-alone loadable programs. The full plan is
 
 ## Status
 
-**M5 in progress: shell scripts, text tools and HTTP file transfer implemented.**
+**M5 in progress: shell scripts, text tools, HTTP file transfer, pipes, background jobs and Ctrl-C implemented.**
 M0 foundation, M1 kernel core, M2 telnet, M3 LCD/keyboard, the RAM diet and M4 file systems are complete.
-Pipes/background jobs, the editor, DHCP and RTC tools remain in M5.
+The editor, DHCP and RTC tools remain in M5.
+
+```
+nnnix$ ls / | grep usb
+usb/
+nnnix$ hexdump /dev/zero | head -n 2
+00000000  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |................|
+00000010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |................|
+nnnix$ sleep 30 &
+[1] 16
+nnnix$ jobs
+[1] running  sleep
+nnnix$ kill %1
+[1] done  sleep
+```
 
 nnnix runs a shell on the board's own LCD with a USB keyboard, and up to three more over telnet. Files live on
 the onboard 2 MiB SPI flash (littlefs) and on a USB drive:

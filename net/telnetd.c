@@ -8,6 +8,7 @@
 #include "../kernel/kmem.h"
 #include "../kernel/task.h"
 #include "../kernel/tty.h"
+#include "../drivers/w5500.h"
 #include "../lib/string.h"
 #include "../user/nsh.h"
 
@@ -42,13 +43,29 @@ static int session_getc(void *ctx)
     }
 }
 
+static int session_poll(void *ctx)
+{
+    struct session *s = ctx;
+    for (;;) {
+        while (s->rpos < s->rlen) {
+            int c = telnet_rx(&s->tn, s->rx[s->rpos++]);
+            if (c >= 0) return c;
+        }
+        if (!w5500_rx_available(s->sn)) return -1;
+        int n = net_recv(s->sn, s->rx, sizeof s->rx, 1);
+        if (n <= 0) return -1;
+        s->rlen = (uint8_t)n;
+        s->rpos = 0;
+    }
+}
+
 static void session_write(void *ctx, const char *p, size_t n)
 {
     struct session *s = ctx;
     net_send(s->sn, p, (uint32_t)n);  /* text only: a 0xff byte would need IAC doubling */
 }
 
-static const struct tty_ops session_ops = { session_getc, session_write };
+static const struct tty_ops session_ops = { session_getc, session_write, session_poll };
 
 static void session_main(void *arg)
 {
@@ -83,11 +100,18 @@ static void start(int i)
     kprintf("telnetd: session %d (pid %u) from %u.%u.%u.%u:%u\n", i, s->task->pid, ip[0], ip[1], ip[2], ip[3], port);
 }
 
+/* Two steps: reap the shell and close the connection (its children were hung
+ * up and readers now see end of file), then free the session once no task
+ * uses its terminal any more. */
 static void finish(int i)
 {
     struct session *s = sessions[i];
-    task_join(s->task, 0);           /* already a zombie: returns at once */
-    net_close(s->sn);
+    if (s->task) {
+        task_join(s->task, 0);       /* already a zombie: returns at once */
+        s->task = 0;
+        net_close(s->sn);
+    }
+    if (task_tty_users(&s->tty)) return;
     kfree(s);
     sessions[i] = 0;
     kprintf("telnetd: session %d closed\n", i);
@@ -97,7 +121,7 @@ void telnetd_poll(void)
 {
     for (int i = 0; i < NET_TELNET_SOCKS; ++i) {
         struct session *s = sessions[i];
-        if (s) { if (s->done && s->task->state == TASK_ZOMBIE) finish(i); }
+        if (s) { if (s->done && (!s->task || s->task->state == TASK_ZOMBIE)) finish(i); }
         else if (listener_poll(&listeners[i])) start(i);
     }
 }

@@ -3,7 +3,7 @@
 **nnnix**: NuvotoN NUC UNIX (NuvotoN Nuc NIX), a small UNIX-like operating system for the
 NU-LB_002 board (NUC140VE3CN).
 
-Created 2026-10-15. Status: **M4 done; M5 in progress** (2026-10-16).
+Created 2026-10-15. Status: **M4 done; M5 in progress** (2026-10-16): scripts, text tools, HTTP transfer (M5a) and pipes, jobs, Ctrl-C (M5b) are done; the editor, network setup and RTC remain.
 The first M5 part adds shell scripts, variables, text tools and HTTP file transfer;
 pipes/jobs, editing, network configuration/DHCP and RTC remain pending.
 
@@ -305,6 +305,25 @@ Remaining M5 work: pipes and background jobs with bounded task/stack use,
 jobs/kill, `ed`, network diagnostics/configuration, DHCP, RTC/date and optional
 NTP. `/etc/rc` currently runs commands but does not configure the static network
 or control telnetd; those parts of the final M5 acceptance remain open.
+
+**M5b result (2026-10-16)**: `make test` 80/80, `make host-test` passes.
+- Pipelines (`a | b | c`, up to three stages) and background jobs (`cmd &`) run each stage in its own task
+  (1152 B stack) connected by 128-byte kernel pipes; single commands still run inside the shell, so they cost no
+  extra RAM. Shell built-ins that change the shell (`cd`, `set`, `sh`, ...) are refused in pipelines.
+- System calls: spawn (runs a function of this image as a child with its argv copied and fd 0/1 wired), wait (with a
+  timeout, so the shell can watch for Ctrl-C), kill, pipe, ttyintr.
+- Kill without an MMU: a killed program leaves at its next system call; sleep, pipe, terminal and wait waits are
+  interruptible, while waits on fsd requests are not (fsd writes the result into the caller's stack).
+  Writing to a pipe without readers ends the writer, like SIGPIPE, so `hexdump /dev/zero | head` stops.
+- Ctrl-C: while no task reads the terminal, a non-blocking poll moves typed input into a 16-byte type-ahead buffer
+  and reports ^C. The shell kills a foreground pipeline; in-shell commands check between reads/writes, `sleep` every
+  100 ms. Measured: back at the prompt 2-4 ms after ^C.
+- Hang-up: when a task exits, its children are killed and detached; telnetd frees a session only after no task uses
+  its terminal any more (background jobs inherit the session's terminal, which would otherwise be freed under them).
+- `jobs`, `kill %N|PID`, `wait`; finished jobs are reported before the next prompt.
+- `/etc/rc` gets 10 s: if it is still running, logins start anyway (measured 10.7 s after link-up).
+- Costs: about 600 B less free heap than M5a (job tables, task fields, type-ahead, parse buffer); the free-RAM floor
+  is now 4800 B with the console shell and one telnet session (measured 5168 B).
 
 ### M6 Loadable programs
 - Executable format `NXE`: header + position-independent code (clang `-fropi -frwpi`, R9 as the data base) + relocations.

@@ -26,9 +26,13 @@ const char *errstr(int e)
     case SYS_ENAMETOOLONG: return "name too long";
     case SYS_ENOSYS: return "not supported";
     case SYS_ENOTEMPTY: return "directory not empty";
+    case SYS_EINTR: return "interrupted";
+    case SYS_EPIPE: return "broken pipe";
     default: return "error";
     }
 }
+
+int nn_interrupted(void) { return sys_ttyintr() > 0; }
 
 static int fail(const char *cmd, const char *what, int e)
 {
@@ -64,6 +68,7 @@ static int copy_fd(int in, int out)
     while ((n = sys_read(in, buf, sizeof buf)) > 0) {
         int w = sys_write(out, buf, (size_t)n);
         if (w < 0) return w;
+        if (nn_interrupted()) return SYS_EINTR;
     }
     return n;
 }
@@ -240,6 +245,7 @@ int cmd_mkfile(int argc, char **argv)
         int w = sys_write(fd, buf, n);
         if (w < 0) { sys_close(fd); return fail("mkfile", argv[1], w); }
         pos += n;
+        if (nn_interrupted()) { sys_close(fd); return 130; }
     }
     int e = sys_close(fd);
     if (e) return fail("mkfile", argv[1], e);
@@ -267,6 +273,7 @@ int cmd_sum(int argc, char **argv)
                 crc = (crc >> 4) ^ table[(crc ^ (buf[k] >> 4)) & 0xf];
             }
             size += (uint32_t)n;
+            if (nn_interrupted()) { n = SYS_EINTR; break; }
         }
         sys_close(fd);
         if (n < 0) { rc = fail("sum", argv[i], n); continue; }

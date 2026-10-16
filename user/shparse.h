@@ -20,6 +20,21 @@ struct sh_command {
  * callback returns an empty string for an unset variable. */
 const char *sh_parse(const char *line, struct sh_command *out,
                      const char *(*lookup)(void *, const char *), void *ctx);
+/* A pipeline of up to SH_STAGES commands separated by '|', optionally ending
+ * in '&'. The stages share one word buffer. */
+#define SH_STAGES 3
+struct sh_stage {
+    char *argv[SH_ARGS];
+    struct sh_redir redir[SH_REDIRS];
+    int argc, nredir;
+};
+struct sh_pipeline {
+    char words[SH_WORDS];
+    struct sh_stage cmd[SH_STAGES];
+    int count, background;
+};
+const char *sh_parse_line(const char *line, struct sh_pipeline *pl,
+                          const char *(*lookup)(void *, const char *), void *ctx);
 int sh_name_char(char c, int first);
 
 #endif

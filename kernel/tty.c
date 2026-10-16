@@ -16,10 +16,42 @@ void tty_init(struct tty *t, const struct tty_ops *ops, void *ctx)
     ledit_init(&t->ed, t->line, TTY_LINE - 1, echo, t);
 }
 
+static int next_byte(struct tty *t)
+{
+    if (t->ahead_len) {
+        int c = t->ahead[0];
+        for (uint8_t i = 1; i < t->ahead_len; ++i) t->ahead[i - 1] = t->ahead[i];
+        t->ahead_len--;
+        return c;
+    }
+    return t->ops->getc(t->ctx);
+}
+
+int tty_interrupted(struct tty *t)
+{
+    if (t->reading || !t->ops->poll) return 0;
+    int c;
+    while (t->ahead_len < sizeof t->ahead && (c = t->ops->poll(t->ctx)) >= 0) {
+        if (c == 0x03) return 1;
+        t->ahead[t->ahead_len++] = (uint8_t)c;
+    }
+    return 0;
+}
+
+static int read_line(struct tty *t, char *buf, size_t n);
+
 int tty_read(struct tty *t, char *buf, size_t n)
 {
+    t->reading = 1;
+    int r = read_line(t, buf, n);
+    t->reading = 0;
+    return r;
+}
+
+static int read_line(struct tty *t, char *buf, size_t n)
+{
     while (t->rpos >= t->rlen) {
-        int c = t->ops->getc(t->ctx);
+        int c = next_byte(t);
         if (c < 0) return 0;                          /* hung up */
         switch (ledit_feed(&t->ed, (uint8_t)c)) {
         case LEDIT_LINE:

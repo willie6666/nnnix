@@ -35,6 +35,11 @@ enum {
     SYS_DUP2    = 23,  /* dup2(fd, target); fd -1 gives target back to the terminal */
     SYS_ALLOC   = 24,  /* alloc(bytes) -> pointer, or null */
     SYS_FREE    = 25,  /* free(pointer) */
+    SYS_SPAWN   = 26,  /* spawn(const struct nn_spawn *) -> pid */
+    SYS_WAIT    = 27,  /* wait(pid, int *status, timeout_ms) -> pid, 0 while running; NN_FOREVER waits */
+    SYS_KILL    = 28,  /* kill(pid): the program exits at its next system call */
+    SYS_PIPE    = 29,  /* pipe(int fds[2]): read end, write end */
+    SYS_TTYINTR = 30,  /* ttyintr() -> 1 if Ctrl-C was typed while nobody read the terminal */
     SYS_COUNT
 };
 #define SYS_REBOOT_MAGIC 0x1d0cu
@@ -77,6 +82,18 @@ enum { NN_TYPE_FILE = 1, NN_TYPE_DIR = 2, NN_TYPE_DEV = 3 };
 struct nn_stat { uint32_t size; uint8_t type; };
 struct nn_dirent { char name[NN_NAME_MAX]; uint32_t size; uint8_t type; };
 struct nn_statfs { uint32_t block_size, blocks, free_blocks; };
+/* A child task running main(argc, argv) in this program image. argv is copied.
+ * fd_in/fd_out (or -1 for the terminal) become the child's fd 0 and 1. */
+struct nn_spawn {
+    int (*main)(int argc, char **argv);
+    char **argv;
+    int argc, fd_in, fd_out;
+    uint32_t stack;
+};
+#define NN_FOREVER 0xffffffffu
+#define SYS_ESRCH  (-3)
+#define SYS_ECHILD (-10)
+#define SYS_EPIPE  (-32)
 
 #define NN_SVC_CLOBBERS "r1", "r2", "r3", "r12", "lr", "cc", "memory"
 
@@ -141,5 +158,13 @@ static inline int sys_dup2(int fd, int target) { return NN_SYSCALL2(SYS_DUP2, fd
 static inline void *sys_alloc(size_t n) { return (void *)(uintptr_t)(uint32_t)NN_SYSCALL1(SYS_ALLOC, n); }
 static inline void sys_free(void *p) { (void)NN_SYSCALL1(SYS_FREE, (uintptr_t)p); }
 static inline int sys_uname(char *buf, size_t len) { return NN_SYSCALL2(SYS_UNAME, (uintptr_t)buf, len); }
+static inline int sys_spawn(const struct nn_spawn *s) { return NN_SYSCALL1(SYS_SPAWN, (uintptr_t)s); }
+static inline int sys_wait(int pid, int *status, uint32_t timeout_ms)
+{
+    return NN_SYSCALL3(SYS_WAIT, pid, (uintptr_t)status, timeout_ms);
+}
+static inline int sys_kill(int pid) { return NN_SYSCALL1(SYS_KILL, pid); }
+static inline int sys_pipe(int fds[2]) { return NN_SYSCALL1(SYS_PIPE, (uintptr_t)fds); }
+static inline int sys_ttyintr(void) { return NN_SYSCALL0(SYS_TTYINTR); }
 
 #endif

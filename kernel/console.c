@@ -46,13 +46,22 @@ static int console_getc(void *ctx)
     }
 }
 
+static int console_poll_byte(void *ctx)
+{
+    (void)ctx;
+    uint32_t s = irq_save();
+    int c = tail != head ? queue[tail++ % INPUT_QUEUE] : -1;
+    irq_restore(s);
+    return c;
+}
+
 static void console_write(void *ctx, const char *s, size_t n)
 {
     (void)ctx;
     vt_write(&vt, s, n);
 }
 
-static const struct tty_ops console_ops = { console_getc, console_write };
+static const struct tty_ops console_ops = { console_getc, console_write, console_poll_byte };
 
 size_t console_snapshot(char *buf, size_t size) { return vt_snapshot(&vt, buf, size); }
 

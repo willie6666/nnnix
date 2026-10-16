@@ -25,6 +25,19 @@ void kd_notify(void) { if (wake.count <= 0) sem_give(&wake); }
 
 static int due(uint32_t at) { return (int32_t)(jiffies - at) >= 0; }
 
+/* Logins start after /etc/rc, or after 10 s if it is still running, so a
+ * script that never ends cannot lock everyone out. */
+static int logins_open(void)
+{
+    static int forced;
+    if (nsh_boot_done()) return 1;
+    if (!forced && jiffies >= 10000u) {
+        forced = 1;
+        kprintf("kd: /etc/rc still running after 10 s, starting logins\n");
+    }
+    return forced;
+}
+
 static uint32_t until(uint32_t at)
 {
     int32_t left = (int32_t)(at - jiffies);
@@ -56,9 +69,9 @@ static void kd_main(void *arg)
             if (modules.w5500) {
                 diag_poll();
                 httpd_poll();
-                if (nsh_boot_done()) telnetd_poll();
+                if (logins_open()) telnetd_poll();
             }
-            if (nsh_boot_done()) console_poll();
+            if (logins_open()) console_poll();
         }
         if (due(second_at)) {
             second_at += 1000u;

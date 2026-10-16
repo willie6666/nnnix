@@ -7,6 +7,7 @@
 #include "kmem.h"
 #include "../lib/fmt.h"
 #include "../fs/vfs.h"
+#include "../lib/string.h"
 #include "../lib/sys.h"
 #include "../arch/nuc140/arch.h"
 
@@ -70,6 +71,56 @@ static int32_t sys_dup2_k(int32_t fd, int32_t target) { return vfs_dup2(fd, targ
 static int32_t sys_alloc_k(uint32_t n) { return (int32_t)(uintptr_t)kmalloc(n); }
 static int32_t sys_free_k(void *p) { kfree(p); return 0; }
 
+/* Child programs: the argv copy lives in one block owned by the task. */
+struct spawn_block { int (*main)(int, char **); int argc; char *argv[]; };
+
+static void spawn_entry(void *arg)
+{
+    struct spawn_block *b = arg;
+    task_exit(b->main(b->argc, b->argv));
+}
+
+static int32_t sys_spawn_k(const struct nn_spawn *req)
+{
+    if (!req->main || req->argc < 1 || req->argc > 12 || req->stack < 512u || req->stack > 4096u) return SYS_EINVAL;
+    uint32_t size = sizeof(struct spawn_block) + (uint32_t)(req->argc + 1) * sizeof(char *);
+    for (int i = 0; i < req->argc; ++i) size += (uint32_t)strlen(req->argv[i]) + 1u;
+    struct spawn_block *b = kmalloc(size);
+    if (!b) return SYS_ENOMEM;
+    b->main = req->main;
+    b->argc = req->argc;
+    char *strings = (char *)&b->argv[req->argc + 1];
+    for (int i = 0; i < req->argc; ++i) {
+        b->argv[i] = strings;
+        strcpy(strings, req->argv[i]);
+        strings += strlen(strings) + 1;
+    }
+    b->argv[req->argc] = 0;
+    struct file *in = req->fd_in >= 0 ? vfs_get(req->fd_in) : 0, *out = req->fd_out >= 0 ? vfs_get(req->fd_out) : 0;
+    if ((req->fd_in >= 0 && !in) || (req->fd_out >= 0 && !out)) { kfree(b); return SYS_EBADF; }
+    /* Set the child up before it can run: no switch happens while interrupts are off. */
+    uint32_t s = irq_save();
+    struct task *t = task_spawn(b->argv[0], spawn_entry, b, req->stack, task_self()->prio, 0);
+    if (t) {
+        t->user = 1;
+        t->owned = b;
+        if (in) { in->refs++; t->fds[0] = in; }
+        if (out) { out->refs++; t->fds[1] = out; }
+    }
+    irq_restore(s);
+    if (!t) { kfree(b); return SYS_ENOMEM; }
+    return t->pid;
+}
+
+static int32_t sys_wait_k(int32_t pid, int *status, uint32_t timeout_ms)
+{
+    return task_wait_pid((uint16_t)pid, status, timeout_ms);
+}
+
+static int32_t sys_kill_k(int32_t pid) { int r = task_kill((uint16_t)pid); return r == -1 ? SYS_EINVAL : r; }
+static int32_t sys_pipe_k(int *fds) { return vfs_pipe(fds); }
+static int32_t sys_ttyintr_k(void) { return task_self()->tty ? tty_interrupted(task_self()->tty) : 0; }
+
 static int32_t sys_invalid_k(void) { return SYS_ENOSYS; }
 
 static const uintptr_t table[SYS_COUNT] = {
@@ -99,6 +150,11 @@ static const uintptr_t table[SYS_COUNT] = {
     [SYS_DUP2] = (uintptr_t)sys_dup2_k,
     [SYS_ALLOC] = (uintptr_t)sys_alloc_k,
     [SYS_FREE] = (uintptr_t)sys_free_k,
+    [SYS_SPAWN] = (uintptr_t)sys_spawn_k,
+    [SYS_WAIT] = (uintptr_t)sys_wait_k,
+    [SYS_KILL] = (uintptr_t)sys_kill_k,
+    [SYS_PIPE] = (uintptr_t)sys_pipe_k,
+    [SYS_TTYINTR] = (uintptr_t)sys_ttyintr_k,
 };
 
 /* Called from SVC_Handler with the caller's exception frame:
@@ -107,6 +163,11 @@ static const uintptr_t table[SYS_COUNT] = {
 void svc_redirect(uint32_t *frame)
 {
     uint8_t n = ((const uint8_t *)(uintptr_t)frame[6])[-2];
+    struct task *self = task_self();
+    if (self && self->killed && self->user) {       /* a kill takes effect here */
+        n = SYS_EXIT;
+        frame[0] = 130;
+    }
     uintptr_t fn = n < SYS_COUNT && table[n] ? table[n] : (uintptr_t)sys_invalid_k;
     frame[5] = frame[6] | 1u;        /* the kernel function returns to after the svc */
     frame[6] = fn & ~(uintptr_t)1u;  /* exception return resumes in the kernel function */

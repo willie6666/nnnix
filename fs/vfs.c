@@ -146,8 +146,19 @@ static struct file *fd_file(int fd)
     struct task *t = task_self();
     return fd >= 0 && fd < TASK_FDS ? t->fds[fd] : 0;
 }
+struct file *vfs_get(int fd);
 
 int vfs_fd_is_open(int fd) { return fd_file(fd) != 0; }
+
+int vfs_install(struct file *f)
+{
+    struct task *t = task_self();
+    for (int fd = 3; fd < TASK_FDS; ++fd)     /* 0-2 stay with the terminal unless dup2'd */
+        if (!t->fds[fd]) { t->fds[fd] = f; return fd; }
+    return SYS_EMFILE;
+}
+
+struct file *vfs_get(int fd) { return fd_file(fd); }
 
 int vfs_open(const char *path, int flags)
 {

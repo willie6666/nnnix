@@ -84,6 +84,7 @@ enum { GPIO_INPUT, GPIO_OUTPUT, GPIO_OPEN_DRAIN, GPIO_QUASI };
 #define SCB_SHPR3      REG(0xe000ed20u)   /* [23:16] PendSV, [31:24] SysTick */
 #define NVIC_IPR(n)    REG(0xe000e400u + 4u * ((n) / 4u))
 
+#define IRQ_EINT0      2                 /* PB14 */
 #define IRQ_GPAB       4
 #define IRQ_UART1      13
 #define IRQ_TMR0       8

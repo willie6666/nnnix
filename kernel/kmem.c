@@ -176,3 +176,27 @@ void kmem_stats(struct kmem_stats *out)
     UNLOCK(s);
     out->used_blocks = 0;            /* not tracked; kept for the ps/meminfo layout */
 }
+
+/* For crash reports: the header words of the block holding p and of the
+ * block before it (out[0..1] that one's address and size, out[2] its tag
+ * or free-list link, out[3..4] p's block size and tag). 0 if not found. */
+int kmem_neighbours(const void *p, uint32_t out[5])
+{
+    char *prev = 0;
+    for (char *b = heap_base; b < heap_limit;) {
+        const struct block *h = (const struct block *)(void *)b;
+        if (h->size < HDR || b + h->size > heap_limit) return 0;   /* a broken header */
+        if ((const char *)p >= b && (const char *)p < b + h->size) {
+            const struct block *q = (const struct block *)(void *)prev;
+            out[0] = (uint32_t)(uintptr_t)prev;
+            out[1] = q ? q->size : 0;
+            out[2] = q ? q->tag : 0;
+            out[3] = h->size;
+            out[4] = h->tag;
+            return 1;
+        }
+        prev = b;
+        b += h->size;
+    }
+    return 0;
+}

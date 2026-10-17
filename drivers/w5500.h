@@ -12,6 +12,10 @@
 #define W5500_SOCK_CLOSE_WAIT  0x1c
 #define W5500_SOCK_UDP         0x22
 #define W5500_SOCK_SYNSENT     0x15
+#define W5500_SOCK_FIN_WAIT    0x18
+#define W5500_SOCK_CLOSING     0x1a
+#define W5500_SOCK_TIME_WAIT   0x1b
+#define W5500_SOCK_LAST_ACK    0x1d
 #define W5500_MODE_TCP_ND      0x21          /* TCP, no delayed ACK */
 #define W5500_MODE_UDP         0x02
 

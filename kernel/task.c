@@ -118,7 +118,25 @@ void sched_switch(void)
 {
     uint32_t s = irq_save();
     struct task *prev = cur();
-    if (!stack_ok(prev)) panic("stack overflow in %s", prev->name);
+    if (!stack_ok(prev)) {
+        /* Which check failed tells a deep call (sp in the red zone) from a write
+         * into the stack's bottom from below; pc and lr say where it ran. */
+        const uint32_t *f = prev->sp;
+        uint32_t used = (uint32_t)((uintptr_t)prev->stack + prev->stack_size - (uintptr_t)f);
+        int deep = (uintptr_t)f < (uintptr_t)prev->stack + TASK_REDZONE;
+        uint32_t nb[5];
+        if (kmem_neighbours(prev->stack, nb))        /* who sits below: on the serial log */
+            kprintf("stack %08x [%08x %08x] %08x %08x %08x; below %08x size %u tag %08x\n",
+                    (unsigned)(uintptr_t)prev->stack, nb[3], nb[4], prev->stack[0], prev->stack[1],
+                    prev->stack[2], nb[0], nb[1], nb[2]);
+        else
+            kprintf("stack %08x: heap walk failed\n", (unsigned)(uintptr_t)prev->stack);
+        /* 47 characters fit the panic record: "stack overflow NAME USED pc PC lr LR",
+         * USED marked '!' when sp is fine and only the painted bottom was hit. */
+        panic("stack overflow %s %u%s pc %x lr %x", prev->name, used, deep ? "" : "!",
+              (uintptr_t)f >= (uintptr_t)prev->stack + 64u ? f[14] : 0u,
+              (uintptr_t)f >= (uintptr_t)prev->stack + 64u ? f[13] : 0u);
+    }
     struct task *next = pick();
     if (next != prev) {
         /* Still runnable with slice left and not yielding: it was preempted. */
@@ -251,10 +269,38 @@ static void note_peak(uint32_t size, uint32_t used)
     if (free_slot >= 0) { peaks[free_slot].size = (uint16_t)size; peaks[free_slot].peak = (uint16_t)used; }
 }
 
+/* Fill words still at the bottom of t's stack, counted 32 at a time with
+ * interrupts on in between: an untouched 1.6 KiB stack takes about 100 us to
+ * scan, too long to hold off the 8 kHz audio interrupt. -1 if t went away. */
+static int32_t untouched_words(const struct task *t, uint16_t pid)
+{
+    uint32_t n = 0;
+    for (;;) {
+        uint32_t s = irq_save();
+        int alive = 0;
+        for (int i = 0; i < TASK_MAX; ++i) if (tasks[i] == t && t->pid == pid) alive = 1;
+        if (!alive) { irq_restore(s); return -1; }
+        uint32_t words = t->stack ? t->stack_size / 4u : 0, end = n + 32u < words ? n + 32u : words;
+        while (n < end && t->stack[n] == STACK_FILL) ++n;
+        int done = n < end || n == words;
+        irq_restore(s);
+        if (done) return (int32_t)n;
+    }
+}
+
 int task_stack_peaks(uint16_t sizes[], uint16_t used[], int max)
 {
+    for (int i = 0; i < TASK_MAX; ++i) {
+        uint32_t s = irq_save();
+        struct task *t = tasks[i];
+        uint16_t pid = t ? t->pid : 0;
+        irq_restore(s);
+        int32_t u = t && t->stack ? untouched_words(t, pid) : -1;
+        s = irq_save();
+        if (u >= 0 && tasks[i] == t) note_peak(t->stack_size, t->stack_size - (uint32_t)u * 4u);
+        irq_restore(s);
+    }
     uint32_t s = irq_save();
-    for (int i = 0; i < TASK_MAX; ++i) if (tasks[i]) note_peak(tasks[i]->stack_size, stack_peak(tasks[i]));
     int n = 0;
     for (int i = 0; i < PEAK_SLOTS && n < max; ++i)
         if (peaks[i].size) { sizes[n] = peaks[i].size; used[n] = peaks[i].peak; ++n; }
@@ -394,22 +440,25 @@ int task_tty_users(const struct tty *tty)
 int task_list(struct task_info *out, int max, int skip)
 {
     int n = 0;
-    uint32_t s = irq_save();
     for (int i = 0; i < TASK_MAX && n < max; ++i) {
+        uint32_t s = irq_save();
         struct task *t = tasks[i];
-        if (!t || skip-- > 0) continue;
-        uint32_t untouched = 0;
-        if (t->stack) while (untouched < t->stack_size / 4u && t->stack[untouched] == STACK_FILL) untouched++;
+        if (!t || skip-- > 0) { irq_restore(s); continue; }
         /* A copy of the name: a program's name lives in its argv block, which is
          * freed when it is reaped, possibly before the caller prints the list. */
-        struct task_info *o = &out[n++];
+        struct task_info *o = &out[n];
         *o = (struct task_info){ .pid = t->pid, .prio = t->prio, .state = t->state, .stack_size = t->stack_size,
-                                 .stack_used = t->stack ? t->stack_size - untouched * 4u : 0, .cpu_ms = t->cpu_ms };
+                                 .cpu_ms = t->cpu_ms };
         uint32_t k = 0;
         while (k + 1 < sizeof o->name && t->name[k]) { o->name[k] = t->name[k]; ++k; }
         o->name[k] = 0;
+        int has_stack = t->stack != 0;
+        irq_restore(s);
+        int32_t u = has_stack ? untouched_words(t, o->pid) : 0;
+        if (u < 0) continue;                         /* reaped meanwhile */
+        o->stack_used = has_stack ? o->stack_size - (uint32_t)u * 4u : 0;
+        ++n;
     }
-    irq_restore(s);
     return n;
 }
 

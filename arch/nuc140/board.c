@@ -74,6 +74,28 @@ void board_w5500_reset(int asserted)
 
 void w5500_isr(void);
 
+void ch376_isr(void);
+
+/* PB14 is the chip's /INT0 pin: its interrupt has a vector of its own (EINT0),
+ * not the shared GPIO A/B one. */
+void EINT0_IRQHandler(void)
+{
+    GPIO_ISRC(PORTB) = BIT(14);
+    ch376_isr();
+}
+
+void board_ch376_irq(int enable)
+{
+    GPIO_IMD(PORTB) &= ~BIT(14);                    /* edge triggered */
+    GPIO_ISRC(PORTB) = BIT(14);
+    if (enable) GPIO_IEN(PORTB) |= BIT(14);        /* INT falling edge: a command finished */
+    else GPIO_IEN(PORTB) &= ~BIT(14);
+    NVIC_IPR(IRQ_EINT0) = (NVIC_IPR(IRQ_EINT0) & ~(0xffu << (8 * (IRQ_EINT0 % 4))))
+                        | (0x40u << (8 * (IRQ_EINT0 % 4)));
+    if (enable) NVIC_ISER = BIT(IRQ_EINT0);
+    else NVIC_ICER = BIT(IRQ_EINT0);
+}
+
 void board_w5500_irq(int enable)
 {
     GPIO_IMD(PORTB) &= ~BIT(2);                     /* edge triggered */

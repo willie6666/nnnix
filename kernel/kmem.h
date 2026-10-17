@@ -19,6 +19,7 @@ void  kfree(void *p);
  * is killed, or exits without freeing, gives its memory back when it is reaped. */
 void  kmem_set_owner(void *p, uint16_t owner);
 int   kmem_free_owned(uint16_t owner);          /* returns the number of blocks freed */
+int   kmem_neighbours(const void *p, uint32_t out[5]);   /* crash reports: p's block and the one before */
 int   kmem_reown(uint16_t from, uint16_t to);   /* hand blocks to another task; returns how many */
 void  kmem_stats(struct kmem_stats *out);
 

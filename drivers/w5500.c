@@ -3,6 +3,7 @@
 #include "spi.h"
 #include "../arch/nuc140/arch.h"
 #include "../kernel/sync.h"
+#include "../kernel/task.h"
 
 /* Block select: 0 common, socket n: registers 1+4n, TX buffer 2+4n, RX buffer 3+4n. */
 #define SREG(sn) ((uint8_t)(1u + 4u * (unsigned)(sn)))
@@ -274,6 +275,14 @@ static int wait_send_ok(int sn, uint32_t timeout_ms)
     }
 }
 
+/* For waits that can last: spin for the first millisecond (most finish by
+ * then), then sleep until a socket event or 1 ms, so a waiting kd (priority
+ * 2) or server does not keep the CPU from lower-priority tasks. */
+static void pause(int sn, uint32_t start)
+{
+    if (jiffies - start >= 1u && sched_running()) w5500_wait(sn, 1);
+}
+
 int w5500_push(int sn)
 {
     /* Only one SEND may be in flight: a SEND issued before the previous SEND_OK
@@ -290,6 +299,7 @@ int w5500_send(int sn, const void *buf, uint16_t n, uint32_t timeout_ms)
     uint32_t start = jiffies;
     while (w5500_tx_room(sn) < n) {
         if (!w5500_can_send(sn) || jiffies - start > timeout_ms) return -1;
+        pause(sn, start);
     }
     if (w5500_write(sn, buf, n)) return -1;
     return w5500_push(sn);
@@ -301,14 +311,25 @@ int w5500_flush(int sn, uint32_t timeout_ms)
     uint32_t start = jiffies;
     while (w5500_tx_free(sn) != tx_size[sn]) {
         if (!w5500_can_send(sn) || jiffies - start > timeout_ms) return -1;
+        pause(sn, start);
     }
     return 0;
 }
 
+/* Once both FINs have been exchanged (CLOSING, TIME_WAIT, LAST_ACK) there is
+ * nothing left to wait for: close at once. Measured: when the peer's FIN and
+ * its ACK of ours arrive in one segment, the chip stays in CLOSING and answers
+ * every RST of the peer with another ACK, about 28 000 packets a second until
+ * the timeout here closed it (1 s at every connection's end). */
 void w5500_disconnect(int sn, uint32_t timeout_ms)
 {
     command(sn, CR_DISCON);
     uint32_t start = jiffies;
-    while (w5500_status(sn) != W5500_SOCK_CLOSED && jiffies - start < timeout_ms) { }
+    for (;;) {
+        uint8_t sr = w5500_status(sn);
+        if (sr == W5500_SOCK_CLOSED || sr == W5500_SOCK_CLOSING || sr == W5500_SOCK_TIME_WAIT ||
+            sr == W5500_SOCK_LAST_ACK || jiffies - start >= timeout_ms) break;
+        pause(sn, start);
+    }
     w5500_close(sn);
 }

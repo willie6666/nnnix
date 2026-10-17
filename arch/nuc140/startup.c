@@ -23,6 +23,7 @@ void SysTick_Handler(void);
 void GPAB_IRQHandler(void);
 void UART1_IRQHandler(void);
 void TMR0_IRQHandler(void);
+void EINT0_IRQHandler(void);
 
 #define DEFAULT (uintptr_t)Default_Handler
 __attribute__((section(".vectors"), used)) const uintptr_t vectors[48] = {
@@ -35,7 +36,9 @@ __attribute__((section(".vectors"), used)) const uintptr_t vectors[48] = {
     [12 ... 13] = DEFAULT,
     [14] = (uintptr_t)PendSV_Handler,
     [15] = (uintptr_t)SysTick_Handler,
-    [16 ... 19] = DEFAULT,
+    [16 ... 17] = DEFAULT,
+    [16 + 2] = (uintptr_t)EINT0_IRQHandler,
+    [19] = DEFAULT,
     [16 + 4] = (uintptr_t)GPAB_IRQHandler,
     [21 ... 23] = DEFAULT,
     [16 + 8] = (uintptr_t)TMR0_IRQHandler,

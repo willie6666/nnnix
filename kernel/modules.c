@@ -17,6 +17,7 @@ void modules_poll(void)
         powered = board_modules_powered();
         if (powered != modules.powered) {
             board_w5500_irq(0);
+            board_ch376_irq(0);
             modules = (struct modules_state){ .powered = (uint8_t)powered };
             kprintf(powered ? "modules: power on\n" : "modules: power off, SPI pins released\n");
             board_spi_pins(powered);
@@ -36,6 +37,7 @@ void modules_poll(void)
     ch376_unlock();
     if (ch != modules.ch376) {
         modules.ch376 = (uint8_t)ch;
+        board_ch376_irq(ch);
         if (ch) kprintf("ch376: present, version 0x%02x\n", version);
         else kprintf("ch376: not responding\n");
     }

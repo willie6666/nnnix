@@ -20,6 +20,7 @@
 #define TMR0_TCSR  REG(0x40010000u)
 #define TMR0_TCMPR REG(0x40010004u)
 #define TMR0_TISR  REG(0x40010008u)
+#define TMR0_TDR   REG(0x4001000cu)
 
 #define PB11       BIT(11)
 /* Edge-aligned PWM, CNR 255: the output is low (buzzer on) for CNR - CMR of
@@ -30,12 +31,15 @@
 static uint8_t *ring;
 static volatile uint32_t head, tail; /* head: written by the task, tail: by the interrupt */
 static volatile uint32_t underruns, played;
+static volatile uint32_t late_max;   /* the timer's count at the interrupt: its latency, in HCLK cycles */
 static volatile uint8_t counting;    /* from the first sample until the close: gaps are underruns */
 static struct sem space;             /* given when the ring drains to half */
 static volatile uint8_t busy;
 
 void TMR0_IRQHandler(void)
 {
+    uint32_t late = TMR0_TDR;        /* counts up from 0 at each tick: how long interrupts were held off */
+    if (late > late_max) late_max = late;
     TMR0_TISR = 1u;
     uint32_t t = tail;
     if (t == head) {                         /* keep the last level: no click */
@@ -74,7 +78,7 @@ static void hardware(int on)
         TMR0_TISR = 1u;
         NVIC_IPR(IRQ_TMR0) &= ~(0xffu << (8 * (IRQ_TMR0 % 4)));   /* highest: steady sample times */
         NVIC_ISER = BIT(IRQ_TMR0);
-        TMR0_TCSR = BIT(30) | BIT(29) | (1u << 27);         /* enabled, interrupt, periodic */
+        TMR0_TCSR = BIT(30) | BIT(29) | (1u << 27) | BIT(16);   /* enabled, interrupt, periodic, TDR readable */
     } else {
         TMR0_TCSR = 0;
         NVIC_ICER = BIT(IRQ_TMR0);
@@ -100,7 +104,7 @@ int audio_open(void)
     if (was) return SYS_EBUSY;
     ring = kmalloc(AUDIO_RING);
     if (!ring) { busy = 0; return SYS_ENOMEM; }
-    head = tail = underruns = played = 0;
+    head = tail = underruns = played = late_max = 0;
     counting = 0;
     space = (struct sem){ 0 };
     hardware(1);
@@ -142,7 +146,8 @@ void audio_close(void)
     counting = 0;
     while (head != tail && !task_self()->killed) msleep(10);
     hardware(0);
-    kprintf("audio: %u samples played, %u short\n", played, underruns);
+    kprintf("audio: %u samples played, %u short, latency up to %u us\n", played, underruns,
+            late_max / (HCLK_HZ / 1000000u));
     kfree(ring);
     ring = 0;
     busy = 0;

@@ -31,10 +31,27 @@ static uint8_t cmd_read(uint8_t cmd)
     return v;
 }
 
+/* INT's falling edge (board_ch376_irq) gives `done`. Commands answer within
+ * microseconds or take milliseconds (disk I/O); for the long ones the caller
+ * (usually fsd, priority 4) sleeps instead of spinning, so lower-priority
+ * tasks such as a player keep running. The level is what counts: the
+ * semaphore only wakes the wait, and the timeout re-checks every 10 ms in
+ * case an edge was missed. Before the scheduler runs, it spins. */
+static struct sem done;
+void ch376_isr(void) { sem_give(&done); }
+
 static uint8_t wait_status(uint32_t ms)
 {
+    uint32_t s = irq_save();
+    done.count = 0;                  /* edges of earlier commands */
+    irq_restore(s);
+    for (int i = 0; i < 50 && !INT_ACTIVE(); ++i) delay_us(1);
     uint32_t start = jiffies;
-    while (!INT_ACTIVE()) if (jiffies - start > ms) return CH376_TIMEOUT;
+    while (!INT_ACTIVE()) {
+        uint32_t waited = jiffies - start;
+        if (waited > ms) return CH376_TIMEOUT;
+        if (sched_running()) sem_take(&done, ms - waited < 10u ? ms - waited + 1u : 10u);
+    }
     return cmd_read(0x22);           /* GET_STATUS, clears INT */
 }
 

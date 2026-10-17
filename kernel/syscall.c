@@ -266,6 +266,17 @@ void svc_redirect(uint32_t *frame)
         frame[0] = 130;
     }
     uintptr_t fn = n < SYS_COUNT && table[n] ? table[n] : (uintptr_t)sys_invalid_k;
+    if (n == SYS_EXIT && self && self->user) {
+        /* The program's frames are not needed any more: the exit (closing
+         * files, logging) starts on a fresh frame at the top of the stack,
+         * not on top of however deep the program was when it was killed. */
+        uint32_t code = frame[0];
+        frame = (uint32_t *)(((uintptr_t)self->stack + self->stack_size - 32u) & ~(uintptr_t)7u);
+        for (int i = 1; i < 7; ++i) frame[i] = 0;   /* the exit never returns */
+        frame[0] = code;
+        frame[7] = 0x01000000u;      /* xPSR: Thumb */
+        __asm volatile("msr psp, %0" :: "r"(frame) : "memory");
+    }
     frame[5] = frame[6] | 1u;        /* the kernel function returns to after the svc */
     frame[6] = fn & ~(uintptr_t)1u;  /* exception return resumes in the kernel function */
 }

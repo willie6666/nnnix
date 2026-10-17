@@ -1053,7 +1053,7 @@ def nnv_tests(ns, serial, report):
         # without gaps; ^C silences it at once.
         mark = len(serial.lines)
         out = t.cmd('play /home/tone.nnv', 15)
-        silent = serial.wait_for(r'audio: ', 1, mark) is None
+        silent = serial.wait_for(r'audio: [1-9]', 1, mark) is None   # no sound played (a late 0-sample close may show)
         mark = len(serial.lines)
         out += t.cmd('play -s -v /home/tone.nnv', 15)
         gapless = serial.wait_for(r'audio: 32000 samples played, 0 short', 2, mark)
@@ -1167,6 +1167,56 @@ def audit_tests(ns, serial, report):
             t.cmd(f'rm {f}' if f != '/home/mvd' else f'rmdir {f}')
         t.send('exit\r\n'); t.wait_closed(); t.close()
     report.add('audit uploads', all(s in (201, 204) for s in statuses), str(statuses))
+
+
+def efficiency_tests(ns, serial, report):
+    """O7/O8 and the exit stack: work that waits sleeps, interrupts are held off
+    only briefly, and a program killed deep in a system call exits cleanly."""
+    status = ns.call(http_request, 'PUT', '/home/eff.bin', pattern(196608))[0]   # a copy that lasts a few seconds
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    try:
+        def fsd_cpu():
+            m = re.search(r'\d+ fsd\s+\d+ \S+\s+\d+/\d+\s+(\d+)', t.cmd('ps'))
+            return int(m[1]) if m else -1
+        before = t.cmd('free')
+        # O7: a USB copy while a video plays: fsd sleeps while the CH376 works.
+        c0, t0 = fsd_cpu(), time.monotonic()
+        t.cmd('cp /home/eff.bin /usb/eff.bin &')
+        out = t.cmd('play -v /home/tone.nnv', 30)
+        while 'running' in t.cmd('jobs'):
+            time.sleep(0.2)
+        took, cpu = time.monotonic() - t0, fsd_cpu() - c0
+        m = re.search(r'120 frames in (\d+)\.\d+ s, (\d+) late', out)
+        report.add('play during a usb copy', status in (201, 204) and m is not None and int(m[1]) <= 4 and int(m[2]) <= 30 and cpu < took * 1000 * 0.6,
+                   f'{out.strip()}; fsd {cpu} ms of cpu in {took:.1f} s')
+        # The exit runs on a fresh stack: a program killed while deep in its
+        # calls (here a player with sound during a copy) ends cleanly.
+        mark = len(serial.lines)
+        t.cmd('cp /home/eff.bin /usb/eff.bin &')
+        t.cmd('play -l -s /home/tone.nnv &')
+        time.sleep(3)
+        t.cmd('kill %2')
+        while 'running' in t.cmd('jobs'):
+            time.sleep(0.2)
+        crash = serial.wait_for(r'PANIC|HardFault|stack overflow', 1, mark)
+        # O8: the audio interrupt's latency while ps and /proc scan the task stacks.
+        t.cmd('play -l -s /home/tone.nnv &')
+        time.sleep(0.5)
+        for _ in range(3):
+            t.cmd('ps'); t.cmd('cat /proc/tasks'); t.cmd('cat /proc/stacks')
+        mark2 = len(serial.lines)
+        t.cmd('kill %1')
+        t.cmd('wait', 10)
+        i = serial.wait_for(r'audio: \d+ samples played, \d+ short, latency up to \d+ us', 3, mark2)
+        lat = int(re.search(r'latency up to (\d+) us', serial.lines[i])[1]) if i is not None else -1
+        t.cmd('rm /usb/eff.bin'); t.cmd('rm /home/eff.bin')
+        time.sleep(0.3)
+        after = t.cmd('free')
+        report.add('killed program exits cleanly', crash is None and before == after, after.strip().replace('\r\n', ' | '))
+        report.add('interrupt latency', 0 <= lat <= 40, f'audio interrupt held off at most {lat} us during ps and /proc')
+    finally:
+        t.send('exit\r\n'); t.wait_closed(); t.close()
 
 
 def m7_tests(ns, serial, report, image):
@@ -1697,6 +1747,12 @@ def main():
                 report.add('NNV player', False, repr(exc))
 
             try:
+                efficiency_tests(ns, serial, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
+                report.add('efficiency', False, repr(exc))
+
+            try:
                 audit_tests(ns, serial, report)
             except (OSError, TimeoutError, ConnectionError) as exc:
                 traceback.print_exc()
@@ -1737,7 +1793,7 @@ def main():
                 mark = len(serial.lines)
                 ns.call(request, b'O')
                 rebooted = serial.wait_for(BANNER, 15, mark)
-                crash = serial.wait_for(r'last crash #\d+: panic: stack overflow in ovf', 5, rebooted or mark)
+                crash = serial.wait_for(r'last crash #\d+: panic: stack overflow (in )?ovf', 5, rebooted or mark)
                 report.add('stack overflow', None not in (rebooted, crash),
                            serial.lines[crash] if crash is not None else 'no overflow panic reported')
                 serial.wait_for(r'telnetd: listening', 30, rebooted or mark)

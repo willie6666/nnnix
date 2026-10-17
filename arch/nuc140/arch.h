@@ -20,6 +20,7 @@ void board_w5500_reset(int asserted);   /* PB8 */
 void board_led_toggle(void);
 void board_led_set(int on);         /* PC12, active low */
 void board_w5500_irq(int enable);   /* PB2 falling edge -> w5500_isr() */
+void board_ch376_irq(int enable);   /* PB14 falling edge -> ch376_isr() */
 uint32_t board_reset_cause(void);    /* SYS_RSTSRC captured at boot */
 
 void fault_report_last(void);        /* print the crash record left by a previous HardFault */

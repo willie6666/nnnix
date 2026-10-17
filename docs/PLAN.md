@@ -600,6 +600,47 @@ LCD before the sound after holding the last frame, so the console redraw (about 
 running dry while still open (64-71 samples counted short; the sound is now closed first, 0 short). Free RAM
 with the console shell and one telnet session: 6136 B.
 
+**O7, O8 and a crash found on the way (2026-10-17)**. Measured first, with a 676 KiB copy to the USB drive
+while `play` runs (before / after):
+
+| | b956785 | now |
+| --- | --- | --- |
+| copy time | 28.6 s | 19.7 s |
+| fsd CPU during the copy | 19.1 s | 7.1 s |
+| a 4 s video during the copy | 19.0 s, 80 frames late | 4.0 s, 9-11 late |
+| CH376 bench write / read (256 KiB) | 122 / 227 kB/s | 114 / 224 kB/s |
+| audio interrupt latency, worst (`ps`, `/proc` while playing) | 100 us | 12 us |
+
+- O7: the CH376 wait spun on its INT pin inside fsd (priority 4), starving every task below it during USB
+  I/O. INT (PB14) now has an interrupt: the wait polls 50 us, then sleeps until the edge (10 ms re-checks of the
+  level stay as a safety net). PB14 is the chip's /INT0 pin, whose interrupt has its own vector (EINT0, IRQ 2),
+  not the GPIO A/B one: wired to the shared vector first, it never fired, and every wait ran into the 10 ms
+  timeout (USB at 31 kB/s). The W5500 waits for transmit room, a flush and a disconnect spin for 1 ms and then
+  sleep on the socket's event semaphore 1 ms at a time.
+- Found through O7 (the waits no longer hid it): every TCP close took 1 s. Captured on eth1: after the FIN
+  exchange the W5500 stayed in CLOSING although the peer's FIN+ACK acknowledged its FIN (the two arrived in one
+  segment), and answered each RST of the peer with another ACK, about 28 000 packets a second, until the
+  disconnect's 1 s timeout closed the socket. kd spent that second in every telnet logout. `w5500_disconnect`
+  now closes as soon as both FINs are through (CLOSING, TIME_WAIT, LAST_ACK): 48 packets, and a session's RAM is
+  back 10 ms after logout instead of 1.2 s. The first attempt, closing listener sockets without waiting and
+  finishing in `listener_poll`, only moved the second elsewhere and was dropped.
+- O8: measured with the audio timer itself (its counter at the interrupt is the latency): 8-9 us under load,
+  except `ps` and `/proc/tasks` and `/proc/stacks`, which scanned every task's stack for its fill pattern with
+  interrupts off (100 us, close to the 125 us sample period). The scans now take 32 words at a time with
+  interrupts on in between, checking the task is still there. Reaping and kmem_free_owned measured 8-9 us and
+  were left as they are.
+- A crash found while measuring: killing a program while it is deep in a system call (a player with sound,
+  during a USB copy) overflowed its 1 KiB stack, because the exit (closing its files, `/dev/audio` logging)
+  ran on top of the program's own frames. The stack check caught it as a panic, or the heap was corrupted
+  first and the board hung. The overflow panic now says how deep the stack was, whether only its painted
+  bottom was hit, and where it ran; with the heap block below printed to the serial log this showed pushed
+  frame pointers below the stack. A program's exit (a kill or `exit`) now starts on a fresh frame at the top
+  of its stack: its frames are not needed any more. 4 minutes of copies, playback and kills: no panic.
+- Result: `make test` 154/154 (3 new), host tests unchanged.
+- Still open: during flash writes and program loading a player with sound runs short (its reads wait behind
+  fsd jobs such as a sector erase, longer than the 128 ms ring); with sound, a player leaves about 1.4 KiB,
+  not enough for another telnet shell.
+
 ## 8. Source layout
 
 ```

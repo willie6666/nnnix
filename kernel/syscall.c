@@ -83,6 +83,7 @@ static int32_t sys_alloc_k(uint32_t n, uint32_t flags)
     return (int32_t)(uintptr_t)p;
 }
 static int32_t sys_free_k(void *p) { kfree(p); return 0; }
+static int32_t sys_grow_k(void *p, uint32_t n) { return kmem_grow(p, n); }
 
 /* Child programs: the argv copy lives in one block owned by the task. A loaded
  * program (image != 0) gets the library table as a third argument. The task
@@ -235,6 +236,7 @@ static const uintptr_t table[SYS_COUNT] = {
     [SYS_DUP2] = (uintptr_t)sys_dup2_k,
     [SYS_ALLOC] = (uintptr_t)sys_alloc_k,
     [SYS_FREE] = (uintptr_t)sys_free_k,
+    [SYS_GROW] = (uintptr_t)sys_grow_k,
     [SYS_SPAWN] = (uintptr_t)sys_spawn_k,
     [SYS_WAIT] = (uintptr_t)sys_wait_k,
     [SYS_KILL] = (uintptr_t)sys_kill_k,

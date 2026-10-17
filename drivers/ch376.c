@@ -15,8 +15,12 @@ void ch376_unlock(void) { mutex_unlock(&device); }
 
 #define INT_ACTIVE() (!(GPIO_PIN(PORTB) & BIT(14)))
 
+static uint32_t commands;            /* every command sent: a listing in progress is gone */
+uint32_t ch376_commands(void) { return commands; }
+
 static void begin(uint8_t cmd)
 {
+    ++commands;
     spi_select(SPI_CH376);
     spi_xfer8(cmd);
     delay_us(2);                     /* >= 1.5 us between command and data */

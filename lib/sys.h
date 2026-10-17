@@ -52,6 +52,7 @@ enum {
     SYS_MKFS    = 40,  /* mkfs("/"): format the flash; only when it did not mount (EBUSY otherwise) */
     SYS_EXEC    = 41,  /* exec(const struct nn_exec *) -> pid: load an NXE program as a child task */
     SYS_FWUPDATE = 42, /* fwupdate(path, NN_FW_*, struct nn_fwinfo *): stage a firmware image, or report */
+    SYS_GROW    = 43,  /* grow(pointer, bytes) -> 0 if the block now holds that many bytes in place, else -1 */
     SYS_COUNT
 };
 #define SYS_REBOOT_MAGIC 0x1d0cu
@@ -239,6 +240,7 @@ static inline int sys_dup2(int fd, int target) { return NN_SYSCALL2(SYS_DUP2, fd
 static inline void *sys_alloc(size_t n) { return (void *)(uintptr_t)(uint32_t)NN_SYSCALL2(SYS_ALLOC, n, 0); }
 static inline void *sys_alloc_long(size_t n) { return (void *)(uintptr_t)(uint32_t)NN_SYSCALL2(SYS_ALLOC, n, NN_ALLOC_LONG); }
 static inline void sys_free(void *p) { (void)NN_SYSCALL1(SYS_FREE, (uintptr_t)p); }
+static inline int sys_grow(void *p, size_t n) { return NN_SYSCALL2(SYS_GROW, (uintptr_t)p, n); }
 static inline int sys_uname(char *buf, size_t len) { return NN_SYSCALL2(SYS_UNAME, (uintptr_t)buf, len); }
 static inline int sys_spawn(const struct nn_spawn *s) { return NN_SYSCALL1(SYS_SPAWN, (uintptr_t)s); }
 static inline int sys_wait(int pid, int *status, uint32_t timeout_ms)

@@ -151,6 +151,8 @@ static void serve(void *arg)
     else download(t);
     kfree(t);
     net_close(HTTP_SOCKET);
+    /* Listen again at once (see diag.c: a reconnect in the gap waits 3 s). */
+    if (net_services & NN_SVC_HTTPD) w5500_tcp_listen(HTTP_SOCKET, listener.port);
 }
 
 void httpd_poll(void)

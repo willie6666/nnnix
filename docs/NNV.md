@@ -8,7 +8,7 @@ sound for the onboard buzzer. A picture is a video of one frame. The pieces:
 | `tools/mknnv.py` | On the build machine: turns pictures and videos into NNV through ffmpeg, makes test files, checks files |
 | `/dev/lcd` | In the kernel: the display as a 1024-byte frame that a program can write |
 | `/dev/audio` | In the kernel: the buzzer, playing 8-bit samples at 8 kHz (`drivers/audio.c`) |
-| `play` (`sdk/examples/play.c`) | On the board: shows an NNV file, with its sound if asked (a 2.6 KiB loadable program) |
+| `play` (`user/play.c`) | On the board: a built-in command that shows an NNV file, with its sound if asked; it runs from flash, taking about 2.7 KiB of RAM while it plays (the same file builds as the SDK example `sdk/examples/play.c`) |
 | `lib/nnv.h` | The format and its decoders, shared by `play` and the host test |
 
 ## Quick start
@@ -16,8 +16,6 @@ sound for the onboard buzzer. A picture is a video of one frame. The pieces:
 ```bash
 python3 tools/mknnv.py convert photo.jpg photo.nnv
 python3 tools/mknnv.py convert clip.mp4 clip.nnv --fps 12 --duration 20
-make sdk
-python3 tools/nncp.py put sdk/build/play.nxe /bin/play
 python3 tools/nncp.py put clip.nnv /home/clip.nnv
 ```
 
@@ -106,8 +104,8 @@ of the pitch, and the parts run together. So sound is opt-in: `mknnv.py
 
 - Writes take unsigned 8-bit mono samples at 8000 Hz, 128 being silence
   (`cat sound.u8 > /dev/audio` plays a raw file).
-- The kernel keeps a 1 KiB ring (128 ms), allocated only while the device is
-  open; writes block while it is full.
+- The kernel keeps a 2 KiB ring (256 ms; 1 KiB when memory is short),
+  allocated only while the device is open; writes block while it is full.
 - One open for writing at a time (others get `EBUSY`); tasks sharing that open
   file (a program and the workers it spawns) take turns, one write at a time. The close plays out what is
   queued, or stops at once when the program was killed, and the pin goes back
@@ -165,11 +163,12 @@ A **sound** record holds IMA ADPCM: the predictor (i16) and the step index
 (u8, 0-88) to start from, then the codes, two per byte, low nibble first, so
 `2 x (length - 3)` samples. The decoder's 16-bit output becomes the device's
 8-bit samples as `(value >> 8) + 128`. Each record holds 256 samples (32 ms),
-the records follow each other in time, and the encoder places each one 64 ms
+the records follow each other in time, and the encoder places each one 192 ms
 before the frame that shows at its start. A player queues sound records as
-they come and shows each frame at its time; the ring then never holds more
-than about 100 ms, and a frame may be up to 64 ms slow before the sound runs
-dry.
+they come and shows each frame at its time; the ring then holds up to about
+230 ms, and a frame (its file reads waiting behind other storage work in fsd)
+may be up to 192 ms slow before the sound runs dry. Files made with the earlier
+64 ms lead still play, with that much less margin.
 
 Why this shape: the board has about 6 KiB of free RAM. A delta is applied in
 place to the one frame buffer, a few bytes at a time as they are read, so

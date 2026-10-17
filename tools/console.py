@@ -16,10 +16,39 @@ import threading
 import time
 
 
-class Serial:
-    """Raw read-only tty with a background reader that keeps complete lines."""
+class History:
+    """Lines by absolute index, keeping only the newest `keep` in memory (a long
+    soak would otherwise grow without bound). len() counts every line ever
+    added; lines that were dropped read as ''."""
 
-    def __init__(self, device='/dev/ttyUSB0', baud=115200):
+    def __init__(self, keep):
+        self.keep, self.base, self.items = keep, 0, []
+
+    def append(self, line):
+        self.items.append(line)
+        if len(self.items) > self.keep + self.keep // 4:     # trim in batches
+            drop = len(self.items) - self.keep
+            del self.items[:drop]
+            self.base += drop
+
+    def __len__(self):
+        return self.base + len(self.items)
+
+    def __getitem__(self, i):
+        if isinstance(i, slice):
+            return [self[k] for k in range(*i.indices(len(self)))]
+        if i < 0:
+            i += len(self)
+        if not 0 <= i < len(self):
+            raise IndexError(i)
+        return self.items[i - self.base] if i >= self.base else ''
+
+
+class Serial:
+    """Raw read-only tty with a background reader that keeps complete lines
+    (the newest `keep`; with `log`, every line is also appended to that file)."""
+
+    def __init__(self, device='/dev/ttyUSB0', baud=115200, keep=20000, log=None):
         self.fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         try:
             fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -34,7 +63,8 @@ class Serial:
         attrs[4] = attrs[5] = speed
         termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
         termios.tcflush(self.fd, termios.TCIFLUSH)
-        self.lines = []
+        self.lines = History(keep)
+        self.log = open(log, 'w') if log else None
         self.partial = b''
         self.lock = threading.Condition()
         self.running = True
@@ -55,7 +85,11 @@ class Serial:
             if complete:
                 with self.lock:
                     for raw in complete:
-                        self.lines.append(raw.rstrip(b'\r').decode('utf-8', 'replace'))
+                        line = raw.rstrip(b'\r').decode('utf-8', 'replace')
+                        self.lines.append(line)
+                        if self.log:
+                            self.log.write(line + '\n')
+                            self.log.flush()
                     self.lock.notify_all()
 
     def wait_for(self, pattern, timeout, start=0):
@@ -79,6 +113,8 @@ class Serial:
         self.thread.join()
         termios.tcsetattr(self.fd, termios.TCSANOW, self.saved)
         os.close(self.fd)
+        if self.log:
+            self.log.close()
 
 
 def main():

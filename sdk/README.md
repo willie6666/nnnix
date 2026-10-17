@@ -50,7 +50,9 @@ Put it in `sdk/examples/` (or build it from the current directory with
   its children are stopped at their next system call.
 - `examples/memtest.c` checks that heap blocks keep their contents over time.
 - `examples/play.c` shows pictures and videos on the LCD through `/dev/lcd`
-  ([docs/NNV.md](../docs/NNV.md)).
+  ([docs/NNV.md](../docs/NNV.md)): the firmware's built-in `play`
+  (`user/play.c`) built as a program, an example of a larger one; run it as
+  `/bin/play`, since the shell's `play` is the built-in.
 - `examples/audioshare.c` has a worker and the program write to one open
   `/dev/audio` at once (a test; its samples are silent).
 - `examples/readzero.c` checks that reads of 0 bytes return at once (a test).

@@ -22,6 +22,7 @@ void *ed_alloc(uint32_t n)
     return malloc(n);
 }
 void ed_release(void *p) { if (p) { allocated--; free(p); } }
+int ed_grow(void *p, uint32_t n) { (void)p; (void)n; return -1; }   /* the copying path */
 int ed_open(const char *path, int write) { int fd = open(path, write ? O_WRONLY | O_CREAT | O_TRUNC : O_RDONLY, 0600); return fd < 0 ? -2 : fd; }
 int ed_read(int fd, void *buf, uint32_t n) { return (int)read(fd, buf, n); }
 int ed_write(int fd, const void *buf, uint32_t n) { return (int)write(fd, buf, n); }
@@ -85,6 +86,8 @@ int main(void)
     CHECK(!strcmp(run("1|;p"), "one\none\ntwo\nthree\n"));
     CHECK(!strcmp(run("/thr/="), "3\n"));
     CHECK(!strcmp(run("1|/o/"), "one\ntwo\n"));          /* search starts after the current line */
+    CHECK(!strcmp(run("$|/one/="), "three\n1\n"));      /* wraps from the last line to the first */
+    CHECK(!strcmp(run("2|/two/="), "two\n2\n"));        /* and round to the current line itself */
     CHECK(!strcmp(run("="), "3\n"));
     CHECK(!strcmp(run(".="), "2\n"));
 

@@ -18,6 +18,7 @@ int cmd_cd(int argc, char **argv);
 int cmd_df(int argc, char **argv);
 int cmd_mkfile(int argc, char **argv);
 int cmd_sum(int argc, char **argv);
+int cmd_play(int argc, char **argv);       /* user/play.c: runs as a child task */
 int cmd_wc(int argc, char **argv);
 int cmd_head(int argc, char **argv);
 int cmd_tail(int argc, char **argv);

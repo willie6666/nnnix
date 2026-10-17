@@ -17,6 +17,7 @@ struct session {
 void ed_out(const char *s, uint32_t n) { sys_write(1, s, n); }
 void *ed_alloc(uint32_t n) { return sys_alloc(n); }
 void ed_release(void *p) { if (p) sys_free(p); }
+int ed_grow(void *p, uint32_t n) { return sys_grow(p, n); }
 int ed_open(const char *path, int write) { return sys_open(path, write ? O_WRONLY | O_CREAT | O_TRUNC : O_RDONLY); }
 int ed_read(int fd, void *buf, uint32_t n) { return sys_read(fd, buf, n); }
 int ed_write(int fd, const void *buf, uint32_t n) { return sys_write(fd, buf, n); }

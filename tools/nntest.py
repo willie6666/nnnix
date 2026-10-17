@@ -1640,7 +1640,9 @@ def main():
         raise SystemExit('run as root (network namespace setup)')
 
     report = Report()
-    serial = Serial(args.serial)
+    log = REPO / 'build/nntest-serial.log'
+    log.parent.mkdir(parents=True, exist_ok=True)
+    serial = Serial(args.serial, log=log)              # streamed: memory stays bounded however long the run
     try:
         if args.flash:
             mark = len(serial.lines)
@@ -1830,9 +1832,9 @@ def main():
                 report.add('watchdog', 'watchdog=7' in setting and cause is not None and 'watchdog=26' in default,
                            f'reset {took:.1f} s after the kernel daemon stopped; back to 26 s after boot')
     finally:
-        log = REPO / 'build/nntest-serial.log'
-        flasher.write_user_file(log, '\n'.join(serial.lines) + '\n')
         serial.close()
+        if os.geteuid() == 0 and 'SUDO_UID' in os.environ:   # hand it back to the invoking user
+            os.chown(log, int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID']))
     passed = sum(bool(ok) for _, ok, _ in report.rows)
     print(f'\n{passed}/{len(report.rows)} passed; serial log: {log}')
     return 0 if report.ok else 1

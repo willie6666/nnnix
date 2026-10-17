@@ -637,9 +637,40 @@ while `play` runs (before / after):
   frame pointers below the stack. A program's exit (a kill or `exit`) now starts on a fresh frame at the top
   of its stack: its frames are not needed any more. 4 minutes of copies, playback and kills: no panic.
 - Result: `make test` 154/154 (3 new), host tests unchanged.
-- Still open: during flash writes and program loading a player with sound runs short (its reads wait behind
-  fsd jobs such as a sector erase, longer than the 128 ms ring); with sound, a player leaves about 1.4 KiB,
-  not enough for another telnet shell.
+- Since closed (below).
+
+### The rest of the audit's ideas and the open points (2026-10-17)
+
+| Item | Done | Measured |
+| --- | --- | --- |
+| O3 | an open littlefs directory takes only the flag and the directory state | 56 B instead of 164 per open directory |
+| O5 | `play` is a built-in command (runs from flash, in a child task); `user/play.c` also builds as the SDK example | free RAM while `play -s` runs: 2984 B instead of 1392 (with a 2 KiB sound ring instead of 1 KiB); a telnet login fits again |
+| O6 | `kmem_grow` (new system call `grow`) enlarges a block in place when the free block after it suffices; `ed` grows its buffer with it before falling back to allocate-copy-free | host tests: grow into a neighbour, exact fit, blocked by a used block |
+| O9 | a USB directory listing goes on where it stopped while no other command used the CH376 (a command counter in the driver), else restarts and skips | 10 entries: 11 listing steps instead of 55; correct when another file is read in between |
+| O10 | `ed`'s search walks the line offsets forward instead of locating each line from the buffer's start | host tests including the wrap to the first line |
+| O11 | scripts are read 64 bytes per system call; one buffer, allocated only while a script runs; a nested script's start hands the read-ahead back to the outer file (lseek) | |
+| O12 | `console.py` keeps the newest 20 000 lines (indices stay absolute) and `nntest` streams the serial log to its file | |
+
+Gaps in the sound under load (`play -l -s` in the background, then each load; samples short before / now):
+programs x10 9880 / 0, memtest 1715 / 0, flash copy 12848 / 0, USB copy 4476 / 612, `ls`/`ps`/`/proc` 3445 / 0.
+The fixes, in the order they mattered:
+- the encoder's lead: sound records came 64 ms ahead of their frames, so no ring size helped against a
+  longer wait; now 192 ms (the 2 KiB ring holds it);
+- littlefs opens did two lookups (`lfs_stat`, then the open); a file is now opened directly and a directory
+  only when littlefs says so: opening `/home/mixed.nnv` went from 124-166 ms of fsd time to under 30;
+- SPI flash reads: 12.5 MHz instead of 6.3 and 32 bits per transfer; reading the 676 KiB Bad Apple file
+  went from 256 to 315 KiB/s, its CRC matches the host copy;
+- `play` reads 512 bytes at a time (each fsd read waits its turn behind other jobs).
+
+Reconnecting: a client that connected again within kd's 50 ms poll after a close got the W5500's reset to a
+SYN on a closed port, whose ack is off by one; Linux ignores it and retries the SYN 1 and then 2 s later
+(captured). diag, httpd and telnetd now listen again as soon as they close: back-to-back diag requests
+0.25 s instead of 2.2, HTTP GETs 0.15 s instead of 1.8.
+
+Result: `make test` 154/154, `make host-test` 5797 checks plus the date conversions. Free RAM with the console shell
+and one telnet session: 6088 B (32 B less: the firmware grew by the built-in player). One run failed the
+console checks because an aborted earlier run had left the network-boot test's `/etc/rc` (with `dhcp -t 15`)
+on the board, which the next runs kept as "the board's own"; removed.
 
 ## 8. Source layout
 

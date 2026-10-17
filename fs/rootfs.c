@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* "/": littlefs on the onboard SPI flash (power-loss safe, wear levelled). */
+#include <stddef.h>
 #include "vfs.h"
 #include "../third_party/littlefs/lfs.h"
 #include "../drivers/spiflash.h"
@@ -26,7 +27,8 @@ static struct lfs_config cfg = {
     .read_buffer = read_cache, .prog_buffer = prog_cache, .lookahead_buffer = lookahead,
 };
 
-/* An open file or directory; the per-file cache follows the littlefs state. */
+/* An open file or directory; the per-file cache follows the littlefs state.
+ * A directory's block ends after `d` (rfs_open): only dir and d are used. */
 struct lfile {
     uint8_t dir;
     union { lfs_file_t file; lfs_dir_t d; };
@@ -120,21 +122,29 @@ static int rfs_open(struct mount *m, const char *path, int flags, struct file *f
 {
     (void)m;
     if (!mounted) return SYS_ENODEV;
-    struct lfile *lf = kmalloc(sizeof *lf);
-    if (!lf) return SYS_ENOMEM;
-    memset(lf, 0, sizeof *lf);
-    struct lfs_info info;
-    int e = lfs_stat(&lfs, path, &info);
-    if (!e && info.type == LFS_TYPE_DIR) {
-        if ((flags & O_ACCMODE) != O_RDONLY) e = SYS_EISDIR;
-        else { lf->dir = 1; e = lfs_dir_open(&lfs, &lf->d, path); }
-    } else if (flags & O_DIRECTORY) {
-        e = e ? e : SYS_ENOTDIR;
-    } else {
+    /* A file first, without a separate lfs_stat: each littlefs lookup reads
+     * the directories' metadata blocks (tens of ms), and files are what
+     * players and copies open. A directory is opened when littlefs says so. */
+    if (!(flags & O_DIRECTORY)) {
+        struct lfile *lf = kmalloc(sizeof *lf);
+        if (!lf) return SYS_ENOMEM;
+        memset(lf, 0, sizeof *lf);
         lf->fcfg.buffer = lf->cache;
         int lflags = ((flags & O_ACCMODE) + 1) | (flags & (O_CREAT | O_EXCL | O_TRUNC | O_APPEND));
-        e = lfs_file_opencfg(&lfs, &lf->file, path, lflags, &lf->fcfg);   /* same flag bits */
+        int e = lfs_file_opencfg(&lfs, &lf->file, path, lflags, &lf->fcfg);   /* same flag bits */
+        if (!e) { f->priv = lf; return 0; }
+        kfree(lf);
+        if (e != LFS_ERR_ISDIR) return e;
     }
+    if ((flags & O_ACCMODE) != O_RDONLY) return SYS_EISDIR;
+    /* A directory needs only the flag and the littlefs directory state, not
+     * the file state, its config and the 64-byte cache (56 B instead of 164). */
+    size_t size = offsetof(struct lfile, d) + sizeof(lfs_dir_t);
+    struct lfile *lf = kmalloc(size);
+    if (!lf) return SYS_ENOMEM;
+    memset(lf, 0, size);
+    lf->dir = 1;
+    int e = lfs_dir_open(&lfs, &lf->d, path);
     if (e) { kfree(lf); return e; }
     f->priv = lf;
     return 0;

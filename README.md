@@ -84,7 +84,7 @@ pid name prio state stack_used stack_size cpu_ms
 - Pictures and videos on the LCD ([docs/NNV.md](docs/NNV.md)): `/dev/lcd` gives a program the display as a
   1024-byte frame (the console text returns when it closes), `/dev/audio` plays 8 kHz sound on the buzzer
   (PWM on PB11, timer interrupt); `tools/mknnv.py` converts pictures and videos through ffmpeg into NNV, a
-  delta-coded format of our own with optional ADPCM sound; `play` shows them (all of Bad Apple at 30 fps;
+  delta-coded format of our own with optional ADPCM sound; the built-in `play` shows them (all of Bad Apple at 30 fps;
   `play -s` adds the sound, though the buzzer carries rhythm far better than pitch)
 - Firmware updates: `fwupdate FILE` (or `tools/nnupdate.py` from the NanoPi) stages an image in the SPI flash;
   the LDROM bootloader (`boot/`) installs it and repeats an installation that a reset or power loss cut short
@@ -124,10 +124,10 @@ pid name prio state stack_used stack_size cpu_ms
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot, watchdog reset | pass |
-| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 6120 B (test limit 5600 B) |
+| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 6088 B (test limit 5600 B) |
 | Code size / static RAM including crash records / main stack / heap | 88 KiB / 2.5 KiB / 512 B / 12.9 KiB |
 
-Host tests: 5751 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model and the NNV decoder against the encoder), plus 80 243
+Host tests: 5797 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model and the NNV decoder against the encoder), plus 80 243
 date conversions compared with the host C library.
 
 ## Hardware

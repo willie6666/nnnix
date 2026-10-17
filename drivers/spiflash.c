@@ -5,7 +5,7 @@
 #include "../kernel/task.h"
 
 #define SPI2_BASE 0x40130000u
-#define DIVIDER   3u                 /* 50.19 MHz / 8 = 6.3 MHz */
+#define DIVIDER   1u                 /* 50.19 MHz / 4 = 12.5 MHz (the W25Q16 reads at up to 50) */
 enum { CMD_WRITE_ENABLE = 0x06, CMD_READ_STATUS = 0x05, CMD_READ = 0x03, CMD_PAGE_PROGRAM = 0x02,
        CMD_SECTOR_ERASE = 0x20, CMD_JEDEC_ID = 0x9f, CMD_RELEASE_POWER_DOWN = 0xab };
 
@@ -82,11 +82,21 @@ uint32_t spiflash_size(void)
     return 1u << cap;                           /* Winbond: 0x15 = 2 MiB, 0x17 = 8 MiB */
 }
 
+/* Reads move 32 bits per SPI transfer (the length field 0 means 32; the
+ * first byte on the wire is the top one): littlefs scans whole metadata
+ * blocks, and per-byte transfers spent more time starting than shifting. */
 void spiflash_read(uint32_t addr, void *buf, uint32_t n)
 {
     uint8_t *p = buf;
     cs(1);
     command_addr(CMD_READ, addr);
+    for (; n >= 4u; n -= 4u, p += 4) {
+        SPI_TX0(SPI2_BASE) = 0;
+        SPI_CNTRL(SPI2_BASE) = BIT(2) | 1u;
+        for (uint32_t k = 0; SPI_CNTRL(SPI2_BASE) & 1u && k < 10000u; ++k) { }
+        uint32_t w = SPI_RX0(SPI2_BASE);
+        p[0] = (uint8_t)(w >> 24); p[1] = (uint8_t)(w >> 16); p[2] = (uint8_t)(w >> 8); p[3] = (uint8_t)w;
+    }
     while (n--) *p++ = xfer(0);
     cs(0);
 }

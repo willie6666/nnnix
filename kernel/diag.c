@@ -341,7 +341,11 @@ static void session(void)
     w5500_flush(SOCK, 2000);
     spi_set_divider(SPI_W5500, SPI_W5500_DIVIDER);
     spi_set_divider(SPI_CH376, SPI_DEFAULT_DIVIDER);
-    w5500_disconnect(SOCK, 1000);    /* the listener re-arms the socket */
+    w5500_disconnect(SOCK, 1000);
+    /* Listen again at once rather than at kd's next poll: a client that
+     * reconnects meanwhile gets the W5500's reset to a SYN on a closed port,
+     * which Linux ignores (its ack is off by one), and retries 1 + 2 s later. */
+    w5500_tcp_listen(SOCK, PORT);
 }
 
 /* One worker task per connection; kd only watches the listener. */

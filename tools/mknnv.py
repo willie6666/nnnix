@@ -31,7 +31,7 @@ FRAME = W * H // 8
 RAW, DELTA, AUDIO = 0, 1, 2
 RATE = 8000                       # what /dev/audio plays
 BLOCK = 256                       # samples per audio record (32 ms)
-LEAD = 64                         # ms: an audio record comes this much before the frame it plays with
+LEAD = 192                        # ms: an audio record comes this much before the frame it plays with (the 2 KiB ring holds 256)
 LOOP = 0x01
 STILL = {'.png', '.jpg', '.jpeg', '.bmp', '.webp', '.pgm', '.ppm', '.pbm', '.tif', '.tiff'}
 

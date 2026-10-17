@@ -90,6 +90,40 @@ void *kmalloc_high(size_t size)
     return b ? (char *)b + HDR : 0;
 }
 
+/* Make p's block hold `size` bytes without moving it: by taking in the free
+ * block right after it, when there is one large enough. 0 on success, -1 if
+ * the caller must allocate anew and copy (an editor's buffer growing by a
+ * little would otherwise need both copies at once). */
+int kmem_grow(void *p, size_t size)
+{
+    if (!p || size > total) return -1;
+    struct block *b = (struct block *)((char *)p - HDR);
+    uint32_t need = (uint32_t)((size + 7u) & ~(size_t)7u) + HDR;
+    uint32_t s = LOCK();
+    int ok = IS_USED(b) && need <= b->size;
+    if (IS_USED(b) && !ok) {
+        struct block **link = &free_list, *next;
+        while ((next = *link) && (char *)next < (char *)b + b->size) link = &next->next;
+        if (next && (char *)next == (char *)b + b->size && b->size + next->size >= need) {
+            uint32_t all = b->size + next->size;
+            if (all - need >= MIN_SPLIT + HDR) {
+                struct block *rest = (struct block *)((char *)b + need);
+                struct block *after = next->next;    /* read before rest may overwrite next */
+                rest->size = all - need;
+                rest->next = after;
+                *link = rest;
+                b->size = need;
+            } else {
+                *link = next->next;
+                b->size = all;
+            }
+            ok = 1;
+        }
+    }
+    UNLOCK(s);
+    return ok ? 0 : -1;
+}
+
 void kfree(void *p)
 {
     if (!p) return;

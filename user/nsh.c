@@ -22,6 +22,8 @@ struct shell {
     char line[SH_LINE];
     char *env[ENV_MAX];             /* NAME=VALUE strings, local to this shell */
     int scripts[SCRIPT_MAX], depth, status;
+    char *sbuf;                     /* SCRIPT_BUF bytes read ahead from the innermost script, while one runs */
+    uint8_t spos, slen;
     char status_text[12];
 };
 static volatile int boot_done;
@@ -169,6 +171,7 @@ static const struct command commands[] = {
     { "grep", cmd_grep, "literal text search" },
     { "hexdump", cmd_hexdump, "hexadecimal and ASCII" },
     { "ed", cmd_ed, "line editor" },
+    { "play", cmd_play, "show an NNV picture or video" },
     { "date", cmd_date, "show or set the clock" },
     { "ifconfig", cmd_ifconfig, "network address" },
     { "dhcp", cmd_dhcp, "get an address by DHCP" },
@@ -247,6 +250,12 @@ static int variable(struct shell *s, int argc, char **argv)
     return 0;
 }
 
+/* Scripts are read SCRIPT_BUF bytes at a time (one system call each, not one
+ * per character); the buffer exists only while a script runs. Bytes read
+ * ahead of a nested script's start are handed back to the outer script's file
+ * (lseek), so it carries on where its line ended. */
+#define SCRIPT_BUF 64
+
 static int push_script(struct shell *s, const char *path, int optional)
 {
     if (s->depth == SCRIPT_MAX) { printf("nsh: scripts nested too deeply\n"); return 1; }
@@ -255,8 +264,31 @@ static int push_script(struct shell *s, const char *path, int optional)
         if (!optional || fd != SYS_ENOENT) printf("nsh: %s: %s\n", path, errstr(fd));
         return optional && fd == SYS_ENOENT ? 0 : 1;
     }
+    if (s->depth && s->slen > s->spos) sys_lseek(s->scripts[s->depth - 1], -(int32_t)(s->slen - s->spos), SEEK_CUR);
+    s->spos = s->slen = 0;
+    if (!s->sbuf) s->sbuf = sys_alloc(SCRIPT_BUF);  /* without it: a byte at a time */
     s->scripts[s->depth++] = fd;
     return 0;
+}
+
+static void pop_script(struct shell *s)
+{
+    sys_close(s->scripts[--s->depth]);
+    s->spos = s->slen = 0;          /* the outer script's file is where its buffer ended */
+    if (!s->depth) { sys_free(s->sbuf); s->sbuf = 0; }
+}
+
+static int script_byte(struct shell *s, char *c)
+{
+    if (!s->sbuf) return sys_read(s->scripts[s->depth - 1], c, 1);
+    if (s->spos == s->slen) {
+        int n = sys_read(s->scripts[s->depth - 1], s->sbuf, SCRIPT_BUF);
+        if (n <= 0) return n;
+        s->slen = (uint8_t)n;
+        s->spos = 0;
+    }
+    *c = s->sbuf[s->spos++];
+    return 1;
 }
 
 /* Read the entire script line before execution. Overlong or binary lines are
@@ -266,7 +298,7 @@ static int script_line(struct shell *s)
     int n = 0, bad = 0, got = 0;
     for (;;) {
         char c;
-        int e = sys_read(s->scripts[s->depth - 1], &c, 1);
+        int e = script_byte(s, &c);
         if (e < 0) return e;
         if (!e || c == '\n') { if (e) got = 1; break; }
         got = 1;
@@ -483,7 +515,9 @@ static int execute_line(struct shell *s)
     }
     if (!strcmp(argv[0], "exit") || !strcmp(argv[0], "logout")) return 1;
     const struct command *c = find_command(argv[0]);
-    if (!c) {                                         /* a program from a file runs as a child */
+    /* A program from a file runs as a child; so does play, which needs more
+     * stack than is left on top of the shell's. */
+    if (!c || c->run == cmd_play) {
         s->status = run_children(s, 1, 0);
         return 0;
     }
@@ -526,7 +560,7 @@ static void run_shell(int interactive)
             int n = script_line(s);
             if (n <= 0) {
                 if (n < 0) { printf("nsh: script read failed: %s\n", errstr(n)); s->status = 2; }
-                sys_close(s->scripts[--s->depth]);
+                pop_script(s);
                 continue;
             }
         } else {
@@ -538,11 +572,11 @@ static void run_shell(int interactive)
             s->line[n] = 0;
         }
         if (execute(s)) {
-            if (scripted) sys_close(s->scripts[--s->depth]);
+            if (scripted) pop_script(s);
             else break;
         }
     }
-    for (int i = 0; i < s->depth; ++i) sys_close(s->scripts[i]);
+    while (s->depth) pop_script(s);
     for (int i = 0; i < ENV_MAX; ++i) sys_free(s->env[i]);
     sys_free(s);
     if (interactive) printf("logout\n");

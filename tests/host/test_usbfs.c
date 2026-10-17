@@ -12,6 +12,9 @@
 struct mfile { char path[NN_PATH_MAX]; int used, dir; uint8_t data[256]; uint32_t size; };
 static struct mfile disk[32];
 static int cur = -1, fail_close;
+static uint32_t commands, enum_steps;   /* every chip command; listing steps */
+static int enum_at = -1;                 /* disk index of the entry being listed */
+uint32_t ch376_commands(void) { return commands; }
 static char dir[NN_PATH_MAX];        /* directory opened last; "" is the root */
 static uint32_t pos, live;           /* the open file's position and size as the chip knows them */
 
@@ -42,6 +45,8 @@ static int add(const char *path, int is_dir)
 
 uint8_t ch376_open(const char *name)
 {
+    ++commands;
+    enum_at = -1;
     char p[NN_PATH_MAX * 2];
     full(name, p);
     cur = -1;
@@ -67,6 +72,8 @@ uint8_t ch376_dir_create(const char *name)
 }
 uint8_t ch376_close(int update_size)
 {
+    ++commands;
+    enum_at = -1;
     if (fail_close) { cur = -1; return CH376_TIMEOUT; }
     if (update_size && cur >= 0) disk[cur].size = live;
     cur = -1;
@@ -90,9 +97,33 @@ uint8_t ch376_read(void *buf, uint32_t len, uint32_t *got)
     return CH376_OK;
 }
 uint8_t ch376_erase_open(void) { if (cur >= 0) disk[cur].used = 0; cur = -1; return CH376_OK; }
-uint8_t ch376_enum_first(const char *pattern) { (void)pattern; return CH376_MISS_FILE; }
-uint8_t ch376_enum_next(void) { return CH376_MISS_FILE; }
-int ch376_read_entry(uint8_t entry[32]) { (void)entry; return 0; }
+/* Listing the directory opened last: the entries whose parent it is. */
+static int in_dir(int i)
+{
+    const char *slash = strrchr(disk[i].path, '/');
+    return disk[i].used && (size_t)(slash - disk[i].path) == strlen(dir) && !strncmp(disk[i].path, dir, strlen(dir));
+}
+static uint8_t enum_from(int i)
+{
+    ++enum_steps;
+    while (i < 32 && !in_dir(i)) ++i;
+    enum_at = i < 32 ? i : -1;
+    return enum_at >= 0 ? CH376_ENTRY_READY : CH376_MISS_FILE;
+}
+uint8_t ch376_enum_first(const char *pattern) { (void)pattern; ++commands; return enum_from(0); }
+uint8_t ch376_enum_next(void) { ++commands; return enum_at < 0 ? CH376_MISS_FILE : enum_from(enum_at + 1); }
+int ch376_read_entry(uint8_t entry[32])
+{
+    ++commands;
+    memset(entry, ' ', 11);
+    memset(entry + 11, 0, 21);
+    const char *n = strrchr(disk[enum_at].path, '/') + 1, *dot = strchr(n, '.');
+    for (int i = 0; i < 8 && n[i] && n + i != dot; ++i) entry[i] = (uint8_t)n[i];
+    if (dot) for (int i = 0; i < 3 && dot[1 + i]; ++i) entry[8 + i] = (uint8_t)dot[1 + i];
+    entry[11] = disk[enum_at].dir ? 0x10 : 0x20;
+    entry[28] = (uint8_t)disk[enum_at].size;
+    return 0;
+}
 uint8_t ch376_disk_query(uint32_t *total, uint32_t *free_sectors) { *total = *free_sectors = 0; return CH376_OK; }
 
 static struct mount usb = { "/usb", &usbfs_ops, 0, 1 };
@@ -174,5 +205,33 @@ int main(void)
     fail_close = 0;
     CHECK_EQ_INT(usbfs_ops.close(&a), SYS_EIO);
     CHECK_EQ_INT(usbfs_release(), 0);                 /* nothing open: nothing to write back */
+
+    /* O9: a listing goes on where it stopped (N steps for N entries) while
+     * nothing else uses the chip, and starts again correctly when something does. */
+    CHECK_EQ_INT(usbfs_ops.mkdir(&usb, "/L"), 0);
+    for (int i = 0; i < 10; ++i) {
+        char name[16];
+        snprintf(name, sizeof name, "/L/F%d.TXT", i);
+        CHECK_EQ_INT(open_file(name, O_WRONLY | O_CREAT, &a), 0);
+        CHECK_EQ_INT(usbfs_ops.close(&a), 0);
+    }
+    struct nn_dirent de;
+    char seen[200] = "";
+    CHECK_EQ_INT(open_file("/L", O_RDONLY, &a), 0);
+    enum_steps = 0;
+    while (usbfs_ops.readdir(&a, &de) == 1) { strcat(seen, de.name); strcat(seen, " "); }
+    CHECK(!strcmp(seen, "f0.txt f1.txt f2.txt f3.txt f4.txt f5.txt f6.txt f7.txt f8.txt f9.txt "));
+    CHECK_EQ_INT(enum_steps, 11);                     /* ten entries and the end */
+    CHECK_EQ_INT(usbfs_ops.close(&a), 0);
+    CHECK_EQ_INT(open_file("/L", O_RDONLY, &a), 0);
+    CHECK_EQ_INT(open_file("/LOG.TXT", O_RDONLY, &b), 0);
+    seen[0] = 0;
+    for (int i = 0; usbfs_ops.readdir(&a, &de) == 1; ++i) {
+        strcat(seen, de.name); strcat(seen, " ");
+        if (i == 3) CHECK_EQ_INT(usbfs_ops.read(&b, buf, sizeof buf), 3);   /* the chip is used meanwhile */
+    }
+    CHECK(!strcmp(seen, "f0.txt f1.txt f2.txt f3.txt f4.txt f5.txt f6.txt f7.txt f8.txt f9.txt "));
+    CHECK_EQ_INT(usbfs_ops.close(&b), 0);
+    CHECK_EQ_INT(usbfs_ops.close(&a), 0);
     return check_summary("test_usbfs");
 }

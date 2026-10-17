@@ -20,6 +20,8 @@ struct ufile {
 };
 
 static struct ufile *current;        /* file the chip has open */
+static struct ufile *listing;        /* directory the chip is listing (u_readdir) */
+static uint32_t listing_pos, listing_mark;
 static uint8_t mounted;
 
 static int valid_char(char c)
@@ -191,6 +193,7 @@ static int u_close(struct file *f)
 {
     struct ufile *u = f->priv;
     ch376_lock();
+    if (listing == u) listing = 0;
     if (current == u) deactivate();
     ch376_unlock();
     int e = u->error;
@@ -253,6 +256,12 @@ static int u_lseek(struct file *f, int32_t off, int whence)
 
 /* Directory entries are listed by enumerating from the start and skipping the
  * ones already returned: no chip state survives between calls. */
+/* The chip lists a directory one entry per command and forgets the listing at
+ * any other command. When nothing else used it since this directory's last
+ * entry (same command count), the next entry continues the listing; anything
+ * else starts it again and skips the entries already returned. A directory of
+ * N entries takes N steps instead of N(N+1)/2. */
+
 static int u_readdir(struct file *f, struct nn_dirent *d)
 {
     struct ufile *u = f->priv;
@@ -261,10 +270,17 @@ static int u_readdir(struct file *f, struct nn_dirent *d)
     ch376_lock();
     int e = ensure(), found = 0;
     if (!e) {
-        deactivate();
-        uint8_t s = walk(u->path, 0);
+        uint8_t s;
         uint32_t index = 0;
-        s = s == CH376_OPEN_DIR ? ch376_enum_first(strcmp(u->path, "/") ? "*" : "/*") : CH376_MISS_FILE;
+        if (listing == u && listing_pos == f->pos && listing_mark == ch376_commands()) {
+            s = ch376_enum_next();
+            index = f->pos;
+        } else {
+            deactivate();
+            s = walk(u->path, 0);
+            s = s == CH376_OPEN_DIR ? ch376_enum_first(strcmp(u->path, "/") ? "*" : "/*") : CH376_MISS_FILE;
+        }
+        listing = 0;
         while (s == CH376_ENTRY_READY) {
             ch376_read_entry(ent);
             int skip = ent[0] == 0xe5 || ent[0] == '.' || (ent[11] & 0x08) || ent[11] == 0x0f;
@@ -280,7 +296,9 @@ static int u_readdir(struct file *f, struct nn_dirent *d)
                 d->size = ent[28] | (uint32_t)ent[29] << 8 | (uint32_t)ent[30] << 16 | (uint32_t)ent[31] << 24;
                 found = 1;
                 f->pos++;
-                /* Stop enumerating: the chip forgets the listing at the next command anyway. */
+                listing = u;                 /* the chip is at this entry: the next call goes on from here */
+                listing_pos = f->pos;
+                listing_mark = ch376_commands();
                 break;
             }
             s = ch376_enum_next();

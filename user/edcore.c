@@ -58,6 +58,7 @@ static int ensure(struct ed *e, uint32_t need)
 {
     if (need <= e->cap) return 0;
     uint32_t cap = (need + 255u) & ~255u;
+    if (e->buf && !ed_grow(e->buf, cap)) { e->cap = cap; return 0; }   /* no second copy needed */
     char *p = ed_alloc(cap);
     if (!p) return -1;
     if (e->len) memcpy(p, e->buf, e->len);
@@ -161,12 +162,16 @@ static const char *number(const char *p, int32_t *v)
 static int32_t search(const struct ed *e, const char *text, uint32_t n)
 {
     if (!e->lines) return NONE;
-    int32_t line = e->cur;
+    /* From the line after the current one, wrapping once: the offset moves on
+     * with the line, located from the start only at the wrap. */
+    int32_t line = e->cur % e->lines + 1;
+    uint32_t off = offset_of(e, line);
     for (int32_t k = 0; k < e->lines; ++k) {
-        line = line % e->lines + 1;
-        uint32_t off = offset_of(e, line), len = line_length(e, off);
+        uint32_t len = line_length(e, off);
         for (uint32_t i = 0; i + n <= len; ++i)
             if (!memcmp(e->buf + off + i, text, n)) return line;
+        if (line == e->lines) { line = 1; off = 0; }
+        else { ++line; off += len + 1u; }
     }
     return NONE;
 }

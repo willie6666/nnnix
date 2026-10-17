@@ -36,5 +36,6 @@ int      ch376_read_entry(uint8_t entry[32]);
 uint8_t  ch376_disk_query(uint32_t *total_sectors, uint32_t *free_sectors);
 
 void ch376_isr(void);                /* INT edge (board interrupt) */
+uint32_t ch376_commands(void);       /* commands sent so far: unchanged means the chip state is too */
 
 #endif

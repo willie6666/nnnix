@@ -117,6 +117,9 @@ static void finish(int i)
     kfree(s);
     sessions[i] = 0;
     kprintf("telnetd: session %d closed\n", i);
+    /* Listen again at once (see diag.c: a reconnect in the gap waits 3 s);
+     * telnetd_poll closes it again if the service is off or full. */
+    if (net_services & NN_SVC_TELNETD) w5500_tcp_listen(NET_SOCK_TELNET + i, PORT);
 }
 
 void telnetd_poll(void)

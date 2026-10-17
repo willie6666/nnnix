@@ -117,5 +117,31 @@ int main(void)
     kmem_stats(&s);
     CHECK_EQ_INT(s.free, sizeof heap);
     CHECK_EQ_INT(s.free_blocks, 1);
+    /* O6: growing in place into the free block that follows. */
+    kmem_init(heap, heap + sizeof heap);
+    {
+        char *g = kmalloc(256), *h = kmalloc(256), *after = kmalloc(64);
+        CHECK(g && h && after);
+        memset(g, 0x5a, 256);
+        CHECK_EQ_INT(kmem_grow(g, 512), -1);          /* h is in the way */
+        CHECK_EQ_INT(kmem_grow(g, 200), 0);           /* already big enough */
+        uint32_t before = free_bytes();
+        kfree(h);                                     /* 256 + header free after g */
+        CHECK_EQ_INT(kmem_grow(g, 400), 0);           /* takes part of it, the rest stays free */
+        CHECK(g[0] == 0x5a && g[255] == 0x5a);
+        memset(g, 0x6b, 400);
+        CHECK_EQ_INT(free_bytes(), before + 256 + KMEM_HEADER - (400 - 256));
+        CHECK_EQ_INT(kmem_grow(g, 512 + KMEM_HEADER), 0);   /* exactly all of it */
+        CHECK_EQ_INT(free_bytes(), before);
+        CHECK_EQ_INT(kmem_grow(g, 2048), -1);         /* `after` is in the way now */
+        memset(after, 0x77, 64);
+        CHECK(g[399] == 0x6b);
+        kfree(g);
+        kfree(after);
+        kmem_stats(&s);
+        CHECK_EQ_INT(s.free, sizeof heap);
+        CHECK_EQ_INT(s.free_blocks, 1);
+        CHECK_EQ_INT(kmem_grow(0, 8), -1);
+    }
     return check_summary("test_kmem");
 }

@@ -29,6 +29,7 @@
 #define CMR(s)     (255u - (s))
 
 static uint8_t *ring;
+static uint32_t size;                /* AUDIO_RING, or AUDIO_RING_MIN when memory is short: a power of two */
 static volatile uint32_t head, tail; /* head: written by the task, tail: by the interrupt */
 static volatile uint32_t underruns, played;
 static volatile uint32_t late_max;   /* the timer's count at the interrupt: its latency, in HCLK cycles */
@@ -46,10 +47,10 @@ void TMR0_IRQHandler(void)
         if (counting) ++underruns;
         return;
     }
-    PWM_CMR0 = CMR(ring[t % AUDIO_RING]);
+    PWM_CMR0 = CMR(ring[t & (size - 1u)]);
     tail = ++t;
     ++played;
-    if (head - t == AUDIO_RING / 2u) sem_give(&space);
+    if (head - t == size / 2u) sem_give(&space);
 }
 
 static void hardware(int on)
@@ -102,7 +103,9 @@ int audio_open(void)
     busy = 1;
     irq_restore(s);
     if (was) return SYS_EBUSY;
-    ring = kmalloc(AUDIO_RING);
+    size = AUDIO_RING;
+    ring = kmalloc(size);
+    if (!ring) ring = kmalloc(size = AUDIO_RING_MIN);
     if (!ring) { busy = 0; return SYS_ENOMEM; }
     head = tail = underruns = played = late_max = 0;
     counting = 0;
@@ -122,15 +125,15 @@ uint32_t audio_write(const uint8_t *p, uint32_t n)
     uint32_t done = 0;
     while (done < n) {
         uint32_t h = head, used = h - tail;
-        if (used > AUDIO_RING) panic("audio: ring holds %u of %u", used, AUDIO_RING);
-        uint32_t room = AUDIO_RING - used;
+        if (used > size) panic("audio: ring holds %u of %u", used, size);
+        uint32_t room = size - used;
         if (!room) {
             if (task_self()->killed) break;
             sem_take(&space, 20);
             continue;
         }
-        uint32_t k = n - done < room ? n - done : room, at = h % AUDIO_RING;
-        uint32_t first = AUDIO_RING - at < k ? AUDIO_RING - at : k;
+        uint32_t k = n - done < room ? n - done : room, at = h & (size - 1u);
+        uint32_t first = size - at < k ? size - at : k;
         memcpy(ring + at, p + done, first);
         memcpy(ring, p + done + first, k - first);
         head = h + k;

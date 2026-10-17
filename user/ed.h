@@ -34,6 +34,7 @@ int  ed_line(struct ed *e, const char *line);                  /* one line witho
 void ed_out(const char *s, uint32_t n);
 void *ed_alloc(uint32_t n);
 void ed_release(void *p);
+int  ed_grow(void *p, uint32_t n);    /* in place: 0, or -1 */
 int  ed_open(const char *path, int write);                     /* fd, or a negative error */
 int  ed_read(int fd, void *buf, uint32_t n);
 int  ed_write(int fd, const void *buf, uint32_t n);

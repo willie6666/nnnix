@@ -353,7 +353,8 @@ static int job_command(struct shell *s, int argc, char **argv)
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i] + (argv[i][0] == '%');
         int v = 0;
-        for (const char *p = a; *p; ++p) v = *p >= '0' && *p <= '9' ? v * 10 + (*p - '0') : -1000000;
+        for (const char *p = a; *p; ++p)                 /* 7 digits at most: no overflow */
+            v = *p >= '0' && *p <= '9' && v >= 0 && v < 1000000 ? v * 10 + (*p - '0') : -1;
         if (v <= 0) { printf("kill: %s: bad argument\n", argv[i]); rc = 1; continue; }
         if (argv[i][0] == '%') {
             if (v > JOBS || !s->jobs[v - 1].name[0]) { printf("kill: %s: no such job\n", argv[i]); rc = 1; continue; }
@@ -412,6 +413,7 @@ static int run_children(struct shell *s, int n, int background)
         if (background && i == 0) {                  /* jobs must not read the terminal (hence + 1 above) */
             int null = sys_open("/dev/null", O_RDONLY);
             if (null >= 0) { opened[nopen++] = null; in = null; }
+            else { printf("nsh: /dev/null: %s\n", errstr(null)); ok = 0; }   /* never the terminal instead */
         }
         for (int r = 0; r < s->cmd->cmd[i].nredir && ok; ++r) {
             struct sh_redir *rd = &s->cmd->cmd[i].redir[r];
@@ -438,7 +440,13 @@ static int run_children(struct shell *s, int n, int background)
         wait_children(pid, n);
         return 1;
     }
-    if (!background) return wait_children(pid, n);
+    if (!background) {
+        /* The children have their own copies of argv: give the parser's 472 B
+         * back while waiting (execute() frees nothing then). */
+        sys_free(s->cmd);
+        s->cmd = 0;
+        return wait_children(pid, n);
+    }
     struct job *jb = &s->jobs[job];
     for (int i = 0; i < STAGES; ++i) jb->pid[i] = i < n ? pid[i] : 0;
     uint32_t k = 0;

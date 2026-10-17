@@ -40,7 +40,7 @@ static int32_t sys_read_k(int32_t fd, char *buf, uint32_t len)
     if (vfs_fd_is_open(fd)) return vfs_read(fd, buf, len);
     struct tty *t = task_self()->tty;
     if (fd != 0 || !t) return SYS_EBADF;
-    return tty_read(t, buf, len);
+    return len ? tty_read(t, buf, len) : 0;
 }
 
 static int32_t sys_ps_k(struct task_info *out, int32_t max, int32_t skip)
@@ -142,10 +142,16 @@ static int32_t sys_fwupdate_k(const char *path, int32_t flags, struct nn_fwinfo 
 
 static int32_t sys_wait_k(int32_t pid, int *status, uint32_t timeout_ms)
 {
+    if (pid <= 0 || pid > 0xffff) return SYS_ESRCH;   /* PIDs are 16-bit: no truncation onto another task */
     return task_wait_pid((uint16_t)pid, status, timeout_ms);
 }
 
-static int32_t sys_kill_k(int32_t pid) { int r = task_kill((uint16_t)pid); return r == -1 ? SYS_EINVAL : r; }
+static int32_t sys_kill_k(int32_t pid)
+{
+    if (pid <= 0 || pid > 0xffff) return SYS_ESRCH;
+    int r = task_kill((uint16_t)pid);
+    return r == -1 ? SYS_EINVAL : r;
+}
 static int32_t sys_pipe_k(int *fds) { return vfs_pipe(fds); }
 static int32_t sys_ttyintr_k(void) { return task_self()->tty ? tty_interrupted(task_self()->tty) : 0; }
 

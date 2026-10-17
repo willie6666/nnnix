@@ -21,7 +21,7 @@ void kfree(void *p) { free(p); }
 void kprintf(const char *fmt, ...) { (void)fmt; }
 void ch376_lock(void) { }
 void ch376_unlock(void) { }
-int ch376_mount(void) { return 0; }
+int ch376_mount(void) { cur = -1; return 0; }  /* RESET_ALL: the chip's open file is gone */
 
 static int find(const char *path)
 {
@@ -152,5 +152,27 @@ int main(void)
     CHECK_EQ_INT(usbfs_ops.close(&a), SYS_EIO);
     CHECK_EQ_INT(open_file("/Y.TXT", O_RDONLY, &a), 0);  /* a clean file closes cleanly */
     CHECK_EQ_INT(usbfs_ops.close(&a), 0);
+
+    /* R35: before the diag bench resets the chip, the open file is written
+     * back; afterwards its handles carry on (a remount and reopen). */
+    CHECK_EQ_INT(open_file("/D.TXT", O_WRONLY | O_CREAT, &a), 0);
+    CHECK_EQ_INT(open_file("/LOG.TXT", O_RDONLY, &b), 0);
+    CHECK_EQ_INT(usbfs_ops.write(&a, "dirty", 5), 5);
+    CHECK_EQ_INT(usbfs_release(), 0);
+    ch376_mount();                                    /* the bench */
+    CHECK_EQ_INT(disk[find("/D.TXT")].size, 5);
+    CHECK_EQ_INT(usbfs_ops.read(&b, buf, sizeof buf), 3);
+    CHECK_EQ_INT(usbfs_ops.write(&a, "!", 1), 1);
+    CHECK_EQ_INT(usbfs_ops.close(&a), 0);
+    CHECK_EQ_INT(usbfs_ops.close(&b), 0);
+    CHECK_EQ_INT(disk[find("/D.TXT")].size, 6);
+    /* A failed write-back stops the bench and is reported by close too. */
+    CHECK_EQ_INT(open_file("/E.TXT", O_WRONLY | O_CREAT, &a), 0);
+    CHECK_EQ_INT(usbfs_ops.write(&a, "data", 4), 4);
+    fail_close = 1;
+    CHECK_EQ_INT(usbfs_release(), SYS_EIO);
+    fail_close = 0;
+    CHECK_EQ_INT(usbfs_ops.close(&a), SYS_EIO);
+    CHECK_EQ_INT(usbfs_release(), 0);                 /* nothing open: nothing to write back */
     return check_summary("test_usbfs");
 }

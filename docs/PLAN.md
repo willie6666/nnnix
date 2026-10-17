@@ -563,6 +563,43 @@ A file format of our own for the 128x64 LCD and a player ([NNV.md](NNV.md)):
   run failed the interrupted-update check because Bad Apple with sound had filled the flash and the test's
   upload failed unnoticed; the test now checks that upload.
 
+**NNV/audio review fixes (2026-10-17)**: a review of `e00e230..99497e2` reported three problems; all confirmed
+and fixed.
+
+| ID | Problem | Fix |
+| --- | --- | --- |
+| R24 | `audio_write` assumed one producer, but a program can share its open `/dev/audio` with a spawned worker (`fd_out`) and `/dev` writes are not serialized: a writer preempted between reading and committing `head` could move it behind `tail`, after which the computed room exceeded the ring and a copy ran past it into the next heap block (reproduced by the reviewer with the real driver and allocator on a host model) | a driver mutex makes each write one producer from start to end (a writer waiting for it gives up when killed); a ring holding more than its size panics instead of copying; `audioshare` (SDK) has a worker and the program write to one open file at once, and the test checks that the kernel played exactly the 16000 samples written |
+| R25 | `play` used the header's frame count only to spot pictures: a file cut at a record boundary ended "successfully", and with a loop flag the remnant looped | at the end of each pass the frames read must match a non-zero header count (`cut short: N of M frames`, exit 1), also before a rewind; tests with one whole frame of 60, the header alone, and `-l` |
+| R26 | At the end of a video the LCD went back to text as soon as the last frame was drawn, so the last frame lost its time (a two-frame 1 s video took 1 s) | the last frame stays until its time is up, then `-w` waits for Enter; a two-frame 1 s video takes 2 s |
+
+**Full audit fixes (2026-10-17)**: a whole-tree audit at `99497e2` (plus the R24-R26 work) reported nine
+problems (R27-R35), all confirmed and fixed, and twelve RAM/efficiency ideas (O1-O12), of which O1, O2 and O4
+are done.
+
+| ID | Problem | Fix |
+| --- | --- | --- |
+| R34 | The diag flash dump (`M`) called the SPI flash driver directly; at priority 3 it could cut into a littlefs or fwupdate transaction of fsd (priority 4), so a page program could go on with CS released and still report success | the size query and every 1 KiB read run in fsd (`vfs_in_fsd`), the network send outside it; test: four dumps of 64 KiB while a 32 KiB file is copied three times, CRCs unchanged |
+| R35 | The CH376 benchmark reset the chip (mount) while usbfs could have a file open with unwritten data, then cleared usbfs's state without writing it back; that file's close still returned 0 | the bench runs in fsd; `usbfs_release` first writes back the open file (a failure stops the bench and stays for the file's close) and forgets the mount, so the file is reopened on next use; host tests (dirty file, a second handle, a failed write-back) and a board test (`cat > /usb/...` open across a bench) |
+| R32 | `ed` returned a last line without `\n` without terminating it, so the end of a longer earlier line came along (`w /home/x` became `w /home/xongfilename`) | the line is terminated; a line cut by a read error is dropped rather than run; board test with such a script |
+| R30 | Reads of a socket shared by a program and its children were not serialized: the W5500 read pointer or a UDP header could be read twice and the pointer moved back | a read lock per socket (separate from the write lock, so `nc` stays full duplex), taken with `mutex_lock_killable` (new) so a kill still ends a waiting reader |
+| R28 | `kill` and `wait` cut PIDs to 16 bits: `kill 65578` killed PID 42; the shell's number parse could overflow | the system calls refuse PIDs outside 1-65535 (ESRCH); the shell takes at most 7 digits; board test with a running job |
+| R29 | `spawn` reported success when copying the working directory failed, and the child ran in `/` | the copy is made first; without it the spawn fails (ENOMEM) and frees what it took |
+| R27 | `mv FILE DIR` worked out `DIR/FILE` but renamed onto `DIR` itself (EISDIR on littlefs) | the rename uses the computed target; an overlong one is ENAMETOOLONG; board test |
+| R31 | A read of 0 bytes blocked (a pipe with a writer, TCP, the terminal) or, on UDP, consumed a datagram | `vfs_read` and the terminal fallback return 0 for 0 bytes after checking the descriptor; `readzero` (SDK) tests a terminal and an empty pipe |
+| R33 | A background job whose `/dev/null` could not be opened (EMFILE in a script with pipes) started anyway, reading the terminal | the job is not started; the error is reported |
+
+RAM: O1, the shell frees its 472 B parser before waiting for a foreground command (the children have their own
+argv); O2, a `/proc` file's text gets a block of its own size (a first pass counts) instead of 512 B, except
+`klog`; O4, the diag worker allocates its 1 KiB transfer buffer only for the commands that move bulk data
+(`L T R I M`), not for short text replies.
+
+Result: `make test` 151/151 (10 new), `make host-test` 5751 checks plus the date conversions. The first board
+run showed two consequences of the changes, both fixed: the CH376 bench, now in fsd, reported into the kernel
+log instead of the diag reply (fsd now reports into the reply while the worker waits), and `play` closed the
+LCD before the sound after holding the last frame, so the console redraw (about 8 ms) left `/dev/audio`
+running dry while still open (64-71 samples counted short; the sound is now closed first, 0 short). Free RAM
+with the console shell and one telnet session: 6136 B.
+
 ## 8. Source layout
 
 ```

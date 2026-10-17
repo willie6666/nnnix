@@ -108,7 +108,8 @@ of the pitch, and the parts run together. So sound is opt-in: `mknnv.py
   (`cat sound.u8 > /dev/audio` plays a raw file).
 - The kernel keeps a 1 KiB ring (128 ms), allocated only while the device is
   open; writes block while it is full.
-- One writer at a time (others get `EBUSY`). The close plays out what is
+- One open for writing at a time (others get `EBUSY`); tasks sharing that open
+  file (a program and the workers it spawns) take turns, one write at a time. The close plays out what is
   queued, or stops at once when the program was killed, and the pin goes back
   to a plain output, high, so the buzzer is silent.
 - Each close logs `audio: N samples played, M short`: M counts the samples the
@@ -187,5 +188,7 @@ no conversion.
   frame rate; one writer at a time and the device free again after `kill`; a
   picture waits for Enter; Ctrl-C; 2 s of raw sound take 2 s; a video with
   sound on time with no sound gaps, and Ctrl-C silences it at once; damaged
-  and foreign files refused; no RAM left behind. The sound tests play samples
+  and foreign files refused; files with fewer frames than their header says
+  refused, also with `-l`; the last frame shown for its whole time; two tasks
+  writing to one open `/dev/audio` at once; no RAM left behind. The sound tests play samples
   of 0, which keep the buzzer off: they make no noise.

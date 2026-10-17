@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "sync.h"
+#include "../lib/sys.h"
 #include "../arch/nuc140/arch.h"
 
 static int threaded(void) { return sched_running() && !in_interrupt(); }
@@ -24,6 +25,19 @@ int mutex_trylock(struct mutex *m)
     if (ok) m->owner = task_self();
     irq_restore(s);
     return ok;
+}
+
+int mutex_lock_killable(struct mutex *m)
+{
+    if (!threaded()) return 0;
+    uint32_t s = irq_save();
+    while (m->owner) {
+        if (sched_block_interruptible(&m->wq, 0, s) && task_self()->killed) return SYS_EINTR;
+        s = irq_save();
+    }
+    m->owner = task_self();
+    irq_restore(s);
+    return 0;
 }
 
 void mutex_unlock(struct mutex *m)

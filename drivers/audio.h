@@ -15,8 +15,9 @@
 #define AUDIO_RING 1024u             /* 128 ms */
 
 int  audio_open(void);               /* 0, SYS_EBUSY or SYS_ENOMEM */
-/* Queue samples; blocks while the ring is full. Returns the number queued:
- * fewer than n only when the calling task is killed. */
+/* Queue samples; blocks while the ring is full, and while another task
+ * sharing the open file writes. Returns the number queued: fewer than n only
+ * when the calling task is killed. */
 uint32_t audio_write(const uint8_t *p, uint32_t n);
 /* Stop: drain what is queued first (at most AUDIO_RING samples) unless the
  * caller was killed, then silence the buzzer and free the ring. Logs the

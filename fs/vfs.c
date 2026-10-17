@@ -234,6 +234,7 @@ int vfs_read(int fd, void *buf, uint32_t n)
     struct file *f = fd_file(fd);
     if (!f) return SYS_EBADF;
     if ((f->flags & O_ACCMODE) == O_WRONLY) return SYS_EBADF;
+    if (!n) return 0;                /* nothing to wait for, nothing consumed (a UDP datagram) */
     struct vreq r = { .fn = do_read, .m = f->mnt, .f = f, .buf = buf, .n = n };
     return run(&r);
 }

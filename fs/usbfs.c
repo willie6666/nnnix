@@ -22,8 +22,6 @@ struct ufile {
 static struct ufile *current;        /* file the chip has open */
 static uint8_t mounted;
 
-void usbfs_invalidate(void) { mounted = 0; current = 0; }
-
 static int valid_char(char c)
 {
     return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strchr("_-~!#$%&'()@^{}", c);
@@ -106,6 +104,18 @@ static void deactivate(void)
     if (ch376_close(current->dirty) != CH376_OK && current->dirty) current->error = SYS_EIO;
     current->dirty = 0;
     current = 0;
+}
+
+/* Before something else drives the CH376S directly (the diag benchmark resets
+ * it): write back the chip's open file and forget the mount, so the next use
+ * mounts again and reopens its file. In fsd, with the CH376S lock held. A
+ * failed write-back is also kept for that file's close. */
+int usbfs_release(void)
+{
+    struct ufile *u = current;
+    deactivate();
+    mounted = 0;
+    return u ? u->error : 0;
 }
 
 static int ensure(void)

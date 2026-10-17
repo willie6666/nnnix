@@ -82,6 +82,6 @@ extern const struct fs_ops lfs_ops, usbfs_ops, devfs_ops, procfs_ops;
 int  rootfs_mount(struct mount *m);  /* in fsd: mount; format only a blank flash */
 int  rootfs_format(struct mount *m); /* in fsd: format and mount, only while not mounted (or legacy, unused) */
 int  rootfs_legacy(void);            /* "/" still covers the firmware update area */
-void usbfs_invalidate(void);         /* someone else used the CH376S directly */
+int  usbfs_release(void);            /* before using the CH376S directly: write back, unmount (fsd, CH376S lock) */
 
 #endif

@@ -7,6 +7,7 @@
 #include "modules.h"
 #include "task.h"
 #include "../lib/fmt.h"
+#include "../lib/string.h"
 #include "../arch/nuc140/arch.h"
 #include "../drivers/spi.h"
 #include "../drivers/uart.h"
@@ -24,7 +25,9 @@
 
 #define REPLY 384u
 
-/* Allocated by the worker for the length of one session. */
+/* Allocated by the worker for the length of one session; buf only for the
+ * commands that move bulk data (NEEDS_BUF), not for short text replies. */
+#define NEEDS_BUF "LTRIM"
 static uint8_t *buf;                 /* network transfers */
 static char *reply;
 static unsigned reply_len;
@@ -137,16 +140,38 @@ static void ch376_bench_locked(uint32_t size, uint8_t *data)
            (s == CH376_OK && !errors && stored == size && got == size) ? "OK" : "FAIL");
 }
 
+/* In fsd, like all of /usb: no usbfs operation runs meanwhile, and the file
+ * the chip has open is written back before the bench resets the chip. */
+struct bench { uint32_t size; uint8_t *data; };
+static int bench_job(void *ctx)
+{
+    struct bench *b = ctx;
+    struct task *worker = reply_owner;
+    reply_owner = task_self();                       /* fsd reports into the reply while the worker waits */
+    ch376_lock();
+    if (usbfs_release()) report(" writing back an open /usb file failed FAIL\n");
+    else ch376_bench_locked(b->size, b->data);
+    ch376_unlock();
+    reply_owner = worker;
+    return 0;
+}
+
 void diag_ch376_bench(uint32_t size)
 {
-    uint8_t *data = kmalloc(CHUNK);
+    struct bench b = { size, kmalloc(CHUNK) };
     report("ch376 bench %u B spi div %u:", size, spi_divider(SPI_CH376));
-    if (!data) { report(" out of memory FAIL\n"); return; }
-    ch376_lock();
-    ch376_bench_locked(size, data);
-    usbfs_invalidate();              /* the bench remounted the drive behind usbfs */
-    ch376_unlock();
-    kfree(data);
+    if (!b.data) { report(" out of memory FAIL\n"); return; }
+    vfs_in_fsd(bench_job, &b);
+    kfree(b.data);
+}
+
+struct dump { uint32_t addr; uint8_t *buf; };
+static int dump_size(void *ctx) { ((struct dump *)ctx)->addr = spiflash_size(); return 0; }
+static int dump_read(void *ctx)
+{
+    struct dump *d = ctx;
+    spiflash_read(d->addr, d->buf, CHUNK);
+    return 0;
 }
 
 static const char *const state_names[] = { "-", "run", "sleep", "wait", "zombie" };
@@ -217,6 +242,10 @@ static void session(void)
     unsigned div = h[1] <= 63u ? h[1] : SPI_DEFAULT_DIVIDER;
     reply_len = 0;
     reply_owner = task_self();
+    if (h[0] && strchr(NEEDS_BUF, h[0]) && !(buf = kmalloc(CHUNK))) {
+        report("out of memory\n");
+        h[0] = 0;                                    /* answer with just that */
+    }
     switch (h[0]) {
     case 'P':
         report("nnnix %s diag hclk %u\n", nnnix_version, HCLK_HZ);
@@ -270,10 +299,15 @@ static void session(void)
         break;
     }
     case 'M': {
-        /* Read-only SPI flash dump: 64 KiB block number `length`. */
-        uint32_t base = length * 65536u, size = spiflash_size();
+        /* Read-only SPI flash dump: 64 KiB block number `length`. Every flash
+         * access runs in fsd, which owns the flash: a transaction of littlefs
+         * or fwupdate is never cut by one from here. */
+        struct dump d = { 0, buf };
+        vfs_in_fsd(dump_size, &d);
+        uint32_t base = length * 65536u, size = d.addr;
         for (uint32_t off = 0; base < size && off < 65536u; off += CHUNK) {
-            spiflash_read(base + off, buf, CHUNK);
+            d.addr = base + off;
+            vfs_in_fsd(dump_read, &d);
             if (w5500_send(SOCK, buf, CHUNK, 5000)) break;
         }
         break;
@@ -296,6 +330,8 @@ static void session(void)
         w5500_disconnect(SOCK, 500);
         if (h[0] == 'F') fault_trigger();
         arch_reboot();
+    case 0:                                          /* no buffer: "out of memory" is the reply */
+        break;
     default:
         report("unknown command 0x%02x\n", h[0]);
         break;
@@ -315,9 +351,8 @@ static struct task *worker;
 static void diag_worker(void *arg)
 {
     (void)arg;
-    buf = kmalloc(CHUNK);
     reply = kmalloc(REPLY);
-    if (buf && reply) session();
+    if (reply) session();
     else { kprintf("diag: out of memory\n"); w5500_disconnect(SOCK, 500); }
     kfree(buf);
     kfree(reply);

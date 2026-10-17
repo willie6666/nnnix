@@ -981,7 +981,15 @@ def nnv_tests(ns, serial, report):
     # off (PWM output high), so the sound path is tested without a noise.
     frames, frame_ms, flags, audio = mknnv.DEMOS['tone']()
     files['tone'] = mknnv.encode(frames, frame_ms, flags, [-32768] * len(audio))
-    statuses = [ns.call(http_request, 'PUT', '/bin/play', (REPO / 'sdk/build/play.nxe').read_bytes())[0]]
+    # R25: cut after the first whole frame record, and after the header.
+    first = 16 + 3 + struct.unpack_from('<BH', files['mixed'], 16)[1]
+    files['cut'] = files['mixed'][:first]
+    files['headonly'] = files['mixed'][:16]
+    # R26: two frames of a second each; the last must stay up its second too.
+    blank, full = bytes(mknnv.FRAME), b'\xff' * mknnv.FRAME
+    files['two'] = mknnv.encode([full, blank], 1000)
+    statuses = [ns.call(http_request, 'PUT', f'/bin/{name}', (REPO / f'sdk/build/{name}.nxe').read_bytes())[0]
+                for name in ('play', 'audioshare')]
     statuses += [ns.call(http_request, 'PUT', f'/home/{n}.nnv', d)[0] for n, d in files.items()]
     # 2 s of raw sound, all 0: the buzzer stays off.
     statuses.append(ns.call(http_request, 'PUT', '/home/quiet.u8', bytes(16000))[0])
@@ -1056,9 +1064,28 @@ def nnv_tests(ns, serial, report):
         t.read_until(Telnet.PROMPT, 5)
         stopped = time.monotonic() - started
         free = t.cmd('cat /dev/null > /dev/audio') + t.cmd('echo $?')
-        report.add('play with sound', re.search(r'120 frames in 3\.9\d\d s, 0 late', out) is not None
+        report.add('play with sound', re.search(r'120 frames in (3\.9[5-9]|4\.0[0-5])\d s, 0 late', out) is not None
                    and silent and gapless is not None and stopped < 1.0 and free.strip().endswith('0'),
                    f'^C took {stopped:.2f} s; ' + (out + free).strip().replace('\r\n', ' | '))
+        # R24: two tasks writing to one open /dev/audio at once lose and double nothing.
+        mark = len(serial.lines)
+        out = t.cmd('audioshare', 15)
+        shared = serial.wait_for(r'audio: 16000 samples played', 2, mark)
+        crash = serial.wait_for(r'HardFault|PANIC|panic', 0.5, mark)
+        report.add('audio shared file', '16000 samples written' in out and shared is not None and crash is None,
+                   out.strip().replace('\r\n', ' | ') + (f' | {serial.lines[shared]}' if shared is not None else ''))
+        # R25: fewer frames than the header says is an error, also when looping.
+        out = (t.cmd('play /home/cut.nnv') + t.cmd('echo $?') + t.cmd('play -l /home/cut.nnv', 5)
+               + t.cmd('play /home/headonly.nnv'))
+        report.add('play cut short', out.count('cut short: 1 of 60 frames') == 2 and 'cut short: 0 of 60 frames' in out
+                   and '\r\n1\r\n' in '\r\n' + out, out.strip().replace('\r\n', ' | '))
+        # R26: the last frame gets its whole time before the text comes back.
+        started = time.monotonic()
+        out = t.cmd('play -v /home/two.nnv', 10)
+        took = time.monotonic() - started
+        m = re.search(r'2 frames in (\d+\.\d+) s', out)
+        report.add('play last frame', m is not None and 1.95 <= float(m[1]) < 2.15 and took >= 1.95,
+                   f'{took:.2f} s; ' + out.strip().replace('\r\n', ' | '))
         out = (t.cmd('play /home/damaged.nnv') + t.cmd('echo $?') + t.cmd('play /home/notnnv.nnv')
                + t.cmd('play /home/nosuch.nnv') + t.cmd('play'))
         report.add('play bad files', 'damaged after 0 frames' in out and 'not an NNV file' in out
@@ -1069,10 +1096,77 @@ def nnv_tests(ns, serial, report):
         fault = serial.wait_for(r'HardFault|PANIC', 0.5, mark)
         report.add('play memory freed', before == after and fault is None, after.strip().replace('\r\n', ' | '))
     finally:
-        for name in ('damaged', 'notnnv'):
+        for name in ('damaged', 'notnnv', 'cut', 'headonly', 'two'):
             t.cmd(f'rm /home/{name}.nnv')
         t.cmd('rm /home/quiet.u8')
         t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
+def audit_tests(ns, serial, report):
+    """Fixes from the full audit of 2026-10-17 (R27-R35)."""
+    statuses = [ns.call(http_request, 'PUT', '/bin/readzero', (REPO / 'sdk/build/readzero.nxe').read_bytes())[0],
+                # R32: a last line without '\n', shorter than the line before it.
+                ns.call(http_request, 'PUT', '/home/edscript', b'f /home/edlongfilename\nw /home/edx')[0],
+                ns.call(http_request, 'PUT', '/home/r34.bin', pattern(32768))[0]]
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    try:
+        # R27: mv into a directory on the same file system.
+        out = (t.cmd('mkdir /home/mvd') + t.cmd('echo moved > /home/mva') + t.cmd('mv /home/mva /home/mvd')
+               + t.cmd('echo $?') + t.cmd('cat /home/mvd/mva') + t.cmd('cat /home/mva'))
+        report.add('mv into a directory', 'moved' in out and 'no such file' in out and '\r\n0\r\n' in '\r\n' + out,
+                   out.strip().replace('\r\n', ' | '))
+        # R28: a PID beyond 16 bits never reaches another task.
+        bg = t.cmd('sleep 5 &')
+        m = re.search(r'\[\d+\] (\d+)', bg)
+        pid = int(m[1]) if m else 0
+        out = t.cmd(f'kill {pid + 65536}') + t.cmd('kill 99999999999') + t.cmd('jobs')
+        t.cmd('kill %1')
+        report.add('kill out of range', pid > 0 and 'no such task' in out and 'bad argument' in out
+                   and 'running  sleep' in out, out.strip().replace('\r\n', ' | '))
+        # R31: reads of 0 bytes return at once.
+        out = t.cmd('readzero', 5)
+        report.add('read of 0 bytes', re.search(r'readzero: ok in \d+ ms', out) is not None, out.strip())
+        # R32: ed's last line without '\n' is the command as written.
+        out = t.cmd('ed < /home/edscript', 10) + t.cmd('ls /home')
+        report.add('ed last line', ' edx ' in out.replace('\r\n', ' ') and 'edxongfilename' not in out,
+                   ' '.join(l.split()[0] for l in out.strip().split('\r\n') if l.startswith('ed')))
+        # R34: flash dumps through diag while files are copied: the copies stay intact.
+        stop = threading.Event()
+        dumps = []
+
+        def dumper():
+            while not stop.is_set():
+                data, _ = request(b'M', 4, len(dumps) % 4, b'', None, 30)
+                dumps.append(len(data))
+        thread = ns.background(dumper)
+        sums = [t.cmd('sum /home/r34.bin')]
+        for i in range(3):
+            sums.append(t.cmd(f'cp /home/r34.bin /home/r34c.bin', 20) + t.cmd('sum /home/r34c.bin'))
+        stop.set()
+        thread.join(30)
+        first = sums[0].split()[0] if sums[0].split() else '?'
+        report.add('flash dump during writes', all(first in x for x in sums[1:]) and len(dumps) >= 2
+                   and all(n == 65536 for n in dumps), f'{len(dumps)} dumps of 64 KiB, sum {first} kept')
+        # R35: the CH376 bench while a /usb file is open with unwritten data.
+        t.send('cat > /usb/r35.txt\r\n')
+        time.sleep(0.5)
+        t.send('hello\r\n')
+        time.sleep(1)
+        bench, _ = ns.call(request, b'U', 4, 16384, b'', None, 60)
+        t.send('world\r\n')
+        time.sleep(0.5)
+        t.send('\x04')
+        t.read_until(Telnet.PROMPT, 10)
+        out = t.cmd('cat /usb/r35.txt', 10)
+        report.add('usb file across the bench', out.strip().split('\r\n') == ['hello', 'world'] and b'OK' in bench,
+                   out.strip().replace('\r\n', ' | ') + ' / ' + bench.decode(errors='replace').strip())
+    finally:
+        for f in ('/home/mvd/mva', '/home/mvd', '/home/edscript', '/home/edx', '/home/r34.bin', '/home/r34c.bin',
+                  '/usb/r35.txt'):
+            t.cmd(f'rm {f}' if f != '/home/mvd' else f'rmdir {f}')
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+    report.add('audit uploads', all(s in (201, 204) for s in statuses), str(statuses))
 
 
 def m7_tests(ns, serial, report, image):
@@ -1601,6 +1695,12 @@ def main():
             except (OSError, TimeoutError, ConnectionError) as exc:
                 traceback.print_exc()
                 report.add('NNV player', False, repr(exc))
+
+            try:
+                audit_tests(ns, serial, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
+                report.add('audit fixes', False, repr(exc))
 
             if args.flash:
                 try:

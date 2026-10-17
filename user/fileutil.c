@@ -204,9 +204,10 @@ int cmd_mv(int argc, char **argv)
 {
     if (argc != 3) { printf("usage: mv SOURCE DEST\n"); return 1; }
     char target[NN_PATH_MAX];
-    const char *to = target_of(argv[1], argv[2], target);
-    if (to && same_file(argv[1], to)) return 0;     /* moving a file onto itself: nothing to do */
-    int e = sys_rename(argv[1], argv[2]);
+    const char *to = target_of(argv[1], argv[2], target);   /* DEST, or SOURCE's name in DEST */
+    if (!to) return fail("mv", argv[2], SYS_ENAMETOOLONG);
+    if (same_file(argv[1], to)) return 0;           /* moving a file onto itself: nothing to do */
+    int e = sys_rename(argv[1], to);
     if (e == SYS_EXDEV || e == SYS_ENOSYS) {         /* across file systems: copy, then remove */
         if (copy_file("mv", argv[1], argv[2])) return 1;   /* the source stays unless the copy closed cleanly */
         e = sys_unlink(argv[1]);

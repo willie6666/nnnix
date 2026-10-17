@@ -23,7 +23,8 @@ int ed_write(int fd, const void *buf, uint32_t n) { return sys_write(fd, buf, n)
 int ed_close(int fd) { return sys_close(fd); }
 
 /* Next input line without its '\n': length, -1 at end of input, -2 on Ctrl-C.
- * Overlong lines are cut. */
+ * Overlong lines are cut. A last line without '\n' counts; one cut short by a
+ * read error does not (it could be a command with half a file name). */
 static int next_line(struct session *s)
 {
     int n = 0;
@@ -31,7 +32,8 @@ static int next_line(struct session *s)
         if (s->pos == s->len) {
             int r = sys_read(0, s->in, sizeof s->in);
             if (r == SYS_EINTR) return -2;
-            if (r <= 0) return n ? n : -1;
+            if (r < 0 || (r == 0 && !n)) return -1;
+            if (r == 0) break;
             s->pos = 0;
             s->len = (uint16_t)r;
         }

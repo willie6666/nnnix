@@ -14,7 +14,7 @@
 #include "../lib/string.h"
 
 struct sock {
-    struct mutex wlock;              /* a parent and its children may share the socket */
+    struct mutex wlock, rlock;       /* a parent and its children may share the socket */
     uint8_t sn, proto, has_peer;
     uint16_t left;                   /* UDP: unread bytes of the current datagram */
     uint8_t peer[4];
@@ -72,10 +72,15 @@ static int udp_read(struct sock *s, void *buf, uint32_t n)
     return got;
 }
 
+/* One reader at a time: the W5500 read pointer and a UDP datagram's header
+ * and remaining length are updated over several steps. */
 static int s_read(struct file *f, void *buf, uint32_t n)
 {
     struct sock *s = f->priv;
-    return s->proto == NN_SOCK_TCP ? tcp_read(s, buf, n) : udp_read(s, buf, n);
+    if (mutex_lock_killable(&s->rlock)) return SYS_EINTR;
+    int r = s->proto == NN_SOCK_TCP ? tcp_read(s, buf, n) : udp_read(s, buf, n);
+    mutex_unlock(&s->rlock);
+    return r;
 }
 
 static int udp_write(struct sock *s, const void *buf, uint32_t n);

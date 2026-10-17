@@ -4,6 +4,7 @@
 #include "../arch/nuc140/regs.h"
 #include "../kernel/klog.h"
 #include "../kernel/kmem.h"
+#include "../kernel/panic.h"
 #include "../kernel/sync.h"
 #include "../kernel/task.h"
 #include "../lib/string.h"
@@ -106,11 +107,19 @@ int audio_open(void)
     return 0;
 }
 
+/* One writer at a time, also among tasks sharing the open file (a program
+ * and the workers it spawns with it as their output): the ring has a single
+ * producer. Waiting for another writer ends when this task is killed. */
+static struct mutex writer;
+
 uint32_t audio_write(const uint8_t *p, uint32_t n)
 {
+    if (mutex_lock_killable(&writer)) return 0;
     uint32_t done = 0;
     while (done < n) {
-        uint32_t h = head, room = AUDIO_RING - (h - tail);
+        uint32_t h = head, used = h - tail;
+        if (used > AUDIO_RING) panic("audio: ring holds %u of %u", used, AUDIO_RING);
+        uint32_t room = AUDIO_RING - used;
         if (!room) {
             if (task_self()->killed) break;
             sem_take(&space, 20);
@@ -124,6 +133,7 @@ uint32_t audio_write(const uint8_t *p, uint32_t n)
         done += k;
         counting = 1;
     }
+    mutex_unlock(&writer);
     return done;
 }
 

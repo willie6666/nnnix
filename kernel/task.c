@@ -176,12 +176,21 @@ struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
     uint32_t size = stack_bytes + (uint32_t)((sizeof(struct task) + 7u) & ~7u);
     uint32_t *stack = (flags & TASK_LONG_LIVED) ? kmalloc_high(size) : kmalloc(size);
     if (!stack) return 0;
+    /* The working directory is inherited: without room for it the spawn fails,
+     * rather than the task quietly running in "/". */
+    char *cwd = 0;
+    if (running && cur()->cwd) {
+        uint32_t n = (uint32_t)strlen(cur()->cwd) + 1u;
+        cwd = (flags & TASK_LONG_LIVED) ? kmalloc_high(n) : kmalloc(n);
+        if (!cwd) { kfree(stack); return 0; }
+        strcpy(cwd, cur()->cwd);
+    }
     for (uint32_t i = 0; i < stack_bytes / 4u; ++i) stack[i] = STACK_FILL;
     struct task *t = (struct task *)((char *)stack + stack_bytes);
     uint32_t s = irq_save();
     int slot = 0;
     while (slot < TASK_MAX && tasks[slot]) ++slot;
-    if (slot == TASK_MAX) { irq_restore(s); kfree(stack); return 0; }
+    if (slot == TASK_MAX) { irq_restore(s); kfree(stack); kfree(cwd); return 0; }
     uint16_t pid = new_pid();                   /* before t is in the table */
     tasks[slot] = t;
     *t = (struct task){ .stack = stack, .stack_size = stack_bytes, .name = name, .pid = pid,
@@ -189,11 +198,7 @@ struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
                         .ppid = running ? cur()->pid : 0 };
     t->sp = arch_task_stack_init(stack + stack_bytes / 4u, entry, arg, task_return);
     t->tty = running ? cur()->tty : 0;
-    if (running && cur()->cwd) {                 /* inherit the working directory */
-        uint32_t n = (uint32_t)strlen(cur()->cwd) + 1u;
-        t->cwd = (flags & TASK_LONG_LIVED) ? kmalloc_high(n) : kmalloc(n);
-        if (t->cwd) strcpy(t->cwd, cur()->cwd);
-    }
+    t->cwd = cwd;
     t->state = TASK_READY;
     if (running && prio < cur()->prio) arch_pend_switch();
     irq_restore(s);

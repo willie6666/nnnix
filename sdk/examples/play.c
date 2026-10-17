@@ -16,6 +16,7 @@ static uint32_t have, at;
 static int fd, snd = -1;
 
 #define AUDIO_RATE 8000u                 /* what /dev/audio plays */
+#define CUT_SHORT (-2)                   /* fewer frames than the header says */
 
 /* Make sure the read buffer holds something: 0, or -1 at the end of the file. */
 static int fill(void)
@@ -150,13 +151,15 @@ int main(int argc, char **argv)
 
     /* Each frame is decoded first (queueing the sound that comes before it),
      * then shown at its time: sound written while waiting keeps playing. */
-    int shown = 0, late = 0, r;
+    int shown = 0, late = 0, pass = 0, r;             /* pass: frames since the start or a rewind */
     uint32_t start = sys_uptime(), due = start, frac = 0;
     for (;;) {
         r = next_frame();
+        if (r == 0 && info.frames && pass != info.frames) r = CUT_SHORT;   /* the header knows how many */
         if (r == 0 && loop && shown) {               /* rewind: the first frame starts from blank */
             if (sys_lseek(fd, NNV_HEADER, SEEK_SET) < 0) { r = -1; break; }
             have = at = 0;
+            pass = 0;
             memset(frame, 0, sizeof frame);
             continue;
         }
@@ -169,15 +172,23 @@ int main(int argc, char **argv)
         }
         sys_write(lcd, frame, NNV_FRAME);
         ++shown;
+        ++pass;
         frac += info.frame_frac;                     /* 1/256 ms */
         due += info.frame_ms + (frac >> 8);
         frac &= 0xffu;
     }
-    if (r == 0 && wait) wait_enter();
+    if (r == 0) {                                    /* the last frame gets its time too */
+        int32_t left = (int32_t)(due - sys_uptime());
+        if (left > 0) sys_sleep((uint32_t)left);
+        if (wait) wait_enter();
+    }
     uint32_t took = sys_uptime() - start;
+    /* The sound first: it plays out what is queued (little by now), before the
+     * LCD's text redraw could leave the device running dry. */
+    if (snd >= 0) sys_close(snd);
     sys_close(lcd);
-    if (snd >= 0) sys_close(snd);                    /* plays out what is queued */
     if (verbose) printf("play: %d frames in %u.%03u s, %d late\n", shown, took / 1000u, took % 1000u, late);
+    if (r == CUT_SHORT) { printf("play: %s: cut short: %d of %u frames\n", path, pass, info.frames); return 1; }
     if (r < 0) { printf("play: %s: damaged after %d frames\n", path, shown); return 1; }
     return 0;
 }

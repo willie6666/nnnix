@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* "/proc": read-only text generated when the file is opened. */
+/* "/proc": read-only text generated when the file is opened. The text gets a
+ * block of its own size: a first pass only counts, and the second writes
+ * (with a little slack for numbers that grew a digit in between). */
 #include <stdarg.h>
 #include "vfs.h"
 #include "../kernel/kernel.h"
@@ -13,13 +15,16 @@
 
 #define TEXT_MAX 512u
 
+#define SLACK 16u
+
 struct text { uint32_t len; char data[]; };
-struct gen { struct text *t; };
+struct gen { struct text *t; uint32_t cap, count; };   /* t 0: counting */
 
 static void put(void *ctx, char c)
 {
     struct gen *g = ctx;
-    if (g->t->len < TEXT_MAX) g->t->data[g->t->len++] = c;
+    if (!g->t) ++g->count;
+    else if (g->t->len < g->cap) g->t->data[g->t->len++] = c;
 }
 
 static void say(struct gen *g, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -65,7 +70,11 @@ static void gen_modules(struct gen *g)
     say(g, "power %u\nch376 %u\nw5500 %u\nlink 0x%x\n", modules.powered, modules.ch376, modules.w5500, modules.link);
 }
 
-static void gen_klog(struct gen *g) { g->t->len = (uint32_t)klog_read(g->t->data, TEXT_MAX); }
+static void gen_klog(struct gen *g)
+{
+    if (g->t) g->t->len = (uint32_t)klog_read(g->t->data, g->cap);
+    else g->count = TEXT_MAX;                        /* the log's tail: as much as fits */
+}
 static void gen_crash(struct gen *g) { if (fault_last_report()[0]) say(g, "%s\n", fault_last_report()); }
 
 static const struct { const char *name; void (*gen)(struct gen *g); } files[] = {
@@ -88,7 +97,10 @@ static int p_open(struct mount *m, const char *path, int flags, struct file *f)
     if (i == -2) return flags & O_CREAT ? SYS_EROFS : SYS_ENOENT;
     if ((flags & O_ACCMODE) != O_RDONLY) return i == -1 ? SYS_EISDIR : SYS_EROFS;
     if (i == -1) { f->priv = 0; return 0; }         /* the directory */
-    struct gen g = { kmalloc(sizeof(struct text) + TEXT_MAX) };
+    struct gen g = { 0, 0, 0 };
+    files[i].gen(&g);
+    g.cap = g.count + SLACK < TEXT_MAX ? g.count + SLACK : TEXT_MAX;
+    g.t = kmalloc(sizeof(struct text) + g.cap);
     if (!g.t) return SYS_ENOMEM;
     g.t->len = 0;
     files[i].gen(&g);

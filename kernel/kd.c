@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "kd.h"
+#include "../drivers/lcd.h"
+#include "../drivers/spiflash.h"
 #include "console.h"
 #include "diag.h"
 #include "input.h"
@@ -50,9 +52,10 @@ static void statistics(void)
 {
     struct uart1_stats u;
     uart1_stats(&u);
-    kprintf("stat: uart1 %u B err %u drop %u, ch9350 bad %u, mouse %u, spi timeouts %u, w5500 missed send_ok %u, msp %u B\n",
+    kprintf("stat: uart1 %u B err %u drop %u, ch9350 bad %u, mouse %u, spi timeouts %u (flash %u, lcd %u), "
+            "w5500 missed send_ok %u, msp %u B\n",
             u.bytes, u.errors, u.drops, input_bad_bytes(), input_mouse_reports(), spi_timeouts(),
-            w5500_missed_send_ok(), stack_used());
+            spiflash_timeouts(), lcd_timeouts(), w5500_missed_send_ok(), stack_used());
 }
 
 static void kd_main(void *arg)

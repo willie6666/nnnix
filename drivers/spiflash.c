@@ -15,11 +15,26 @@ static void cs(int active)
     else GPIO_DOUT(PORTD) |= BIT(0);
 }
 
+/* A transfer the controller never finished (it should take microseconds):
+ * the operation it belongs to reports an error instead of returning whatever
+ * the receive register held. Cleared at the start of each operation. */
+static uint8_t timed_out;
+static uint32_t timeouts;
+uint32_t spiflash_timeouts(void) { return timeouts; }
+
+static int finished(void)
+{
+    for (uint32_t n = 0; n < 10000u; ++n) if (!(SPI_CNTRL(SPI2_BASE) & 1u)) return 1;
+    timed_out = 1;
+    ++timeouts;
+    return 0;
+}
+
 static uint8_t xfer(uint8_t v)
 {
     SPI_TX0(SPI2_BASE) = v;
     SPI_CNTRL(SPI2_BASE) = BIT(2) | (8u << 3) | 1u;
-    for (uint32_t n = 0; SPI_CNTRL(SPI2_BASE) & 1u && n < 10000u; ++n) { }
+    finished();
     return (uint8_t)SPI_RX0(SPI2_BASE);
 }
 
@@ -85,25 +100,28 @@ uint32_t spiflash_size(void)
 /* Reads move 32 bits per SPI transfer (the length field 0 means 32; the
  * first byte on the wire is the top one): littlefs scans whole metadata
  * blocks, and per-byte transfers spent more time starting than shifting. */
-void spiflash_read(uint32_t addr, void *buf, uint32_t n)
+int spiflash_read(uint32_t addr, void *buf, uint32_t n)
 {
     uint8_t *p = buf;
+    timed_out = 0;
     cs(1);
     command_addr(CMD_READ, addr);
     for (; n >= 4u; n -= 4u, p += 4) {
         SPI_TX0(SPI2_BASE) = 0;
         SPI_CNTRL(SPI2_BASE) = BIT(2) | 1u;
-        for (uint32_t k = 0; SPI_CNTRL(SPI2_BASE) & 1u && k < 10000u; ++k) { }
+        finished();
         uint32_t w = SPI_RX0(SPI2_BASE);
         p[0] = (uint8_t)(w >> 24); p[1] = (uint8_t)(w >> 16); p[2] = (uint8_t)(w >> 8); p[3] = (uint8_t)w;
     }
     while (n--) *p++ = xfer(0);
     cs(0);
+    return timed_out ? -1 : 0;
 }
 
 int spiflash_program(uint32_t addr, const void *buf, uint32_t n)
 {
     const uint8_t *p = buf;
+    timed_out = 0;
     while (n) {
         uint32_t room = SPIFLASH_PAGE - (addr % SPIFLASH_PAGE), chunk = n < room ? n : room;
         simple(CMD_WRITE_ENABLE);
@@ -111,7 +129,7 @@ int spiflash_program(uint32_t addr, const void *buf, uint32_t n)
         command_addr(CMD_PAGE_PROGRAM, addr);
         for (uint32_t i = 0; i < chunk; ++i) xfer(p[i]);
         cs(0);
-        if (wait_ready(10)) return -1;          /* page program: 0.7 ms typical, 3 ms max */
+        if (wait_ready(10) || timed_out) return -1;   /* page program: 0.7 ms typical, 3 ms max */
         addr += chunk; p += chunk; n -= chunk;
     }
     return 0;
@@ -119,9 +137,10 @@ int spiflash_program(uint32_t addr, const void *buf, uint32_t n)
 
 int spiflash_erase_sector(uint32_t addr)
 {
+    timed_out = 0;
     simple(CMD_WRITE_ENABLE);
     cs(1);
     command_addr(CMD_SECTOR_ERASE, addr & ~(SPIFLASH_SECTOR - 1u));
     cs(0);
-    return wait_ready(500);                     /* 45 ms typical, 400 ms max */
+    return wait_ready(500) || timed_out ? -1 : 0;   /* 45 ms typical, 400 ms max */
 }

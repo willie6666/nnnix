@@ -124,7 +124,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot, watchdog reset | pass |
-| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 6088 B (test limit 5600 B) |
+| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 6072 B (test limit 5600 B) |
 | Code size / static RAM including crash records / main stack / heap | 88 KiB / 2.5 KiB / 512 B / 12.9 KiB |
 
 Host tests: 5797 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model and the NNV decoder against the encoder), plus 80 243

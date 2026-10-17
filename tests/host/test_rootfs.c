@@ -21,7 +21,7 @@ static uint8_t *flash;               /* shared between the parent and the boots 
 static char log_text[2048];
 
 uint32_t spiflash_size(void) { return flash_size; }
-void spiflash_read(uint32_t addr, void *buf, uint32_t n) { memcpy(buf, flash + addr, n); }
+int spiflash_read(uint32_t addr, void *buf, uint32_t n) { memcpy(buf, flash + addr, n); return 0; }
 int spiflash_program(uint32_t addr, const void *buf, uint32_t n)
 {
     const uint8_t *p = buf;

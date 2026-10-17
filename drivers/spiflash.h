@@ -12,8 +12,9 @@
 void     spiflash_init(void);
 uint32_t spiflash_jedec_id(void);     /* manufacturer << 16 | type << 8 | capacity */
 uint32_t spiflash_size(void);         /* bytes, from the JEDEC capacity code; 0 if absent */
-void     spiflash_read(uint32_t addr, void *buf, uint32_t n);
+int      spiflash_read(uint32_t addr, void *buf, uint32_t n);          /* 0, or -1 if the SPI controller hung */
 int      spiflash_program(uint32_t addr, const void *buf, uint32_t n);   /* within pages; 0 or -1 */
 int      spiflash_erase_sector(uint32_t addr);                          /* 0 or -1 */
+uint32_t spiflash_timeouts(void);     /* SPI transfers that never finished, since boot */
 
 #endif

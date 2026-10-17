@@ -672,6 +672,24 @@ and one telnet session: 6088 B (32 B less: the firmware grew by the built-in pla
 console checks because an aborted earlier run had left the network-boot test's `/etc/rc` (with `dhcp -t 15`)
 on the board, which the next runs kept as "the board's own"; removed.
 
+### The audit's remaining notes (2026-10-17)
+
+- Short writes: `nn_write_all` (lib/stdio) writes again after a short write and turns a write that made no
+  progress into EIO; printf's flush, `fputs_fd`, `cp`/`mv`'s copy, `mkfile`, `ed`, `nc` and `dmesg` use it.
+- SPI timeouts: a flash transfer the controller never finished made the operation return whatever the
+  receive register held. Reads now fail (littlefs gets LFS_ERR_IO, firmware staging EIO, the diag dump
+  stops), programs and erases report it too, and an unreadable flash is never taken for a blank one (which
+  would be formatted). The LCD cannot report an error to whoever draws: its timeouts are counted. Both counts
+  are in the kernel daemon's minute line (`spi timeouts N (flash N, lcd N)`).
+- Interrupt latency of reaping and spawning (the 8 kHz audio timer's count at its interrupt): reaping freed a
+  program's leftover blocks, one heap walk each, with interrupts off, and spawning painted the new stack with
+  them off. Reaping now takes the lock only for the parts that must be atomic and frees the blocks between
+  (the zombie keeps its pid meanwhile); a child is created paused (`TASK_PAUSED`), set up, then started. Worst
+  latency, starting ten programs: 60 -> 11 us; memtest: 47 -> 8 us; nothing above 14 us now.
+- The old `scripts/w5500_network_test.py` (outside the repository) runs every cleanup step even when one fails
+  and reports the failures, like `nntest`'s Namespace; not run (it refuses to start while eth1 has an address).
+- Result: `make test` 154/154; free RAM with the console shell and one telnet session 6072 B.
+
 ## 8. Source layout
 
 ```

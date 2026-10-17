@@ -42,7 +42,7 @@ static int flash_blank(void)
 {
     uint8_t b[32];
     for (uint32_t addr = 0; addr < 2u * SPIFLASH_SECTOR; addr += sizeof b) {
-        spiflash_read(addr, b, sizeof b);
+        if (spiflash_read(addr, b, sizeof b)) return 0;   /* unreadable is not blank: never format it */
         for (unsigned i = 0; i < sizeof b; ++i) if (b[i] != 0xff) return 0;
     }
     return 1;

@@ -14,11 +14,18 @@ static void cs(int active)
     else GPIO_DOUT(PORTD) |= BIT(8);
 }
 
+/* A transfer the controller never finished cannot be reported to whoever
+ * draws; it is counted for the kernel daemon's statistics line. */
+static uint32_t timeouts;
+uint32_t lcd_timeouts(void) { return timeouts; }
+
 static void send9(uint32_t v)
 {
     SPI_TX0(SPI3_BASE) = v;
     SPI_CNTRL(SPI3_BASE) = BIT(2) | (9u << 3) | 1u;
-    for (uint32_t n = 0; SPI_CNTRL(SPI3_BASE) & 1u && n < 10000u; ++n) { }
+    uint32_t n = 0;
+    while (SPI_CNTRL(SPI3_BASE) & 1u)
+        if (++n == 10000u) { ++timeouts; return; }
 }
 
 static void command(uint8_t c) { send9(c); }

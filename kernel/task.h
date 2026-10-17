@@ -67,8 +67,10 @@ void sched_tick(void);               /* from SysTick */
 
 struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
                         uint32_t stack_bytes, uint8_t prio, int flags);
+void task_start(struct task *t);       /* make a TASK_PAUSED task runnable */
 #define TASK_DETACHED  1                 /* task_spawn flags: nobody joins it */
 #define TASK_LONG_LIVED 2                /* stack from the top of the heap (login shells) */
+#define TASK_PAUSED    4                 /* created stopped: the caller sets it up, then task_start() */
 struct task *task_self(void);
 void task_yield(void);
 void task_sleep(uint32_t ms);

@@ -70,7 +70,7 @@ static int copy_fd(int in, int out)
     char buf[CHUNK];
     int n;
     while ((n = sys_read(in, buf, sizeof buf)) > 0) {
-        int w = sys_write(out, buf, (size_t)n);
+        int w = nn_write_all(out, buf, (size_t)n);
         if (w < 0) return w;
         if (nn_interrupted()) return SYS_EINTR;
     }
@@ -301,7 +301,7 @@ int cmd_mkfile(int argc, char **argv)
     for (uint32_t pos = 0; pos < size;) {
         uint32_t n = size - pos < CHUNK ? size - pos : CHUNK;
         for (uint32_t k = 0; k < n; ++k) buf[k] = pattern(pos + k);
-        int w = sys_write(fd, buf, n);
+        int w = nn_write_all(fd, buf, n);
         if (w < 0) { sys_close(fd); return fail("mkfile", argv[1], w); }
         pos += n;
         if (nn_interrupted()) { sys_close(fd); return 130; }

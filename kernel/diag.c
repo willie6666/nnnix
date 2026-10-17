@@ -170,8 +170,7 @@ static int dump_size(void *ctx) { ((struct dump *)ctx)->addr = spiflash_size(); 
 static int dump_read(void *ctx)
 {
     struct dump *d = ctx;
-    spiflash_read(d->addr, d->buf, CHUNK);
-    return 0;
+    return spiflash_read(d->addr, d->buf, CHUNK);
 }
 
 static const char *const state_names[] = { "-", "run", "sleep", "wait", "zombie" };

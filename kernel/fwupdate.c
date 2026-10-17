@@ -33,8 +33,7 @@ static int flash_job(void *ctx)
     case PROGRAM:
         return spiflash_program(j->addr, j->buf, j->n) ? SYS_EIO : 0;
     default:
-        spiflash_read(j->addr, j->buf, j->n);
-        return 0;
+        return spiflash_read(j->addr, j->buf, j->n) ? SYS_EIO : 0;
     }
 }
 
@@ -80,7 +79,7 @@ static int stage(const char *path, uint8_t *buf)
     uint32_t check = ~0u;
     for (uint32_t off = 0; !e && off < size; off += CHUNK) {
         uint32_t n = size - off < CHUNK ? size - off : CHUNK;
-        flash(READ, FW_IMAGE_ADDR + off, buf, n);
+        if (flash(READ, FW_IMAGE_ADDR + off, buf, n)) { e = SYS_EIO; break; }
         check = lfs_crc(check, buf, n);
     }
     if (!e && ~check != crc) e = SYS_EIO;

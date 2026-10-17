@@ -117,20 +117,22 @@ int spawn_child(const struct nn_spawn *req, struct loaded_image *image)
     b->argv[req->argc] = 0;
     struct file *in = req->fd_in >= 0 ? vfs_get(req->fd_in) : 0, *out = req->fd_out >= 0 ? vfs_get(req->fd_out) : 0;
     if ((req->fd_in >= 0 && !in) || (req->fd_out >= 0 && !out)) { kfree(b); return SYS_EBADF; }
-    /* Set the child up before it can run: no switch happens while interrupts are off. */
-    uint32_t s = irq_save();
-    struct task *t = task_spawn(b->argv[0], spawn_entry, b, req->stack, task_self()->prio, 0);
-    if (t) {
-        t->user = 1;
-        t->owned = b;
-        t->image = image ? image : task_self()->image;
-        if (t->image) t->image->refs++;
-        if (in) { in->refs++; t->fds[0] = in; }
-        if (out) { out->refs++; t->fds[1] = out; }
-    }
-    irq_restore(s);
+    /* The child is created paused and set up before it can run (task_spawn
+     * itself, painting a stack, runs with interrupts on: holding them off for
+     * it delayed the audio interrupt by 50 us). */
+    struct task *t = task_spawn(b->argv[0], spawn_entry, b, req->stack, task_self()->prio, TASK_PAUSED);
     if (!t) { kfree(b); return SYS_ENOMEM; }
-    return t->pid;
+    uint32_t s = irq_save();
+    t->user = 1;
+    t->owned = b;
+    t->image = image ? image : task_self()->image;
+    if (t->image) t->image->refs++;
+    if (in) { in->refs++; t->fds[0] = in; }
+    if (out) { out->refs++; t->fds[1] = out; }
+    int pid = t->pid;
+    irq_restore(s);
+    task_start(t);
+    return pid;
 }
 
 static int32_t sys_spawn_k(const struct nn_spawn *req) { return spawn_child(req, 0); }

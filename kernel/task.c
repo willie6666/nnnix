@@ -217,10 +217,18 @@ struct task *task_spawn(const char *name, void (*entry)(void *), void *arg,
     t->sp = arch_task_stack_init(stack + stack_bytes / 4u, entry, arg, task_return);
     t->tty = running ? cur()->tty : 0;
     t->cwd = cwd;
-    t->state = TASK_READY;
-    if (running && prio < cur()->prio) arch_pend_switch();
+    t->state = (flags & TASK_PAUSED) ? TASK_SLEEPING : TASK_READY;   /* paused: no timeout, no queue */
+    if (running && !(flags & TASK_PAUSED) && prio < cur()->prio) arch_pend_switch();
     irq_restore(s);
     return t;
+}
+
+void task_start(struct task *t)
+{
+    uint32_t s = irq_save();
+    t->state = TASK_READY;
+    if (running && t->prio < cur()->prio) arch_pend_switch();
+    irq_restore(s);
 }
 
 void task_exit(int code)
@@ -323,18 +331,20 @@ void task_report_leftovers(void)
 }
 
 /* Frees the struct too: no pointer to t may be used afterwards. Called with
- * interrupts off. Program allocations the task left behind are freed while its
- * pid is still taken, so a new task cannot get that pid (and lose its own
- * blocks). */
-static void task_free(struct task *t)
+ * interrupts on, by the only task that frees this zombie (its joiner, or idle
+ * for a detached one): the parts that must be atomic take the lock briefly,
+ * and the program allocations the task left behind are freed while it is
+ * still in the table, so its pid stays taken and a new task cannot get it
+ * (and lose its own blocks). That freeing walks the heap once per block, so
+ * it runs with interrupts on between blocks: holding them off for all of it
+ * delayed the 8 kHz audio interrupt by up to 60 us. */
+static void task_free(struct task *t, uint32_t peak)
 {
-    uint32_t *block = t->stack;
-    char *cwd = t->cwd;
-    void *owned = t->owned;
+    uint32_t s = irq_save();
+    note_peak(t->stack_size, peak);
     struct loaded_image *image = t->image;
     uint16_t t_pid = t->pid;
-    note_peak(t->stack_size, stack_peak(t));
-    int left = 0;
+    int mine = 1;
     if (image && --image->refs) {
         /* Still used by a relative (a child it spawned, which may still run
          * until its next system call): the program's heap may be shared
@@ -342,15 +352,21 @@ static void task_free(struct task *t)
         for (int i = 0; i < TASK_MAX; ++i)
             if (tasks[i] && tasks[i] != t && tasks[i]->image == image) { kmem_reown(t->pid, tasks[i]->pid); break; }
         image = 0;
-    } else {
-        left = kmem_free_owned(t->pid);
+        mine = 0;
     }
+    irq_restore(s);
+    int left = mine ? kmem_free_owned(t_pid) : 0;
+    s = irq_save();
     for (int i = 0; i < TASK_MAX; ++i) if (tasks[i] == t) tasks[i] = 0;
+    uint32_t *block = t->stack;
+    char *cwd = t->cwd;
+    void *owned = t->owned;
+    if (left) { leftover_pid = t_pid; leftover_blocks = (uint16_t)(leftover_blocks + left); }
+    irq_restore(s);
     kfree(cwd);
     kfree(owned);
     kfree(image);
     kfree(block);
-    if (left) { leftover_pid = t_pid; leftover_blocks = (uint16_t)(leftover_blocks + left); }
 }
 
 int task_join(struct task *t, uint32_t *cpu_ms)
@@ -360,10 +376,13 @@ int task_join(struct task *t, uint32_t *cpu_ms)
         sched_block(&t->exit_wq, 0, s);
         s = irq_save();
     }
+    irq_restore(s);
+    /* The stack scan with interrupts on (it takes tens of microseconds): a
+     * zombie's stack no longer changes, and only its joiner frees it. */
+    uint32_t peak = stack_peak(t);
     int code = t->exit_code;
     if (cpu_ms) *cpu_ms = t->cpu_ms;
-    task_free(t);
-    irq_restore(s);
+    task_free(t, peak);
     return code;
 }
 
@@ -470,8 +489,10 @@ static void idle_main(void *arg)
         for (int i = 0; i < TASK_MAX; ++i) {
             uint32_t s = irq_save();
             struct task *t = tasks[i];
-            if (t && t->state == TASK_ZOMBIE && t->detached) task_free(t);   /* idle must not log (block) */
+            int reap = t && t->state == TASK_ZOMBIE && t->detached;
             irq_restore(s);
+            if (!reap) continue;
+            task_free(t, stack_peak(t));            /* only idle frees detached zombies; it must not log (block) */
         }
         __asm volatile("wfi");
     }

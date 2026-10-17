@@ -21,7 +21,7 @@ uint32_t lfs_crc(uint32_t crc, const void *buffer, size_t size)
 
 int lfs_port_read(const struct lfs_config *c, lfs_block_t block, lfs_off_t off, void *buffer, lfs_size_t size)
 {
-    spiflash_read(block * c->block_size + off, buffer, size);
+    if (spiflash_read(block * c->block_size + off, buffer, size)) return LFS_ERR_IO;
     return LFS_ERR_OK;
 }
 

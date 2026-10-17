@@ -7,9 +7,22 @@
 
 struct chunk { char buf[32]; int len; };
 
+int nn_write_all(int fd, const void *p, size_t n)
+{
+    const char *s = p;
+    size_t done = 0;
+    while (done < n) {
+        int w = sys_write(fd, s + done, n - done);
+        if (w < 0) return w;
+        if (w == 0) return SYS_EIO;
+        done += (size_t)w;
+    }
+    return (int)n;
+}
+
 static void flush(struct chunk *c)
 {
-    if (c->len) sys_write(1, c->buf, (size_t)c->len);
+    if (c->len) nn_write_all(1, c->buf, (size_t)c->len);
     c->len = 0;
 }
 
@@ -37,4 +50,4 @@ int printf(const char *fmt, ...)
     return n;
 }
 
-int fputs_fd(const char *s, int fd) { return sys_write(fd, s, strlen(s)); }
+int fputs_fd(const char *s, int fd) { return nn_write_all(fd, s, strlen(s)); }

@@ -88,7 +88,7 @@ static int cmd_dmesg(int argc, char **argv)
     uint32_t pos = 0;
     int n;
     (void)argc; (void)argv;
-    while ((n = sys_klog(&pos, buf, sizeof buf)) > 0) sys_write(1, buf, (size_t)n);
+    while ((n = sys_klog(&pos, buf, sizeof buf)) > 0) nn_write_all(1, buf, (size_t)n);
     return 0;
 }
 

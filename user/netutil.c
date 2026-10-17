@@ -297,7 +297,7 @@ static int nc_pump(int fd, int proto, int child, int until_child, uint32_t idle_
         if (i.rx) {
             int n = sys_read(fd, buf, sizeof buf);
             if (n < 0) return 1;
-            if (n > 0 && sys_write(1, buf, (size_t)n) < 0) return 1;
+            if (n > 0 && nn_write_all(1, buf, (size_t)n) < 0) return 1;
             if (n == 0 && proto == NN_SOCK_TCP) return 0;
             last = sys_uptime();
             continue;

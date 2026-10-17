@@ -24,16 +24,7 @@ static int error(const char *cmd, const char *file, int e)
     return 1;
 }
 
-static int write_all(const void *data, int n)
-{
-    const char *p = data;
-    while (n) {
-        int w = sys_write(1, p, (size_t)n);
-        if (w <= 0) return 1;
-        p += w; n -= w;
-    }
-    return 0;
-}
+static int write_all(const void *data, int n) { return nn_write_all(1, data, (size_t)n) < 0; }
 
 static int space(int c) { return c == ' ' || (c >= '\t' && c <= '\r'); }
 

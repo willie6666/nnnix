@@ -65,6 +65,8 @@ def alive(pid):
     try:
         os.kill(pid, 0)
         return True
+    except PermissionError:                             # root's, and asked without sudo
+        return True
     except OSError:
         return False
 

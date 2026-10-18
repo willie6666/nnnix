@@ -149,6 +149,16 @@ __attribute__((noinline)) static int request(struct get *g)
     if (e == SYS_ENOENT) { printf("wget: %s: no such host\n", g->host); return 1; }
     if (e == SYS_EINVAL) { printf("wget: no DNS server (ifconfig eth0 ... dns IP)\n"); return 1; }
     if (e) return fail(g->host, e);
+    /* Off the local network without a gateway the W5500 can only time out. */
+    struct nn_netcfg c;
+    sys_netcfg(&c, NN_NET_GET);
+    int local = 1, gw = c.gw[0] | c.gw[1] | c.gw[2] | c.gw[3];
+    for (int i = 0; i < 4; ++i) if ((ip[i] ^ c.ip[i]) & c.mask[i]) local = 0;
+    if (!local && !gw) {
+        printf("wget: %u.%u.%u.%u is not on the local network, and no gateway is set (ifconfig eth0 ... gw IP)\n",
+               ip[0], ip[1], ip[2], ip[3]);
+        return 1;
+    }
     struct nn_sockaddr a = { .port = g->port };
     memcpy(a.ip, ip, 4);
     if (!g->quiet) printf("connecting to %u.%u.%u.%u:%u\n", ip[0], ip[1], ip[2], ip[3], g->port);

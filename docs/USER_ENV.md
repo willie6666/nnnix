@@ -320,7 +320,7 @@ It asks with HTTP/1.0 and `Connection: close`, so the body ends at
 `Content-Length` or when the server closes; a chunked body is decoded too. Up to
 five redirects are followed (absolute or same-server). The exit status is 0 for
 a 2xx reply saved whole, 1 otherwise (`wget: the server answered 404`, a body cut
-short, no such host). It takes about 2 KiB of RAM while it runs (its stack, a
+short, no such host, an address off the local network while no gateway is set). It takes about 2 KiB of RAM while it runs (its stack, a
 256-byte receive buffer, the URLs and header lines); a file arrives at about
 55 KiB/s when it goes to the flash file system. `https://` is not supported.
 

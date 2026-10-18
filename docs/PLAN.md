@@ -824,6 +824,11 @@ Tried: the DHCP server and the DNS relay against the board (a lease, `host examp
 name); on, status, a second on refused, and off, in a throwaway network namespace with dummy
 interfaces (also with forwarding off before: turned on, and off again). NAT towards the real uplink was
 not applied here: that is the user's to turn on.
+- First use: `wget http://192.18.0.1:8080/` (a typo for 198.18.0.1) and external sites failed with
+  "connection refused or timed out": the board had no gateway (`gw 0.0.0.0`), so nothing off its /30 could
+  be reached, and the W5500 just times out. wget now says so before trying. `nnshare status` without sudo
+  took the root-owned server for dead (the signal check got EPERM). With the gateway set, the user's
+  HTTP server on this computer and http://example.org/ came through.
 
 ## 8. Source layout
 

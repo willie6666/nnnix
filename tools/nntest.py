@@ -1696,9 +1696,10 @@ def wget_tests(ns, serial, report):
                    and 'no length, ends at close' in out, out.strip().replace('\r\n', ' | '))
         out = (t.cmd('wget -O - http://web.test:8000/missing', 20) + t.cmd('echo $?') + t.cmd('wget -q http://web.test:8000/loop', 30)
                + t.cmd('wget http://nosuch.test/', 20) + t.cmd('wget http://198.18.0.1:8001/', 30)
-               + t.cmd('wget https://web.test/') + t.cmd('wget'))
+               + t.cmd('wget https://web.test/') + t.cmd('wget') + t.cmd('wget http://192.18.0.1/', 10))
         report.add('wget errors', 'answered 404\r\n1' in out and 'too many or bad redirects' in out and 'no such host' in out
-                   and 'refused or timed out' in out and 'https is not supported' in out and 'usage: wget' in out,
+                   and 'refused or timed out' in out and 'https is not supported' in out and 'usage: wget' in out
+                   and 'not on the local network, and no gateway is set' in out,
                    out.strip().replace('\r\n', ' | '))
         t.cmd('rm /home/w.txt /home/w.bin')
         t.cmd(f'ifconfig eth0 198.18.0.2/30 dns {old_dns}')

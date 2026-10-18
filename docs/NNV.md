@@ -10,6 +10,7 @@ sound for the onboard buzzer. A picture is a video of one frame. The pieces:
 | `/dev/audio`, `/dev/adpcm` | In the kernel: the buzzer, playing 8-bit samples at 8 kHz, or NNV sound records that its timer interrupt decodes as it plays them (`drivers/audio.c`) |
 | `play` (`bin/play.c`) | On the board: the program `/bin/play`, which shows an NNV file, with its sound if asked; its code runs from flash (APROM), so it takes about 2.6 KiB of RAM while it plays, its stack and its buffers |
 | `lib/nnv.h` | The format and its decoders, shared by `play` and the host test |
+| `tools/nnscreen.py`, `tools/nninput.py` | On a GNOME computer: its screen as a live NNV stream, and the board's keyboard and mouse working it (see "This computer's screen on the LCD") |
 
 ## Quick start
 
@@ -55,6 +56,71 @@ Measured with all of Bad Apple (6572 frames, 219 s) sent from the computer:
 | `nc -l 1234 \| play -v -s`, one telnet session | 0 | 0 samples short | 1856 B |
 | `nc -l 1234 \| play -v -s`, telnet and the LCD console shell | 0 | 0 samples short | 704 B |
 | the same before `/dev/adpcm` (decoded samples in `/dev/audio`) | 6569 (each about 64 ms) | 0 samples short | 736 B |
+
+## This computer's screen on the LCD
+
+`tools/nnscreen.py` turns the screen of the computer it runs on into a live
+NNV stream on its standard output, and `tools/nninput.py` takes the board's
+keyboard, mouse and keypad from its standard input and works the computer
+with them. With `nc` on both ends, the board becomes a tiny remote display:
+
+```
+nnnix$ nc -i -l 1234 | play                       # on the board, then on the computer:
+$ python3 tools/nnscreen.py | nc 198.18.0.2 1234 | python3 tools/nninput.py
+```
+
+`nc -i` sends the board's `/dev/input` events (8 bytes each, `struct
+nn_input_event` in `lib/sys.h`) to the peer instead of its standard input, in
+the same `nc` task, so nothing more than `nc -l 1234 | play` is running. While
+it holds `/dev/input` the keyboard types nothing into the board's console; the
+board's SW_INT button ends `nc`, the stream ends, `play` ends, and on the
+computer the pipeline ends too, keys still held being let go. Ctrl-C on the
+computer ends it as well. Without `nninput.py` and `-i` it is view only
+(`nnscreen.py | nc 198.18.0.2 1234`, board `nc -l 1234 | play`).
+
+How the pieces work:
+
+- Both need a GNOME desktop session: they use Mutter's own D-Bus services
+  (`tools/mutter.py`), its screen cast (the pictures, through PipeWire and
+  GStreamer: `python3-gi`, `gir1.2-gstreamer-1.0`, `gstreamer1.0-pipewire`)
+  and its remote desktop service (the input). Nothing is installed or set:
+  GNOME shows its screen sharing indicator while they run, and stopping the
+  sharing there ends them.
+- `nnscreen.py` takes the newest picture `--fps` times a second (default 10),
+  has GStreamer scale it to about twice the size it gets on the LCD, averages
+  that down, stretches the grey levels (a dark theme's greys would otherwise
+  all turn into the same sparse dots; `--no-levels` keeps them) and dithers it
+  (Bayer by default, which keeps still parts still). The header gives no frame
+  count and no time per frame: `play` shows each frame as it comes, and a frame
+  goes out only when the picture changed. So nothing piles up in between, and
+  the picture is as recent as the link allows.
+- 1920x1080 at 128x64 shows the windows, not their text. `--area X,Y,W,H`
+  shows part of the screen; `--follow` a part around the pointer, `--zoom N`
+  screen pixels per LCD pixel (default 2: 256x128, where text can be read).
+  `--invert` suits dark themes; `--fit`, `--dither` and `--threshold` are as
+  in `mknnv.py convert`. Into a file (`-o FILE` or a redirection) it records an
+  ordinary timed video instead.
+- `nninput.py` replays keys as the same keys (HID usages to Linux key codes;
+  the computer's keyboard layout applies), buttons and the wheel as they are,
+  and the board's keypad as 2 4 6 8 arrows, 5 Enter, 1 Esc, 3 Tab, 7
+  Backspace, 9 Space. It keeps the pointer's position itself (starting in the
+  middle; `--speed` pointer pixels per mouse count, default 2) and moves the
+  pointer there, because GNOME tells no program where the pointer is; it
+  writes the position to a file in `$XDG_RUNTIME_DIR` for `nnscreen.py`, which
+  draws the pointer as a small arrow (GNOME's own is a dot or nothing at this
+  size) and follows it with `--follow`. A mouse used on the computer meanwhile
+  makes the pointer jump back at the board's next move.
+- Whoever can write to `nninput.py`'s standard input controls the computer:
+  feed it only from the board.
+
+Measured on the board, `nc -i -l 1234 | play -v` from a telnet session: full
+1 KiB raw frames as fast as the computer sends them go through at about 100
+frames a second (a 10 fps desktop needs far less: mostly 10-400 byte deltas,
+and nothing while the screen stays the same); an event reaches the computer's
+pointer within about 25 ms; lowest free RAM 896 B with a test request running
+beside it, 1456 B with the LCD console's shell logged in. On the computer
+(RK3588) `nnscreen.py` takes about 45% of one core at 10 fps, most of it
+fetching and scaling the pictures in GStreamer.
 
 With the LCD console's shell logged in as well, the 2 KiB sound buffer does
 not fit and the device takes its 1 KiB one. As 8-bit samples (`/dev/audio`)
@@ -171,7 +237,7 @@ Header, 16 bytes:
 | 4 | 2 | width, 128 |
 | 6 | 2 | height, 64 |
 | 8 | 2 | number of frames (0: unknown; play reads to the end) |
-| 10 | 2 | time per frame in milliseconds (0 for a picture) |
+| 10 | 2 | time per frame in milliseconds (0 for a picture; with any other frame count, a live stream: each frame shows as soon as it has come) |
 | 12 | 1 | flags: bit 0, loop |
 | 13 | 1 | more time per frame, in 1/256 ms (30 fps: 33 ms + 85/256) |
 | 14 | 2 | sound: samples per second (8000), or 0 for none |

@@ -230,6 +230,7 @@ netstat                                    the eight W5500 sockets
 service [telnetd|httpd start|stop]         network services
 nc HOST PORT        nc -l PORT             TCP client / server for one connection
 nc -u HOST PORT     nc -u -l PORT          the same over UDP
+nc -i ...                                  send the keyboard and mouse (/dev/input), not standard input
 host NAME                                  look a name up (DNS)
 wget [-q] [-S] [-O FILE] URL               fetch over HTTP
 ```
@@ -279,6 +280,18 @@ nc -l 1234 | play                 # a video sent to port 1234 plays as it arrive
 From the terminal into a file or a pipe (the last two) `nc` only receives,
 until the peer closes or Ctrl-C: nothing typed is sent, and no sending task
 takes its 1 KiB. Its messages go to the terminal, never into the data.
+
+`nc -i` sends the board's keyboard, mouse and keypad instead of standard
+input: once connected it holds `/dev/input` and sends each event (8 bytes,
+`struct nn_input_event` in `lib/sys.h`) as it comes, while it prints what
+arrives. The board's SW_INT button ends it. With `tools/nnscreen.py` and
+`tools/nninput.py` on a GNOME computer this shows the computer's screen on the
+LCD and works the computer from the board (docs/NNV.md, "This computer's
+screen on the LCD"):
+
+```
+nc -i -l 1234 | play
+```
 
 A UDP read returns one datagram. On a listening socket its sender becomes the
 destination of the next write, so `nc -u -l PORT` answers whoever spoke last. A

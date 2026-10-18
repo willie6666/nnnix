@@ -295,14 +295,31 @@ static int nc_typist(int argc, char **argv)
     return 0;
 }
 
+/* Events read from /dev/input (nc -i) go to the socket as they come. 0, or
+ * -1 once the keyboard is gone (released, or a failed send). */
+static int nc_input(int fd, int input)
+{
+    struct nn_input_event ev[4];
+    int n = sys_read(input, ev, sizeof ev);
+    if (n == SYS_EAGAIN) return 0;
+    if (n <= 0) return -1;
+    int w = sys_write(fd, ev, (size_t)n);
+    return w < 0 && w != SYS_EINVAL ? -1 : 0;      /* EINVAL: a UDP listener with no peer yet */
+}
+
 /* Socket to stdout until the peer closes, Ctrl-C, idle_ms of silence, or (with
- * until_child) the typist ends. */
-static int nc_pump(int fd, int proto, int child, int until_child, uint32_t idle_ms)
+ * until_child) the typist ends. With input (nc -i), its events go out as well:
+ * looked at between reads, and every 10 ms while nothing arrives. */
+static int nc_pump(int fd, int proto, int child, int until_child, uint32_t idle_ms, int input)
 {
     char buf[128];
     uint32_t last = sys_uptime();
     for (;;) {
         struct nn_sockinfo i;
+        if (input >= 0 && nc_input(fd, input)) {
+            nc_error("no more input events", 0);
+            input = -1;                                /* the caller closes it */
+        }
         if (sys_sockinfo(fd, &i)) return 1;
         if (i.rx) {
             int n = sys_read(fd, buf, sizeof buf);
@@ -322,17 +339,18 @@ static int nc_pump(int fd, int proto, int child, int until_child, uint32_t idle_
         }
         if (!until_child && nn_interrupted()) return 130;
         if (idle_ms && !child && sys_uptime() - last >= idle_ms) return 0;
-        sys_sleep(20);
+        sys_sleep(input >= 0 ? 10 : 20);
     }
 }
 
 int cmd_nc(int argc, char **argv)
 {
-    static const char use[] = "nc [-u] HOST PORT | nc [-u] -l PORT";
-    int proto = NN_SOCK_TCP, listen = 0, i = 1;
+    static const char use[] = "nc [-u] [-i] HOST PORT | nc [-u] [-i] -l PORT";
+    int proto = NN_SOCK_TCP, listen = 0, events = 0, i = 1;
     for (; i < argc && argv[i][0] == '-'; ++i) {
         if (!strcmp(argv[i], "-u")) proto = NN_SOCK_UDP;
         else if (!strcmp(argv[i], "-l")) listen = 1;
+        else if (!strcmp(argv[i], "-i")) events = 1;
         else return usage(use);
     }
     struct nn_sockaddr a;
@@ -356,11 +374,21 @@ int cmd_nc(int argc, char **argv)
             sys_sleep(20);
         }
     }
+    if (events) {
+        /* The keyboard, mouse and keypad instead of standard input (nc -i -l
+         * PORT | play: the computer shows its screen and takes the input).
+         * Taken only once connected; the board's SW_INT button ends nc. */
+        int input = sys_open("/dev/input", O_RDONLY | O_NONBLOCK);
+        if (input < 0) { nc_error("/dev/input", errstr(input)); goto out; }
+        rc = nc_pump(fd, proto, 0, 0, 0, input);
+        sys_close(input);
+        goto out;
+    }
     int tty = sys_isatty(0) == 1;
     if (tty && sys_isatty(1) != 1) {
         /* From the terminal into a pipe or a file (nc -l PORT | play): only
          * receive, until the peer closes or ^C, without a typist's 1 KiB. */
-        rc = nc_pump(fd, proto, 0, 0, 0);
+        rc = nc_pump(fd, proto, 0, 0, 0, -1);
         goto out;
     }
     char *child_argv[] = { "nc", 0 };
@@ -369,7 +397,7 @@ int cmd_nc(int argc, char **argv)
     struct nn_spawn sp = { nc_typist, child_argv, 1, tty ? -1 : 0, fd, 1024 };
     int pid = sys_spawn(&sp);
     if (pid < 0) { nc_error(errstr(pid), 0); goto out; }
-    rc = nc_pump(fd, proto, pid, tty, !tty && proto == NN_SOCK_UDP ? 2000u : 0);
+    rc = nc_pump(fd, proto, pid, tty, !tty && proto == NN_SOCK_UDP ? 2000u : 0, -1);
     int status;
     sys_kill(pid);
     sys_wait(pid, &status, NN_FOREVER);

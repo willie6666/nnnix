@@ -10,6 +10,8 @@
  *       it as it plays). Off unless asked for: the buzzer gets the rhythm
  *       across but little of the pitch
  *   -v  at the end, print the frame count, the time taken and late frames
+ * A video whose header gives no time per frame is a live stream (tools/
+ * nnscreen.py): each frame shows as soon as it has come.
  * The console text comes back when play ends. Make files with tools/mknnv.py.
  *
  * A program in /bin: its code runs from APROM, so playing takes about 2.3 KiB
@@ -163,6 +165,7 @@ static int run(struct player *p, const char *path, int loop, int wait, int verbo
     /* Each frame is decoded first (queueing the sound that comes before it),
      * then shown at its time: sound written while waiting keeps playing. */
     int shown = 0, late = 0, pass = 0, r;             /* pass: frames since the start or a rewind */
+    int live = !info.frame_ms && !info.frame_frac;   /* no time per frame: show each at once */
     uint32_t start = sys_uptime(), due = start, frac = 0;
     for (;;) {
         r = next_frame(p);
@@ -177,7 +180,7 @@ static int run(struct player *p, const char *path, int loop, int wait, int verbo
         if (r <= 0) break;
         int32_t early = (int32_t)(due - sys_uptime());
         if (early > 0) sys_sleep((uint32_t)early);
-        else if (shown) {
+        else if (shown && !live) {
             ++late;
             if (early < -500) due = sys_uptime();   /* far behind (slow drive): don't race to catch up */
         }

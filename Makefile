@@ -189,6 +189,7 @@ host-test: $(HOST_TESTS) build/bin/wget.elf $(GAMES:%=build/host/sim_%)
 	@for t in $(HOST_TESTS); do echo "== $$t"; (cd tests/host && ../../$$t) || exit 1; done
 	@echo "== tests/host/test_mknxe.py"; $(PYTHON) tests/host/test_mknxe.py build/bin/wget.elf
 	@echo "== tests/host/test_games.py"; $(PYTHON) tests/host/test_games.py
+	@echo "== tests/host/test_nnscreen.py"; $(PYTHON) tests/host/test_nnscreen.py
 
 size: build/nnnix.elf
 	$(SIZE) -A $<

@@ -61,10 +61,13 @@ static int cmd_ps(int argc, char **argv)
 static int cmd_free(int argc, char **argv)
 {
     struct kmem_stats m;
-    (void)argc; (void)argv;
-    sys_meminfo(&m);
+    int reset = argc > 1 && !strcmp(argv[1], "-r"), low = reset || (argc > 1 && !strcmp(argv[1], "-l"));
+    if (argc > 2 || (argc > 1 && !low)) { printf("usage: free [-l | -r]\n"); return 2; }
+    if (reset) sys_meminfo_reset(&m);
+    else sys_meminfo(&m);
     printf("heap: total %u B, free %u B, largest block %u B, %u free blocks\n",
            m.total, m.free, m.largest, m.free_blocks);
+    if (low) printf("lowest free %u B since boot or free -r%s\n", m.lowest, reset ? " (now starting again)" : "");
     struct task_info info[4];        /* paged: the shell stack is small */
     uint32_t stacks = 0, tasks = 0;
     for (int skip = 0, n; (n = sys_ps(info, 4, skip)) > 0; skip += n)
@@ -145,7 +148,7 @@ static const struct command commands[] = {
     { "help", cmd_help, "list commands" },
     { "echo", cmd_echo, "print arguments" },
     { "ps", cmd_ps, "list tasks" },
-    { "free", cmd_free, "kernel heap usage" },
+    { "free", cmd_free, "kernel heap usage; -l the lowest free, -r also start it again" },
     { "uptime", cmd_uptime, "time since boot" },
     { "dmesg", cmd_dmesg, "kernel log" },
     { "uname", cmd_uname, "system name and version" },

@@ -270,6 +270,16 @@ int cmd_netstat(int argc, char **argv)
 
 static int connected(uint8_t s) { return s == NN_SS_ESTABLISHED || s == NN_SS_CLOSE_WAIT; }
 
+/* Messages go to the terminal (fd 2): standard output may be a pipe that
+ * carries the data, `nc -l PORT | play`. */
+static void nc_error(const char *what, const char *detail)
+{
+    fputs_fd("nc: ", 2);
+    fputs_fd(what, 2);
+    if (detail) { fputs_fd(": ", 2); fputs_fd(detail, 2); }
+    fputs_fd("\n", 2);
+}
+
 /* Standard input (typed lines, or a file or pipe) goes to the socket (fd 1)
  * while the parent prints what arrives, so neither direction waits for the other. */
 static int nc_typist(int argc, char **argv)
@@ -279,7 +289,7 @@ static int nc_typist(int argc, char **argv)
     (void)argc; (void)argv;
     while ((n = sys_read(0, buf, sizeof buf)) > 0) {
         int w = sys_write(1, buf, (size_t)n);
-        if (w == SYS_EINVAL) { printf("nc: no peer yet\n"); continue; }
+        if (w == SYS_EINVAL) { nc_error("no peer yet", 0); continue; }
         if (w < 0) return 1;
     }
     return 0;
@@ -332,27 +342,33 @@ int cmd_nc(int argc, char **argv)
         return usage(use);
     (void)nn_interrupted();
     int fd = sys_socket(proto);
-    if (fd < 0) { printf("nc: %s\n", errstr(fd)); return 1; }
+    if (fd < 0) { nc_error(errstr(fd), 0); return 1; }
     int e = listen ? sys_listen(fd, a.port) : sys_connect(fd, &a);
     int rc = 1;
-    if (e) { printf("nc: %s\n", errstr(e)); goto out; }
+    if (e) { nc_error(errstr(e), 0); goto out; }
     if (proto == NN_SOCK_TCP) {                        /* wait for the connection */
         for (;;) {
             struct nn_sockinfo info;
             sys_sockinfo(fd, &info);
             if (connected(info.state)) break;
-            if (info.state == NN_SS_CLOSED) { printf("nc: connection refused or timed out\n"); goto out; }
+            if (info.state == NN_SS_CLOSED) { nc_error("connection refused or timed out", 0); goto out; }
             if (nn_interrupted()) { rc = 130; goto out; }
             sys_sleep(20);
         }
     }
     int tty = sys_isatty(0) == 1;
+    if (tty && sys_isatty(1) != 1) {
+        /* From the terminal into a pipe or a file (nc -l PORT | play): only
+         * receive, until the peer closes or ^C, without a typist's 1 KiB. */
+        rc = nc_pump(fd, proto, 0, 0, 0);
+        goto out;
+    }
     char *child_argv[] = { "nc", 0 };
     /* Terminal: the session ends with ^D/^C. File or pipe: once it is all sent,
      * keep printing until the peer closes (UDP: 2 s of silence). */
     struct nn_spawn sp = { nc_typist, child_argv, 1, tty ? -1 : 0, fd, 1024 };
     int pid = sys_spawn(&sp);
-    if (pid < 0) { printf("nc: %s\n", errstr(pid)); goto out; }
+    if (pid < 0) { nc_error(errstr(pid), 0); goto out; }
     rc = nc_pump(fd, proto, pid, tty, !tty && proto == NN_SOCK_UDP ? 2000u : 0);
     int status;
     sys_kill(pid);

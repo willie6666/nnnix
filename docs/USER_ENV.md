@@ -273,7 +273,12 @@ silence):
 ```
 echo hello | nc 198.18.0.1 7000
 nc -l 7000 > /home/upload.bin
+nc -l 1234 | play                 # a video sent to port 1234 plays as it arrives
 ```
+
+From the terminal into a file or a pipe (the last two) `nc` only receives,
+until the peer closes or Ctrl-C: nothing typed is sent, and no sending task
+takes its 1 KiB. Its messages go to the terminal, never into the data.
 
 A UDP read returns one datagram. On a listening socket its sender becomes the
 destination of the next write, so `nc -u -l PORT` answers whoever spoke last. A
@@ -384,6 +389,7 @@ sysctl console=ask         LCD shell only after Enter (the default)
 sysctl idle_logout=600     log out terminals idle for 10 minutes; 0 never
 sysctl telnet_max=1 httpd=off
 free                       heap, and how much of it is task stacks
+free -l                    also the lowest free since boot or `free -r` (which starts it again)
 ```
 
 | Setting | Values | RAM effect |

@@ -49,7 +49,12 @@ static int32_t sys_ps_k(struct task_info *out, int32_t max, int32_t skip)
     return task_list(out, max > TASK_MAX ? TASK_MAX : max, skip);
 }
 
-static int32_t sys_meminfo_k(struct kmem_stats *out) { kmem_stats(out); return 0; }
+static int32_t sys_meminfo_k(struct kmem_stats *out, int32_t reset)
+{
+    kmem_stats(out);
+    if (reset == NN_MEMINFO_RESET) kmem_reset_lowest();
+    return 0;
+}
 static int32_t sys_klog_k(uint32_t *pos, char *buf, uint32_t len) { return (int32_t)klog_read_from(pos, buf, len); }
 
 static int32_t sys_reboot_k(uint32_t magic)

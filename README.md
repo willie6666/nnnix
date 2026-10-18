@@ -92,7 +92,8 @@ pid name prio state stack_used stack_size cpu_ms
   1024-byte frame (the console text returns when it closes), `/dev/audio` plays 8 kHz sound on the buzzer
   (PWM on PB11, timer interrupt); `tools/mknnv.py` converts pictures and videos through ffmpeg into NNV, a
   delta-coded format of our own with optional ADPCM sound; `play` shows them (all of Bad Apple at 30 fps;
-  `play -s` adds the sound, though the buzzer carries rhythm far better than pitch)
+  `play -s` adds the sound, though the buzzer carries rhythm far better than pitch); `nc -l 1234 | play`
+  plays a video streamed over the network (all of Bad Apple: 0 frames late)
 - Input for programs (games): `/dev/input` gives one program the USB keyboard and mouse and the board's 1-9
   keypad as press/release events (`sdk/examples/keys.c`); the board's SW_INT button ends the program
   holding the keys or the display, even one stuck in a loop

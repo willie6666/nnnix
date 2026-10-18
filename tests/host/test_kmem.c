@@ -30,6 +30,9 @@ int main(void)
     memset(a, 0xaa, 100); memset(b, 0xbb, 200); memset(c, 0xcc, 300);
     CHECK_EQ_INT(free_bytes(), sizeof heap - (104 + KMEM_HEADER) - (200 + KMEM_HEADER) - (304 + KMEM_HEADER));
 
+    kmem_stats(&s);
+    CHECK_EQ_INT(s.lowest, s.free);          /* the low mark follows the free bytes */
+
     /* Free the middle block, then its neighbours: everything must coalesce back. */
     kfree(b);
     kmem_stats(&s);
@@ -143,5 +146,21 @@ int main(void)
         CHECK_EQ_INT(s.free_blocks, 1);
         CHECK_EQ_INT(kmem_grow(0, 8), -1);
     }
+    /* The low mark: the least free since a reset, through grows and frees. */
+    kmem_init(heap, heap + sizeof heap);
+    void *x = kmalloc(1000), *y = kmalloc(64);
+    CHECK(x && y);
+    kfree(y);
+    CHECK_EQ_INT(kmem_grow(x, 1500), 0);
+    kmem_stats(&s);
+    uint32_t mark = s.lowest;
+    CHECK_EQ_INT(mark, s.free);              /* the grow took the most */
+    kfree(x);
+    kmem_stats(&s);
+    CHECK_EQ_INT(s.free, sizeof heap);
+    CHECK_EQ_INT(s.lowest, mark);            /* freeing does not raise it */
+    kmem_reset_lowest();
+    kmem_stats(&s);
+    CHECK_EQ_INT(s.lowest, sizeof heap);
     return check_summary("test_kmem");
 }

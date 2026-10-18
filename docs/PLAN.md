@@ -909,6 +909,24 @@ firmware's fonts, handed to programs in `nn_lib` version 2 (`font3x5`, `font5x7`
   wall, flappy to the ground, quit from both keyboards) and checks the pictures. On the board: each game
   started, played and ended with Esc (`input_tests`), heap unchanged; stack peak 640 of 1024 B.
 
+### Streaming video: `nc -l 1234 | play` (2026-10-18)
+
+- `play` without a file (or `-`) reads standard input; `-l` and the file's loop flag do not apply, a picture
+  waits for Enter on `/dev/tty`. From a pipe (lseek fails) its read buffer is 128 B instead of 512: a pipe
+  holds 128 B, and the 384 B saved let `/dev/audio` open beside the console shell.
+- `nc`, from the terminal into a pipe or a file, only receives: no typist task (1 KiB of stack), Ctrl-C
+  still works; its messages go to fd 2, never into the data.
+- `free -l` shows the lowest free heap since boot or `free -r` (kmem keeps the free byte count and its low
+  mark; `meminfo` takes a reset argument; the stats field that was always 0 now carries it).
+- Measured, all of Bad Apple sent over TCP from the computer: without sound 6572 frames in 219.058 s, 0
+  late, lowest free 1264 B with two telnet sessions; with sound and one telnet session 0 late, 0 samples
+  short, lowest free 1856 B; with sound, telnet and the console shell, `/dev/audio` gets only its 1 KiB
+  buffer (before the smaller read buffer: no sound at all, "out of memory"), so every frame waits behind
+  the 192 ms of sound the file puts ahead and is shown about 64 ms late (6569 late, 0 samples short, 219 s
+  in all; lowest free 736 B). A ^C while connected takes 1 s, as before: the close waits for the peer.
+- Tests: `nnv_tests` streams the 60-frame and the sound demo through `nc -l 1234 | play` (0 late) and a cut
+  one (`cut short`); `test_kmem` the low mark.
+
 ## 8. Source layout
 
 ```

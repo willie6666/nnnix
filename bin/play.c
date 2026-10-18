@@ -1,7 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* play: show an NNV picture or video (lib/nnv.h) on the LCD.
- *   play [-l] [-w] [-s] [-v] FILE
- *   -l  loop until Ctrl-C (also when the file has its loop flag)
+ *   play [-l] [-w] [-s] [-v] [FILE]
+ *   without FILE (or with -), standard input: a pipe or a redirection, such
+ *       as `nc -l 1234 | play` with the file sent to port 1234
+ *   -l  loop until Ctrl-C (also when the file has its loop flag; not for
+ *       standard input, which cannot go back)
  *   -w  wait for Enter after the last frame (always for a picture)
  *   -s  sound: play the file's sound on the buzzer (/dev/audio). Off unless
  *       asked for: the buzzer gets the rhythm across but little of the pitch
@@ -20,18 +23,21 @@
 #define AUDIO_RATE 8000u                 /* what /dev/audio plays */
 #define CUT_SHORT (-2)                   /* fewer frames than the header says */
 
+#define BUF_FILE 512u                    /* each fsd read, which waits its turn behind other jobs, brings more */
+#define BUF_PIPE 128u                    /* a pipe never holds more (fs/pipe.c): RAM for the sound instead */
+
 struct player {
     uint8_t frame[NNV_FRAME];
-    uint8_t buf[512];                    /* 512: each fsd read, which waits its turn behind other jobs, brings more */
-    uint32_t have, at;
+    uint32_t have, at, size;             /* size: of buf */
     int fd, snd;
+    uint8_t buf[];
 };
 
 /* Make sure the read buffer holds something: 0, or -1 at the end of the file. */
 static int fill(struct player *p)
 {
     if (p->at < p->have) return 0;
-    int r = sys_read(p->fd, p->buf, sizeof p->buf);
+    int r = sys_read(p->fd, p->buf, p->size);
     if (r <= 0) return -1;
     p->have = (uint32_t)r;
     p->at = 0;
@@ -44,7 +50,7 @@ static int get(struct player *p, uint8_t *dst, uint32_t n)
     uint32_t got = 0;
     while (got < n) {
         if (p->at == p->have) {
-            int r = sys_read(p->fd, p->buf, sizeof p->buf);
+            int r = sys_read(p->fd, p->buf, p->size);
             if (r <= 0) return got ? (int)got : r;
             p->have = (uint32_t)r;
             p->at = 0;
@@ -118,23 +124,28 @@ static int next_frame(struct player *p)
     }
 }
 
-static void wait_enter(void)
+/* Enter on the terminal: fd 0, or /dev/tty while fd 0 brings the file. */
+static void wait_enter(int from_stdin)
 {
     char line[32];                                   /* the terminal hands over whole lines */
-    if (sys_isatty(0)) (void)sys_read(0, line, sizeof line);
+    int fd = from_stdin ? sys_open("/dev/tty", O_RDONLY) : 0;
+    if (fd >= 0 && sys_isatty(fd) == 1) (void)sys_read(fd, line, sizeof line);
+    if (from_stdin && fd >= 0) sys_close(fd);
 }
 
 static int run(struct player *p, const char *path, int loop, int wait, int verbose, int sound)
 {
-    p->fd = sys_open(path, O_RDONLY);
+    int from_stdin = !strcmp(path, "-");
+    p->fd = from_stdin ? 0 : sys_open(path, O_RDONLY);
     if (p->fd < 0) { printf("play: %s: %s\n", path, errstr(p->fd)); return 1; }
+    if (from_stdin) path = "standard input";
     uint8_t h[NNV_HEADER];
     struct nnv_info info;
     if (get(p, h, NNV_HEADER) != NNV_HEADER || nnv_header(h, &info)) {
         printf("play: %s: not an NNV file\n", path);
         return 1;
     }
-    if (info.flags & NNV_LOOP) loop = 1;
+    if (info.flags & NNV_LOOP && !from_stdin) loop = 1;
     if (info.frames == 1) wait = 1;
     int lcd = sys_open("/dev/lcd", O_WRONLY);
     if (lcd < 0) { printf("play: /dev/lcd: %s\n", errstr(lcd)); return 1; }
@@ -178,7 +189,7 @@ static int run(struct player *p, const char *path, int loop, int wait, int verbo
     if (r == 0) {                                    /* the last frame gets its time too */
         int32_t left = (int32_t)(due - sys_uptime());
         if (left > 0) sys_sleep((uint32_t)left);
-        if (wait) wait_enter();
+        if (wait) wait_enter(from_stdin);
     }
     uint32_t took = sys_uptime() - start;
     /* The sound first: it plays out what is queued (little by now), before the
@@ -201,17 +212,24 @@ int cmd_play(int argc, char **argv)
         else if (!strcmp(argv[i], "-w")) wait = 1;
         else if (!strcmp(argv[i], "-v")) verbose = 1;
         else if (!strcmp(argv[i], "-s")) sound = 1;
-        else if (argv[i][0] != '-' && !path) path = argv[i];
+        else if ((argv[i][0] != '-' || !strcmp(argv[i], "-")) && !path) path = argv[i];
         else path = 0, argc = 0;
     }
-    if (!path) { printf("usage: play [-l] [-w] [-s] [-v] FILE\n"); return 2; }
-    struct player *p = sys_alloc(sizeof *p);
+    if (!path && argc && sys_isatty(0) != 1) path = "-";          /* a pipe or a redirection */
+    if (!path || (loop && !strcmp(path, "-"))) {
+        printf("usage: play [-l] [-w] [-s] [-v] [FILE]   (-l only with a FILE; without one, standard input)\n");
+        return 2;
+    }
+    int pipe = !strcmp(path, "-") && sys_lseek(0, 0, SEEK_CUR) < 0;   /* not a file redirected in */
+    uint32_t size = pipe ? BUF_PIPE : BUF_FILE;
+    struct player *p = sys_alloc(sizeof *p + size);
     if (!p) { printf("play: %s\n", errstr(SYS_ENOMEM)); return 1; }
     memset(p, 0, sizeof *p);
+    p->size = size;
     p->fd = p->snd = -1;
     int rc = run(p, path, loop, wait, verbose, sound);
     if (p->snd >= 0) sys_close(p->snd);
-    if (p->fd >= 0) sys_close(p->fd);
+    if (p->fd > 0) sys_close(p->fd);                 /* not standard input */
     sys_free(p);
     return rc;
 }

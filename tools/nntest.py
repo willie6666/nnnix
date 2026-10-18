@@ -1275,6 +1275,32 @@ def nnv_tests(ns, serial, report):
         # 60 frames of 40 ms, a sixth of them raw (1 KiB each from the flash).
         report.add('play video', all(s in (201, 204) for s in statuses) and out.strip() == '0' and 2.3 < took < 3.5,
                    f'{took:.2f} s for 60 frames at 40 ms; ' + out.strip().replace('\r\n', ' | '))
+        # Streamed: nc -l | play, the file sent over TCP as fast as the board takes it.
+        def stream(data, port=1234):
+            for _ in range(50):
+                try:
+                    c = socket.create_connection((TARGET[0], port), timeout=5)
+                    break
+                except OSError:
+                    time.sleep(0.2)
+            else:
+                return False
+            with c:
+                c.settimeout(30)
+                c.sendall(data)
+                c.shutdown(socket.SHUT_WR)
+                time.sleep(0.5)
+            return True
+        out = ''
+        for name, flags in (('mixed', '-v'), ('tone', '-s -v'), ('cut', '')):
+            t.send(f'nc -l 1234 | play {flags}\r\n')
+            time.sleep(0.5)
+            sent = ns.call(stream, files[name])
+            out += t.read_until(Telnet.PROMPT, 15) + t.cmd('echo $?')
+        report.add('play from nc', re.search(r'play: 60 frames in 2\.\d+ s, 0 late', out) is not None
+                   and out.count(' 0 late') == 2 and 'standard input: cut short' in out and sent,
+                   out.strip().replace('\r\n', ' | '))
+
         # One writer at a time; the busy device is free again once its holder ends.
         # The holder is a background `sleep` with its output on the LCD (two
         # players at once would not fit in RAM with this shell logged in).

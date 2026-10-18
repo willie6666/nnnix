@@ -17,7 +17,7 @@ enum {
     SYS_WRITE   = 5,   /* write(fd, buf, len) -> len; fd 0-2 default to the terminal (kernel log without one) */
     SYS_READ    = 6,   /* read(fd, buf, len) -> len; 0 at end of file; terminal: a line, -EINTR on Ctrl-C */
     SYS_PS      = 7,   /* ps(struct task_info *, max, skip) -> count; skip pages through the list */
-    SYS_MEMINFO = 8,   /* meminfo(struct kmem_stats *) */
+    SYS_MEMINFO = 8,   /* meminfo(struct kmem_stats *, reset): reset NN_MEMINFO_RESET starts the low mark again */
     SYS_KLOG    = 9,   /* klog(uint32_t *pos, buf, len) -> len; stream the kernel log */
     SYS_REBOOT  = 10,  /* reboot(SYS_REBOOT_MAGIC) */
     SYS_UNAME   = 11,  /* uname(buf, len) -> len */
@@ -270,7 +270,10 @@ static inline int sys_ps(struct task_info *out, int max, int skip)
 {
     return NN_SYSCALL3(SYS_PS, (uintptr_t)out, max, skip);
 }
-static inline void sys_meminfo(struct kmem_stats *out) { (void)NN_SYSCALL1(SYS_MEMINFO, (uintptr_t)out); }
+#define NN_MEMINFO_RESET 0x4c4f57u        /* "LOW" */
+static inline void sys_meminfo(struct kmem_stats *out) { (void)NN_SYSCALL2(SYS_MEMINFO, (uintptr_t)out, 0); }
+/* The same, then the lowest free starts again from what is free now. */
+static inline void sys_meminfo_reset(struct kmem_stats *out) { (void)NN_SYSCALL2(SYS_MEMINFO, (uintptr_t)out, NN_MEMINFO_RESET); }
 static inline int sys_klog(uint32_t *pos, char *buf, size_t len)
 {
     return NN_SYSCALL3(SYS_KLOG, (uintptr_t)pos, (uintptr_t)buf, len);

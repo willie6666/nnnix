@@ -26,7 +26,10 @@ struct block {
 _Static_assert(KMEM_HEADER == HDR, "KMEM_HEADER out of date");
 
 static struct block *free_list;
-static uint32_t total;
+static uint32_t total, free_now, lowest;     /* bytes free now, and the least since a reset */
+
+/* Under the lock. */
+static void taken(uint32_t n) { free_now -= n; if (free_now < lowest) lowest = free_now; }
 static char *heap_base, *heap_limit;
 
 void kmem_init(void *start, void *end)
@@ -34,7 +37,7 @@ void kmem_init(void *start, void *end)
     uintptr_t a = ((uintptr_t)start + 7u) & ~(uintptr_t)7u;
     uintptr_t b = (uintptr_t)end & ~(uintptr_t)7u;
     free_list = 0;
-    total = 0;
+    total = free_now = lowest = 0;
     heap_base = heap_limit = (char *)a;
     if (b <= a + HDR + MIN_SPLIT) return;
     heap_limit = (char *)b;
@@ -42,6 +45,7 @@ void kmem_init(void *start, void *end)
     free_list->size = (uint32_t)(b - a);
     free_list->next = 0;
     total = free_list->size;
+    free_now = lowest = total;
 }
 
 void *kmalloc(size_t size)
@@ -62,6 +66,7 @@ void *kmalloc(size_t size)
             *link = b->next;
         }
         b->tag = USED(0);
+        taken(b->size);
     }
     UNLOCK(s);
     return b ? (char *)b + HDR : 0;
@@ -85,6 +90,7 @@ void *kmalloc_high(size_t size)
             *best = b->next;
         }
         b->tag = USED(0);
+        taken(b->size);
     }
     UNLOCK(s);
     return b ? (char *)b + HDR : 0;
@@ -101,6 +107,7 @@ int kmem_grow(void *p, size_t size)
     uint32_t need = (uint32_t)((size + 7u) & ~(size_t)7u) + HDR;
     uint32_t s = LOCK();
     int ok = IS_USED(b) && need <= b->size;
+    uint32_t was = b->size;
     if (IS_USED(b) && !ok) {
         struct block **link = &free_list, *next;
         while ((next = *link) && (char *)next < (char *)b + b->size) link = &next->next;
@@ -118,6 +125,7 @@ int kmem_grow(void *p, size_t size)
                 b->size = all;
             }
             ok = 1;
+            taken(b->size - was);
         }
     }
     UNLOCK(s);
@@ -130,6 +138,7 @@ void kfree(void *p)
     struct block *b = (struct block *)((char *)p - HDR);
     uint32_t s = LOCK();
     if (!IS_USED(b)) { UNLOCK(s); return; }     /* double free or foreign pointer: ignore */
+    free_now += b->size;
     struct block **link = &free_list, *next;
     while ((next = *link) && next < b) link = &next->next;
     b->next = next;
@@ -207,8 +216,15 @@ void kmem_stats(struct kmem_stats *out)
         if (b->size > out->largest) out->largest = b->size;
         out->free_blocks++;
     }
+    out->lowest = lowest;
     UNLOCK(s);
-    out->used_blocks = 0;            /* not tracked; kept for the ps/meminfo layout */
+}
+
+void kmem_reset_lowest(void)
+{
+    uint32_t s = LOCK();
+    lowest = free_now;
+    UNLOCK(s);
 }
 
 /* For crash reports: the header words of the block holding p and of the

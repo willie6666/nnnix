@@ -7,7 +7,8 @@
 /* First-fit allocator with an address-ordered free list and coalescing.
  * Blocks are 8-byte aligned with an 8-byte header (16 on 64-bit hosts). */
 #define KMEM_HEADER (sizeof(void *) == 4 ? 8u : 16u)
-struct kmem_stats { uint32_t total, free, largest, used_blocks, free_blocks; };
+/* lowest: the least free there was since boot or kmem_reset_lowest(). */
+struct kmem_stats { uint32_t total, free, largest, lowest, free_blocks; };
 
 void  kmem_init(void *start, void *end);
 void *kmalloc(size_t size);
@@ -23,5 +24,6 @@ int   kmem_grow(void *p, size_t size);              /* in place: 0, or -1 (alloc
 int   kmem_neighbours(const void *p, uint32_t out[5]);   /* crash reports: p's block and the one before */
 int   kmem_reown(uint16_t from, uint16_t to);   /* hand blocks to another task; returns how many */
 void  kmem_stats(struct kmem_stats *out);
+void  kmem_reset_lowest(void);
 
 #endif

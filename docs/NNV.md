@@ -33,6 +33,35 @@ nnnix$ play -s /home/clip.nnv      # with its sound on the buzzer (see below)
 The console text comes back when `play` ends, however it ends. The files can
 also live on the USB drive (`play /usb/clip.nnv`).
 
+Without a file (or with `-`), `play` reads standard input, so a video can be
+streamed over the network without storing it:
+
+```
+nnnix$ nc -l 1234 | play -v        # then, on the computer:
+$ nc -q 1 198.18.0.2 1234 < clip.nnv     (or: python3 -c ... sendall)
+```
+
+It plays as the data comes; TCP holds the sender back while the board is
+ahead, so the sender can send as fast as it likes. `-l` and a file's loop
+flag do not apply (a stream cannot go back), and a picture waits for Enter
+on the terminal. From a pipe `play` reads 128 bytes at a time (a pipe holds
+no more), which leaves 384 bytes for the sound.
+
+Measured with all of Bad Apple (6572 frames, 219 s) sent from the computer:
+
+| | frames late | sound | lowest free RAM |
+| --- | --- | --- | --- |
+| `nc -l 1234 \| play -v`, two telnet sessions | 0 | - | 1264 B |
+| `nc -l 1234 \| play -v -s`, one telnet session | 0 | 0 samples short | 1856 B |
+| `nc -l 1234 \| play -v -s`, telnet and the LCD console shell | 6569 (each about 64 ms) | 0 samples short | 736 B |
+
+With the LCD console's shell logged in as well, the 2 KiB sound buffer does
+not fit and `/dev/audio` takes its 1 KiB one (128 ms): the file's sound runs
+192 ms ahead of its pictures, so every frame waits until the sound has room
+and is shown about 64 ms after its time (behind its sound by as much; the
+whole still takes 219 s). Without sound, or with the console logged out
+(`sysctl console=off`), nothing is late.
+
 ## Converting
 
 `mknnv.py convert INPUT OUTPUT` reads anything ffmpeg reads. Files ending in

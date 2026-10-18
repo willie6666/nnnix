@@ -1335,13 +1335,15 @@ def nnv_tests(ns, serial, report):
         played = serial.wait_for(r'audio: 16000 samples played, 0 short', 2, mark)
         t.cmd('sleep 20 > /dev/audio &')
         time.sleep(0.5)
-        busy = t.cmd('echo x > /dev/audio')
+        busy = t.cmd('echo x > /dev/audio') + t.cmd('echo x > /dev/adpcm')   # one writer of the two
         t.cmd('kill %1')
         time.sleep(0.5)
         free = t.cmd('cat /dev/null > /dev/audio') + t.cmd('echo $?')
+        # /dev/adpcm takes only NNV sound records: raw samples fail the write.
+        notnnv = t.cmd('cat /home/quiet.u8 > /dev/adpcm') + t.cmd('echo $?')
         report.add('audio device', out.strip() == '0' and 1.95 < took < 2.6 and played is not None
-                   and 'busy' in busy and free.strip().endswith('0'),
-                   f'2 s of samples in {took:.2f} s; ' + (busy + free).strip().replace('\r\n', ' | '))
+                   and busy.count('busy') == 2 and free.strip().endswith('0') and notnnv.strip().endswith('1'),
+                   f'2 s of samples in {took:.2f} s; ' + (busy + free + notnnv).strip().replace('\r\n', ' | '))
         # A video with sound: silent unless -s; with it, frames on time, sound
         # without gaps; ^C silences it at once.
         mark = len(serial.lines)

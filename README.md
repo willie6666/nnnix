@@ -90,7 +90,7 @@ pid name prio state stack_used stack_size cpu_ms
   besides its stack
 - Pictures and videos on the LCD ([docs/NNV.md](docs/NNV.md)): `/dev/lcd` gives a program the display as a
   1024-byte frame (the console text returns when it closes), `/dev/audio` plays 8 kHz sound on the buzzer
-  (PWM on PB11, timer interrupt); `tools/mknnv.py` converts pictures and videos through ffmpeg into NNV, a
+  (PWM on PB11, timer interrupt), `/dev/adpcm` the same from NNV's ADPCM records, decoded in the interrupt; `tools/mknnv.py` converts pictures and videos through ffmpeg into NNV, a
   delta-coded format of our own with optional ADPCM sound; `play` shows them (all of Bad Apple at 30 fps;
   `play -s` adds the sound, though the buzzer carries rhythm far better than pitch); `nc -l 1234 | play`
   plays a video streamed over the network (all of Bad Apple: 0 frames late)
@@ -146,7 +146,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Code size / static RAM including crash records / main stack / heap | 99.2 KiB / 2.8 KiB / 512 B / 12.7 KiB |
 | APROM for program code / writing a new program / RAM `hello` needs besides its stack | 28.5 KiB / 20 ms per 512 B page / 24 B |
 
-Host tests: 7647 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder, the APROM slots on a simulated flash, the console's scrollback, URL resolution against RFC 3986's examples, SPI1 with a stuck controller, `mknxe` on damaged ELF files and `/dev/input`'s events), plus 80 243
+Host tests: 7708 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder, the sound ring's ADPCM blocks, the APROM slots on a simulated flash, the console's scrollback, URL resolution against RFC 3986's examples, SPI1 with a stuck controller, `mknxe` on damaged ELF files and `/dev/input`'s events), plus 80 243
 date conversions compared with the host C library.
 
 ## Hardware
@@ -160,7 +160,7 @@ NU-LB_002 Rev 2.1 (NUC140VE3CN). The external modules run from an MB-102 5 V sup
 | CH376S (SPI; P_S jumper removed, RD/WR tied to GND) | SCK PC9, MISO PC10, MOSI PC11, CS PC8, INT PB14 |
 | W5500 | SCK PC9, MISO PC10, MOSI PC11, CS PB10, INT PB2, RST PB8 |
 | Onboard LCD | SPI3: CS PD8, CLK PD9, MOSI PD11 |
-| Onboard buzzer | PB11 (low: on), driven as PWM4 for `/dev/audio` |
+| Onboard buzzer | PB11 (low: on), driven as PWM4 for `/dev/audio` and `/dev/adpcm` |
 | Onboard keys | SW_INT PB15 (ends the program holding the keys or the display); 1-9 keypad PA0-PA5 (`/dev/input`) |
 | Onboard SPI flash (W25Q16, 2 MiB) | SPI2: CS PD0, CLK PD1, MISO PD2, MOSI PD3 |
 

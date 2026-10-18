@@ -6,8 +6,9 @@
  *   -l  loop until Ctrl-C (also when the file has its loop flag; not for
  *       standard input, which cannot go back)
  *   -w  wait for Enter after the last frame (always for a picture)
- *   -s  sound: play the file's sound on the buzzer (/dev/audio). Off unless
- *       asked for: the buzzer gets the rhythm across but little of the pitch
+ *   -s  sound: play the file's sound on the buzzer (/dev/adpcm, which decodes
+ *       it as it plays). Off unless asked for: the buzzer gets the rhythm
+ *       across but little of the pitch
  *   -v  at the end, print the frame count, the time taken and late frames
  * The console text comes back when play ends. Make files with tools/mknnv.py.
  *
@@ -20,7 +21,7 @@
 #include "../lib/sys.h"
 #include "../lib/nnv.h"
 
-#define AUDIO_RATE 8000u                 /* what /dev/audio plays */
+#define AUDIO_RATE 8000u                 /* what /dev/adpcm plays */
 #define CUT_SHORT (-2)                   /* fewer frames than the header says */
 
 #define BUF_FILE 512u                    /* each fsd read, which waits its turn behind other jobs, brings more */
@@ -89,20 +90,21 @@ static int skip(struct player *p, uint32_t len)
     return 0;
 }
 
-/* Decode an audio record onto /dev/audio (or skip it when there is no sound). */
-static int audio(struct player *p, uint32_t len)
+/* Hand a sound record to /dev/adpcm, which decodes it as it plays (or skip
+ * it when there is no sound). */
+static int audio(struct player *p, const uint8_t rec[NNV_RECORD], uint32_t len)
 {
-    uint8_t h[3], pcm[64];
+    uint8_t h[NNV_RECORD + 3];                       /* the record's header and its decoder state */
     struct nnv_adpcm a;
-    if (len < 3 || get(p, h, 3) != 3 || nnv_adpcm_start(&a, h)) return -1;
+    memcpy(h, rec, NNV_RECORD);
+    if (len < 3 || get(p, h + NNV_RECORD, 3) != 3 || nnv_adpcm_start(&a, h + NNV_RECORD)) return -1;
     len -= 3;
     if (p->snd < 0) return skip(p, len);
+    sys_write(p->snd, h, sizeof h);
     while (len) {
         if (fill(p)) return -1;
         uint32_t k = p->have - p->at < len ? p->have - p->at : len;
-        if (k > sizeof pcm / 2) k = sizeof pcm / 2;
-        nnv_adpcm_feed(&a, p->buf + p->at, k, pcm);
-        sys_write(p->snd, pcm, 2 * k);
+        sys_write(p->snd, p->buf + p->at, k);
         p->at += k;
         len -= k;
     }
@@ -120,7 +122,7 @@ static int next_frame(struct player *p)
         uint32_t len = nnv_u16(rec + 1);
         if (rec[0] == NNV_RAW) return len == NNV_FRAME && get(p, p->frame, NNV_FRAME) == NNV_FRAME ? 1 : -1;
         if (rec[0] == NNV_DELTA) return delta(p, len) ? -1 : 1;
-        if (rec[0] == NNV_AUDIO ? audio(p, len) : skip(p, len)) return -1;
+        if (rec[0] == NNV_AUDIO ? audio(p, rec, len) : skip(p, len)) return -1;
     }
 }
 
@@ -152,10 +154,10 @@ static int run(struct player *p, const char *path, int loop, int wait, int verbo
     if (sound && !info.audio_rate) {
         printf("play: %s has no sound\n", path);
     } else if (sound && info.audio_rate != AUDIO_RATE) {
-        printf("play: sound at %u Hz, /dev/audio plays %u Hz; playing without sound\n", info.audio_rate, AUDIO_RATE);
+        printf("play: sound at %u Hz, /dev/adpcm plays %u Hz; playing without sound\n", info.audio_rate, AUDIO_RATE);
     } else if (sound) {
-        p->snd = sys_open("/dev/audio", O_WRONLY);
-        if (p->snd < 0) printf("play: /dev/audio: %s; playing without sound\n", errstr(p->snd));
+        p->snd = sys_open("/dev/adpcm", O_WRONLY);
+        if (p->snd < 0) printf("play: /dev/adpcm: %s; playing without sound\n", errstr(p->snd));
     }
 
     /* Each frame is decoded first (queueing the sound that comes before it),

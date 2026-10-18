@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "audio.h"
+#include "audioring.h"
 #include "../arch/nuc140/arch.h"
 #include "../arch/nuc140/regs.h"
 #include "../kernel/klog.h"
@@ -28,13 +29,14 @@
  * s turns the buzzer on for s/256 of the time with CMR = 255 - s. */
 #define CMR(s)     (255u - (s))
 
-static uint8_t *ring;
-static uint32_t size;                /* AUDIO_RING, or AUDIO_RING_MIN when memory is short: a power of two */
-static volatile uint32_t head, tail; /* head: written by the task, tail: by the interrupt */
+static struct audio_ring ring;
 static volatile uint32_t underruns, played;
 static volatile uint32_t late_max;   /* the timer's count at the interrupt: its latency, in HCLK cycles */
+static volatile uint32_t took_max;   /* and at its end: how long it ran */
 static volatile uint8_t counting;    /* from the first sample until the close: gaps are underruns */
-static struct sem space;             /* given when the ring drains to half */
+static volatile uint8_t waiting;     /* a writer waits for room: given space when wake bytes are free */
+static uint32_t wake;
+static struct sem space;
 static volatile uint8_t busy;
 
 void TMR0_IRQHandler(void)
@@ -42,15 +44,19 @@ void TMR0_IRQHandler(void)
     uint32_t late = TMR0_TDR;        /* counts up from 0 at each tick: how long interrupts were held off */
     if (late > late_max) late_max = late;
     TMR0_TISR = 1u;
-    uint32_t t = tail;
-    if (t == head) {                         /* keep the last level: no click */
-        if (counting) ++underruns;
-        return;
+    int s = ar_next(&ring);
+    if (s >= 0) {
+        PWM_CMR0 = CMR((uint32_t)s);
+        ++played;
+    } else if (counting) {
+        ++underruns;                 /* keep the last level: no click */
     }
-    PWM_CMR0 = CMR(ring[t & (size - 1u)]);
-    tail = ++t;
-    ++played;
-    if (head - t == size / 2u) sem_give(&space);
+    if (waiting && ring.size - ar_used(&ring) >= wake) {
+        waiting = 0;
+        sem_give(&space);
+    }
+    uint32_t took = TMR0_TDR - late;
+    if (took > took_max) took_max = took;
 }
 
 static void hardware(int on)
@@ -96,19 +102,21 @@ static void hardware(int on)
     }
 }
 
-int audio_open(void)
+int audio_open(int adpcm)
 {
     uint32_t s = irq_save();
     int was = busy;
     busy = 1;
     irq_restore(s);
     if (was) return SYS_EBUSY;
-    size = AUDIO_RING;
-    ring = kmalloc(size);
-    if (!ring) ring = kmalloc(size = AUDIO_RING_MIN);
-    if (!ring) { busy = 0; return SYS_ENOMEM; }
-    head = tail = underruns = played = late_max = 0;
-    counting = 0;
+    uint32_t size = AUDIO_RING;
+    uint8_t *buf = kmalloc(size);
+    if (!buf) buf = kmalloc(size = AUDIO_RING_MIN);
+    if (!buf) { busy = 0; return SYS_ENOMEM; }
+    ar_init(&ring, buf, size, adpcm);
+    wake = adpcm ? AUDIO_WAKE_ADPCM : size / 2u;
+    underruns = played = late_max = took_max = 0;
+    counting = waiting = 0;
     space = (struct sem){ 0 };
     hardware(1);
     return 0;
@@ -119,39 +127,34 @@ int audio_open(void)
  * producer. Waiting for another writer ends when this task is killed. */
 static struct mutex writer;
 
-uint32_t audio_write(const uint8_t *p, uint32_t n)
+int audio_write(const uint8_t *p, uint32_t n)
 {
     if (mutex_lock_killable(&writer)) return 0;
     uint32_t done = 0;
-    while (done < n) {
-        uint32_t h = head, used = h - tail;
-        if (used > size) panic("audio: ring holds %u of %u", used, size);
-        uint32_t room = size - used;
-        if (!room) {
-            if (task_self()->killed) break;
-            sem_take(&space, 20);
-            continue;
-        }
-        uint32_t k = n - done < room ? n - done : room, at = h & (size - 1u);
-        uint32_t first = size - at < k ? size - at : k;
-        memcpy(ring + at, p + done, first);
-        memcpy(ring, p + done + first, k - first);
-        head = h + k;
-        done += k;
-        counting = 1;
+    while (done < n && !ring.bad) {
+        if (ar_used(&ring) > ring.size) panic("audio: ring holds %u of %u", ar_used(&ring), ring.size);
+        uint32_t h = ring.head;
+        done += ar_put(&ring, p + done, n - done);
+        if (ring.head != h) counting = 1;    /* samples to play (a record header alone is none) */
+        if (done == n || ring.bad) break;
+        if (task_self()->killed) break;
+        waiting = 1;                 /* the interrupt gives space once wake bytes are free */
+        sem_take(&space, 20);
     }
+    int bad = ring.bad;
+    ring.bad = 0;
     mutex_unlock(&writer);
-    return done;
+    return bad ? SYS_EINVAL : (int)done;
 }
 
 void audio_close(void)
 {
     counting = 0;
-    while (head != tail && !task_self()->killed) msleep(10);
+    while (!ar_empty(&ring) && !task_self()->killed) msleep(10);
     hardware(0);
-    kprintf("audio: %u samples played, %u short, latency up to %u us\n", played, underruns,
-            late_max / (HCLK_HZ / 1000000u));
-    kfree(ring);
-    ring = 0;
+    kprintf("audio: %u samples played, %u short, latency up to %u us, interrupt up to %u cycles, %u B ring\n",
+            played, underruns, late_max / (HCLK_HZ / 1000000u), took_max, ring.size);
+    kfree(ring.buf);
+    ring.buf = 0;
     busy = 0;
 }

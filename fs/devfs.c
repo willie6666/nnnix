@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* "/dev": null, zero, tty (the caller's terminal), led (write 0 or 1), lcd.
+/* "/dev": null, zero, tty (the caller's terminal), led (write 0 or 1), lcd,
+ * audio, input, adpcm.
  *
  * lcd: the onboard display as a 1024-byte frame (layout in drivers/lcd.h).
  * Opening it for writing takes the display from the console text until the
@@ -8,8 +9,10 @@
  * whole frames one after another needs no seeking.
  *
  * audio: the buzzer (drivers/audio.h): unsigned 8-bit mono samples at 8 kHz.
- * One writer at a time; writes block while the 128 ms buffer is full; the
- * close plays out what is queued.
+ * One writer at a time; writes block while the buffer (256 ms, 128 ms when
+ * memory is short) is full; the close plays out what is queued.
+ * adpcm: the same buzzer, taking NNV sound records (lib/nnv.h), twice as long
+ * in the buffer; one writer between the two.
  *
  * input: keyboard, mouse and board keypad events (kernel/input.h, struct
  * nn_input_event in lib/sys.h) for one reader at a time, others get EBUSY;
@@ -24,8 +27,8 @@
 #include "../drivers/lcd.h"
 #include "../lib/string.h"
 
-enum { DEV_DIR, DEV_NULL, DEV_ZERO, DEV_TTY, DEV_LED, DEV_LCD, DEV_AUDIO, DEV_INPUT };
-static const char *const names[] = { 0, "null", "zero", "tty", "led", "lcd", "audio", "input" };
+enum { DEV_DIR, DEV_NULL, DEV_ZERO, DEV_TTY, DEV_LED, DEV_LCD, DEV_AUDIO, DEV_INPUT, DEV_ADPCM };
+static const char *const names[] = { 0, "null", "zero", "tty", "led", "lcd", "audio", "input", "adpcm" };
 #define DEVICES (sizeof names / sizeof names[0])
 
 static int find(const char *path)
@@ -42,8 +45,8 @@ static int d_open(struct mount *m, const char *path, int flags, struct file *f)
     if (dev < 0) return flags & O_CREAT ? SYS_EROFS : dev;
     if (dev == DEV_DIR && (flags & O_ACCMODE) != O_RDONLY) return SYS_EISDIR;
     if (dev == DEV_TTY && !task_self()->tty) return SYS_ENODEV;
-    if ((dev == DEV_LCD || dev == DEV_AUDIO) && (flags & O_ACCMODE) != O_RDONLY) {
-        int e = dev == DEV_LCD ? console_lcd_claim() : audio_open();
+    if ((dev == DEV_LCD || dev == DEV_AUDIO || dev == DEV_ADPCM) && (flags & O_ACCMODE) != O_RDONLY) {
+        int e = dev == DEV_LCD ? console_lcd_claim() : audio_open(dev == DEV_ADPCM);
         if (e) return e;
     }
     if (dev == DEV_INPUT) {
@@ -85,8 +88,9 @@ static int d_write(struct file *f, const void *buf, uint32_t n)
         return (int)n;
     }
     case DEV_AUDIO:
+    case DEV_ADPCM:
         if ((f->flags & O_ACCMODE) == O_RDONLY) return SYS_EBADF;
-        return (int)audio_write(buf, n);
+        return audio_write(buf, n);
     case DEV_DIR: return SYS_EISDIR;
     default: return (int)n;
     }
@@ -97,7 +101,7 @@ static int d_close(struct file *f)
     if ((uintptr_t)f->priv == DEV_INPUT) input_release();
     if ((f->flags & O_ACCMODE) == O_RDONLY) return 0;
     if ((uintptr_t)f->priv == DEV_LCD) console_lcd_release();
-    if ((uintptr_t)f->priv == DEV_AUDIO) audio_close();
+    if ((uintptr_t)f->priv == DEV_AUDIO || (uintptr_t)f->priv == DEV_ADPCM) audio_close();
     return 0;
 }
 

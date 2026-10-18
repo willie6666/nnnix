@@ -927,6 +927,42 @@ firmware's fonts, handed to programs in `nn_lib` version 2 (`font3x5`, `font5x7`
 - Tests: `nnv_tests` streams the 60-frame and the sound demo through `nc -l 1234 | play` (0 late) and a cut
   one (`cut short`); `test_kmem` the low mark.
 
+### `/dev/adpcm`: the sound decoded in the timer interrupt (2026-10-18)
+
+- The problem: with the console shell and a telnet session logged in, `/dev/audio` gets only its 1 KiB ring
+  (128 ms of 8-bit samples), but NNV files put their sound 192 ms ahead of the frames (224 ms with the
+  record's own 32 ms, about 257 ms while `play` reads the next frame), so `play -s` blocked on the sound and
+  showed every frame about 64 ms late. Weighed: a shorter lead in `mknnv.py` would have to drop to the old
+  64 ms (the margin for fsd stalls that 192 ms was chosen for) and re-encode every file; `play` cannot shift
+  its clock, because a frame's data only comes after the sound placed before it; holding the codes in `play`
+  costs RAM it does not have. Taken: keep the sound compressed until it plays.
+- `/dev/adpcm` (`fs/devfs.c`) opens the same buzzer for NNV sound records as they are in a file (type 2,
+  length, i16 predictor, u8 step index, codes), written back to back in pieces of any size. The ring logic
+  (`drivers/audioring.h`, header-only so the host test runs it as is) stores blocks of [n, predictor, index]
+  and n code bytes (1-255; longer records go on in blocks that keep the state) and the 8 kHz TIMER0 handler
+  decodes one 4-bit code per tick with `lib/nnv.h`'s IMA decoder. A block is queued together with its first
+  codes, so the handler never counts a header alone as a gap. 1 KiB holds 248 ms (4 bytes of block per
+  256-sample record), 2 KiB 496 ms. A record that is not a sound record (or has a step index above 88)
+  fails the write with `EINVAL`. One writer between the two devices (`EBUSY`).
+- `play -s` hands the records over unchanged (no decoding of its own, no 64-byte sample buffer on its stack;
+  `play` 488 B smaller). A waiting ADPCM writer is woken once 32 B (8 ms) are free instead of half the ring,
+  because the ring is nearly full in normal play; `/dev/audio` keeps waking at half.
+- The close's log line also gives the handler's longest run and the ring's size: `audio: N samples played,
+  M short, latency up to L us, interrupt up to C cycles, R B ring`. Longest run: 81 cycles (1.6 us) with
+  8-bit samples, 243 cycles (4.8 us) decoding while `play` reads a file, 369 cycles (7.4 us) when streamed
+  (the semaphore given to the waiting writer), of the 6274 cycles between samples. Static RAM: 32 B more.
+- Measured, all of Bad Apple through `nc -l 1234 | play -v -s` from a telnet session with the console
+  shell logged in (`sysctl console=on`): 6572 frames in 219.058 s, 0 late (6569 before), 1 752 534 samples
+  played, 0 short, 1024 B ring, lowest free 704 B. Interrupt latency in this streaming case is 82-83 us, the
+  same with the previous firmware (8 us playing a file): something on the network/pipe path holds
+  interrupts off, not this handler.
+- Tests: `test_audio` (host) feeds the tone demo's sound records in pieces of 1-64 bytes and larger into
+  rings of 64 B, 1 and 2 KiB drained at different rates and compares every sample with the Python decoder;
+  also records split into blocks, records without codes, a state that jumps back (a rewind), a header alone
+  queueing nothing, bad records, a full ring and PCM passed through. On the board: `play -s` and the
+  existing sound tests now go through `/dev/adpcm` (32000 samples, 0 short); `cat x.u8 > /dev/audio` and
+  `audioshare` (16000 samples) unchanged.
+
 ## 8. Source layout
 
 ```
@@ -954,7 +990,7 @@ Repository: <https://github.com/willie6666/nnnix>; at least one commit and tag p
 | R1 | LCD controller initialisation sequence and SPI3 framing. Done in M3; PD14 (backlight on this board revision) is left at its reset state | M3 |
 | R2 | Onboard SPI flash: W25Q16 (ef4015, 2 MiB) on SPI2. Done in M4 | M4 |
 | R3 | The RS-232 transceiver on PB0 and how to isolate it; fallback: software UART RX or another pin | M7 |
-| R4 | RTC 32.768 kHz crystal: present, stable within 0.3 s, RTC counts through resets. Done in M5. Buzzer: PB11, low active, a magnetic 2.4 kHz buzzer; driven as PWM4 for `/dev/audio` (2026-10-17). Keys, EEPROM pins remain | M5/M7 |
+| R4 | RTC 32.768 kHz crystal: present, stable within 0.3 s, RTC counts through resets. Done in M5. Buzzer: PB11, low active, a magnetic 2.4 kHz buzzer; driven as PWM4 for `/dev/audio` (2026-10-17) and `/dev/adpcm` (2026-10-18). Keys, EEPROM pins remain | M5/M7 |
 | R5 | littlefs on the Cortex-M0: 19.5 KiB code, about 2.2 KiB RAM with fsd. Done in M4 | M4 |
 | R6 | Position independence for loaded programs: first not needed (linked at 0, relocated in RAM, M6); since 2026-10-18 `-fropi -frwpi`, so the text runs in place from APROM | M6 |
 | R7 | W5500 interrupts (Sn_IMR/SIMR) with the PB2 GPIO interrupt, measured | M2 |

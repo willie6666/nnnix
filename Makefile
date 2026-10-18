@@ -114,7 +114,7 @@ test: build/nnnix.bin programs sdk
 
 HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty build/host/test_console build/host/test_shparse build/host/test_http \
              build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs build/host/test_boot build/host/test_nnv build/host/test_xip build/host/test_scrollback \
-             build/host/test_url build/host/test_spi build/host/test_inputev
+             build/host/test_url build/host/test_spi build/host/test_inputev build/host/test_audio
 build/host/test_lib: tests/host/test_lib.c lib/fmt.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin $^ -o $@
@@ -180,6 +180,9 @@ build/host/nnv_%.nnv: tools/mknnv.py
 	@mkdir -p $(dir $@)
 	$(PYTHON) tools/mknnv.py demo $* $@ --raw build/host/nnv_$*.raw
 build/host/test_nnv: tests/host/test_nnv.c lib/nnv.h $(NNV_DEMOS:%=build/host/nnv_%.nnv)
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $< -o $@
+build/host/test_audio: tests/host/test_audio.c drivers/audioring.h lib/nnv.h build/host/nnv_tone.nnv
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $< -o $@
 host-test: $(HOST_TESTS) build/bin/wget.elf $(GAMES:%=build/host/sim_%)

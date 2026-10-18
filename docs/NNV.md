@@ -7,7 +7,7 @@ sound for the onboard buzzer. A picture is a video of one frame. The pieces:
 | --- | --- |
 | `tools/mknnv.py` | On the build machine: turns pictures and videos into NNV through ffmpeg, makes test files, checks files |
 | `/dev/lcd` | In the kernel: the display as a 1024-byte frame that a program can write |
-| `/dev/audio` | In the kernel: the buzzer, playing 8-bit samples at 8 kHz (`drivers/audio.c`) |
+| `/dev/audio`, `/dev/adpcm` | In the kernel: the buzzer, playing 8-bit samples at 8 kHz, or NNV sound records that its timer interrupt decodes as it plays them (`drivers/audio.c`) |
 | `play` (`bin/play.c`) | On the board: the program `/bin/play`, which shows an NNV file, with its sound if asked; its code runs from flash (APROM), so it takes about 2.6 KiB of RAM while it plays, its stack and its buffers |
 | `lib/nnv.h` | The format and its decoders, shared by `play` and the host test |
 
@@ -53,14 +53,17 @@ Measured with all of Bad Apple (6572 frames, 219 s) sent from the computer:
 | --- | --- | --- | --- |
 | `nc -l 1234 \| play -v`, two telnet sessions | 0 | - | 1264 B |
 | `nc -l 1234 \| play -v -s`, one telnet session | 0 | 0 samples short | 1856 B |
-| `nc -l 1234 \| play -v -s`, telnet and the LCD console shell | 6569 (each about 64 ms) | 0 samples short | 736 B |
+| `nc -l 1234 \| play -v -s`, telnet and the LCD console shell | 0 | 0 samples short | 704 B |
+| the same before `/dev/adpcm` (decoded samples in `/dev/audio`) | 6569 (each about 64 ms) | 0 samples short | 736 B |
 
 With the LCD console's shell logged in as well, the 2 KiB sound buffer does
-not fit and `/dev/audio` takes its 1 KiB one (128 ms): the file's sound runs
-192 ms ahead of its pictures, so every frame waits until the sound has room
-and is shown about 64 ms after its time (behind its sound by as much; the
-whole still takes 219 s). Without sound, or with the console logged out
-(`sysctl console=off`), nothing is late.
+not fit and the device takes its 1 KiB one. As 8-bit samples (`/dev/audio`)
+that is 128 ms, less than the 192 ms the file's sound runs ahead of its
+pictures, so every frame waited until the sound had room and was shown about
+64 ms after its time. `play -s` now hands the sound records to `/dev/adpcm`,
+which keeps them compressed until its interrupt plays them: 1 KiB holds
+248 ms, and nothing is late. The ring it got, the samples short and the
+interrupt's latency are in the kernel log (`dmesg`) when the sound closes.
 
 ## Converting
 
@@ -133,15 +136,25 @@ of the pitch, and the parts run together. So sound is opt-in: `mknnv.py
 
 - Writes take unsigned 8-bit mono samples at 8000 Hz, 128 being silence
   (`cat sound.u8 > /dev/audio` plays a raw file).
-- The kernel keeps a 2 KiB ring (256 ms; 1 KiB when memory is short),
-  allocated only while the device is open; writes block while it is full.
-- One open for writing at a time (others get `EBUSY`); tasks sharing that open
+- `/dev/adpcm` is the same buzzer for NNV sound: writes take sound records
+  as they are in a file (type 2, length, the decoder's state, the codes; see
+  below), back to back, in pieces of any size. The timer interrupt decodes
+  them as it plays, so the ring holds twice as long: 496 ms in 2 KiB, 248 ms
+  in 1 KiB (each 256-sample record takes 4 bytes of the ring besides its 128
+  bytes of codes). A record header that is not a sound record (or has a step
+  index above 88) fails the write with `EINVAL`. `play -s` uses it.
+- The kernel keeps a 2 KiB ring (256 ms of samples; 1 KiB when memory is
+  short), allocated only while the device is open; writes block while it is
+  full.
+- One open for writing at a time, of either device (others get `EBUSY`); tasks sharing that open
   file (a program and the workers it spawns) take turns, one write at a time. The close plays out what is
   queued, or stops at once when the program was killed, and the pin goes back
   to a plain output, high, so the buzzer is silent.
-- Each close logs `audio: N samples played, M short`: M counts the samples the
-  ring could not supply between the first write and the close (it stays 0 when
-  the writer keeps up).
+- Each close logs `audio: N samples played, M short, latency up to L us,
+  interrupt up to C cycles, R B ring`: M counts the samples the ring could not supply
+  between the first write and the close (it stays 0 when the writer keeps
+  up), L how long the timer interrupt was held off at worst, and C its longest
+  run in 50 MHz clock cycles, R the ring it got.
 
 The timer and the scheduler tick both run from HCLK, so sound and pictures
 stay together however long a video is.
@@ -194,10 +207,13 @@ A **sound** record holds IMA ADPCM: the predictor (i16) and the step index
 8-bit samples as `(value >> 8) + 128`. Each record holds 256 samples (32 ms),
 the records follow each other in time, and the encoder places each one 192 ms
 before the frame that shows at its start. A player queues sound records as
-they come and shows each frame at its time; the ring then holds up to about
-230 ms, and a frame (its file reads waiting behind other storage work in fsd)
-may be up to 192 ms slow before the sound runs dry. Files made with the earlier
-64 ms lead still play, with that much less margin.
+they come and shows each frame at its time: before showing a frame it has
+queued up to 224 ms of sound, and up to about 257 ms while it reads the next
+frame, and a frame (its file reads waiting behind other storage work in fsd)
+may be up to 192 ms slow before the sound runs dry. `play` hands the records
+to `/dev/adpcm`, whose ring holds 248 ms even when only 1 KiB is free; decoded
+into 8-bit samples (`/dev/audio`) they would need 2 KiB. Files made with the
+earlier 64 ms lead still play, with that much less margin.
 
 Why this shape: the board has about 6 KiB of free RAM. A delta is applied in
 place to the one frame buffer, a few bytes at a time as they are read, so
@@ -207,6 +223,13 @@ no conversion.
 
 ## Tests
 
+- Host (`make host-test`, `tests/host/test_audio.c`): the ring of
+  `/dev/audio` and `/dev/adpcm` (`drivers/audioring.h`) fed the tone demo's
+  sound records in pieces of every size from 1 to 64 bytes and larger, into
+  rings of 64 B, 1 and 2 KiB drained at different rates, gives the samples
+  of the Python decoder; long records split into blocks, records without
+  codes, a state that jumps back (a rewind), nothing queued for a header
+  alone, bad records, a full ring, PCM unchanged.
 - Host (`make host-test`, `tests/host/test_nnv.c`): the C decoders against
   the frames the Python encoder started from and the sound the Python decoder
   makes, for the four demo files, fed in pieces of 1, 7, 128 bytes and whole;
@@ -218,5 +241,7 @@ no conversion.
   sound on time with no sound gaps, and Ctrl-C silences it at once; damaged
   and foreign files refused; files with fewer frames than their header says
   refused, also with `-l`; the last frame shown for its whole time; two tasks
-  writing to one open `/dev/audio` at once; no RAM left behind. The sound tests play samples
+  writing to one open `/dev/audio` at once; one writer between `/dev/audio`
+  and `/dev/adpcm`, and raw samples refused by `/dev/adpcm`; no RAM left
+  behind. The sound tests play samples
   of 0, which keep the buzzer off: they make no noise.

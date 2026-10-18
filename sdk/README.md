@@ -64,7 +64,7 @@ small helpers in `crt0.c`. `hello` has 232 bytes of code and needs 8 bytes of
 RAM for its data.
 
 The system's own programs (`play`, `ed`, `wc`, `head`, `tail`, `grep`,
-`hexdump`) are built the same way, from `bin/` at the top of the repository
+`hexdump`, `wget`, `host`) are built the same way, from `bin/` at the top of the repository
 (`make programs`, into `build/bin/`), and installed in `/bin` by
 `tools/nnupdate.py --bin build/bin`.
 

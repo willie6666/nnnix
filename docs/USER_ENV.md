@@ -226,6 +226,8 @@ netstat                                    the eight W5500 sockets
 service [telnetd|httpd start|stop]         network services
 nc HOST PORT        nc -l PORT             TCP client / server for one connection
 nc -u HOST PORT     nc -u -l PORT          the same over UDP
+host NAME                                  look a name up (DNS)
+wget [-q] [-S] [-O FILE] URL               fetch over HTTP
 ```
 
 At power-up the board uses the static address `198.18.0.2/30` (no gateway),
@@ -273,6 +275,26 @@ A UDP read returns one datagram and makes its sender the destination of the
 next write, so `nc -u -l PORT` answers whoever spoke last. W5500 sockets do not
 answer a SYN when no socket listens: a stopped service or closed port looks
 like a timeout, not a refusal, from the other side.
+
+`host` and `wget` (programs in `/bin`) ask the DNS server of the network
+settings (`ifconfig ... dns IP`, or the one DHCP gave) for an A record, over
+UDP, three tries of 2 s; a CNAME in the answer is followed. A dotted address
+needs no lookup. `wget` fetches an `http://` URL:
+
+```
+wget http://example.org/              saves index.html in the current directory
+wget -O /home/page.txt http://host:8080/page.txt
+wget -O - http://host/notes.txt | grep todo      prints it (-O -: no progress lines)
+wget -S -q -O /dev/null http://host/             only the reply's header lines
+```
+
+It asks with HTTP/1.0 and `Connection: close`, so the body ends at
+`Content-Length` or when the server closes; a chunked body is decoded too. Up to
+five redirects are followed (absolute or same-server). The exit status is 0 for
+a 2xx reply saved whole, 1 otherwise (`wget: the server answered 404`, a body cut
+short, no such host). It takes about 2 KiB of RAM while it runs (its stack, a
+256-byte receive buffer, the URLs and header lines); a file arrives at about
+55 KiB/s when it goes to the flash file system. `https://` is not supported.
 
 Programs use sockets through system calls (`socket`, `connect`, `listen`,
 `sockinfo`, then `read`/`write`/`close` like files; see `lib/sys.h`). `connect`

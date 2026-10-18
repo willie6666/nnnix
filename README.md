@@ -74,7 +74,7 @@ pid name prio state stack_used stack_size cpu_ms
 - Network: interrupt-driven W5500, socket layer with self re-arming listeners, telnet server with three sessions
 - Shell `nsh`: built in `help echo ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir
   touch pwd cd df mkfile sum date ifconfig dhcp service netstat nc ntpdate`, and from `/bin` the programs
-  `wc head tail grep hexdump ed play` (`bin/`); redirection `< > >>`, using only system calls
+  `wc head tail grep hexdump ed play wget host` (`bin/`); redirection `< > >>`, using only system calls
 - M5 shell: quotes/escapes, per-session variables (`set`, `unset`, `env`, `$NAME`, `${NAME}`, `$?`),
   `sh`/`source` scripts and optional `/etc/rc` at boot; streaming `wc head tail grep hexdump`
 - HTTP transfers: TCP port 8080, GET/PUT under `/home`, temporary-file uploads committed by atomic rename;
@@ -95,7 +95,8 @@ pid name prio state stack_used stack_size cpu_ms
 - Firmware updates: `fwupdate FILE` (or `tools/nnupdate.py` from the NanoPi) stages an image in the SPI flash;
   the LDROM bootloader (`boot/`) installs it and repeats an installation that a reset or power loss cut short
 - Network: `ifconfig`, a DHCP client with lease renewal in the kernel daemon, `netstat`, `service` (telnetd,
-  httpd), `nc` (TCP/UDP, client/server); sockets are files for programs (`socket`, `connect`, `listen`)
+  httpd), `nc` (TCP/UDP, client/server); sockets are files for programs (`socket`, `connect`, `listen`);
+  `host` (DNS lookups) and `wget` (HTTP downloads with redirects and chunked replies) as programs
 - Memory: first-fit kmalloc with coalescing, long-lived blocks (login shells) from the top of the heap; each
   task's struct shares its stack's block; the boot runs on a temporary stack in the heap, so the main stack only
   needs room for interrupts; task stacks get red-zone and canary checks and an overflow panics
@@ -116,6 +117,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Settings: console on/ask/off (2144 B freed when the console logs out), idle logout, telnet session limit | pass |
 | Firmware update through the bootloader, an installation interrupted by a reset, the power-on path | pass |
 | Programs: `/bin/hello` with arguments and exit status, in pipelines and the background, Ctrl-C, from USB, damaged files refused, RAM reclaimed | pass |
+| `host` and `wget` against a DNS and an HTTP server on the test peer: CNAMEs, unknown names, 100 KB CRC-checked, redirects, chunked and unsized replies, 404, a redirect loop, a refused port | pass |
 | LCD console: pixels as the fonts give them in both sizes, the scrollback a screen and a line at a time, a key returning to the terminal, `sysctl console_font`/`console_history`; `tail` from a pipe | pass |
 | Programs in APROM: written once and reused, two runs of one program at once, every relocation kind, a program filling the whole area, a new program going to RAM while running programs fill it, kept across a reboot | pass |
 | LCD player: a 60-frame video at its frame rate, one `/dev/lcd` writer at a time, picture until Enter, Ctrl-C, damaged files refused, RAM reclaimed | pass |
@@ -197,7 +199,7 @@ drivers/       uart spi ch376 w5500 ch9350 hidkey kbd lcd font5x7 spiflash rtc
 fs/            vfs and fsd, rootfs (littlefs), usbfs (CH376S), devfs, procfs, littlefs port
 lib/           printf subset, string functions, calendar time, EABI division (no divide instruction on M0), system-call stubs (sys.h), user stdio
 user/          nsh shell and its built-in commands (file, network, settings), parser, scheduler demo programs
-bin/           the programs for /bin: play, ed, wc head tail grep hexdump (built like SDK programs)
+bin/           the programs for /bin: play, ed, wc head tail grep hexdump, wget host (built like SDK programs)
 third_party/   littlefs v2.11.3 (BSD-3-Clause), unmodified
 tests/host/    host unit tests (including a recorded CH9350 capture)
 boot/          LDROM bootloader: installs staged firmware images, then starts APROM

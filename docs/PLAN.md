@@ -786,6 +786,23 @@ the firmware, and only data, bss and the stack take RAM.
   `primes 100000` fits, which the 200 B ended; it now checks `primes 50000` and passes. Interrupt latency
   at most 14 us.
 
+### `wget` and `host` (2026-10-18)
+
+- `bin/dns.c`: a stub resolver (RFC 1035) for programs: one A question with recursion desired, over UDP to
+  the configured DNS server, three tries of 2 s, compression pointers and CNAME chains in the answer.
+  Also the command `host NAME`.
+- `bin/wget.c`: `wget [-q] [-S] [-O FILE] URL` over HTTP/1.0 with `Connection: close`; the body ends at
+  `Content-Length` or the close, chunked bodies are decoded; up to 5 redirects (absolute or same
+  server); exit status 0 only for a 2xx reply saved whole. Text 4952 B, RAM about 2 KiB while it runs.
+  The first version overflowed its 1 KiB stack while saving to a file: a 192-byte path buffer of the
+  redirect code sat in the inlined frame under the whole download; the URL is now built in place, and
+  the peak is 728 B.
+- Tests (`wget_tests`): an HTTP server and a DNS server on the test peer (inside the namespace): names,
+  a CNAME, NXDOMAIN, 100 KB CRC-checked (55 KiB/s to the flash), both redirect kinds, chunked and
+  unsized replies, 404, a redirect loop, a closed port, `https://` refused, heap unchanged.
+- HTTPS is not supported yet (`wget` says so).
+- `make test` 178/178.
+
 ## 8. Source layout
 
 ```

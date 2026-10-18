@@ -11,12 +11,14 @@ and must not carry the default route.
 """
 import argparse
 import http.client
+import http.server
 import json
 import os
 import re
 import zlib
 from pathlib import Path
 import socket
+import socketserver
 import struct
 import subprocess
 import sys
@@ -1568,6 +1570,144 @@ def ntp_server(stop, served):
             served.append(a)
 
 
+WGET_BIG = bytes((i * 7 + i // 256) & 0xff for i in range(100000))
+
+
+def web_server(stop):
+    """HTTP on the test peer, port 8000: plain, chunked, redirects, no length, 404."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
+
+        def reply(self, code, body, extra=()):
+            self.send_response(code)
+            for k, v in extra:
+                self.send_header(k, v)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):
+            p = self.path
+            if p == '/small.txt':
+                self.reply(200, b'hello from the peer\n')
+            elif p == '/big.bin':
+                self.reply(200, WGET_BIG)
+            elif p == '/redirect':
+                self.reply(302, b'', [('Location', '/small.txt')])
+            elif p == '/abs':
+                self.reply(301, b'', [('Location', 'http://web.test:8000/small.txt')])
+            elif p == '/loop':
+                self.reply(302, b'', [('Location', '/loop')])
+            elif p == '/chunked':
+                self.send_response(200)
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.end_headers()
+                for part in (b'chunk one\n', b'x' * 300 + b'\n'):
+                    self.wfile.write(b'%x;ext=1\r\n%s\r\n' % (len(part), part))
+                self.wfile.write(b'0\r\n\r\n')
+            elif p == '/noclen':
+                self.send_response(200)
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.wfile.write(b'no length, ends at close\n')
+                self.close_connection = True
+            else:
+                self.reply(404, b'not here\n')
+
+        def log_message(self, *args):
+            pass
+
+    class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+        allow_reuse_address = True
+    server = Server((PEER.split('/')[0], 8000), Handler)
+    server.timeout = 0.2
+    with server:
+        while not stop.is_set():
+            server.handle_request()
+
+
+def dns_server(stop, asked):
+    """A names for web.test, alias.test (a CNAME to web.test); NXDOMAIN otherwise."""
+    u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    u.bind((PEER.split('/')[0], 53))
+    u.settimeout(0.2)
+    peer = bytes(int(x) for x in PEER.split('/')[0].split('.'))
+    with u:
+        while not stop.is_set():
+            try:
+                q, a = u.recvfrom(512)
+            except socket.timeout:
+                continue
+            i, labels = 12, []
+            while q[i]:
+                labels.append(q[i + 1:i + 1 + q[i]].decode().lower())
+                i += q[i] + 1
+            name, question = '.'.join(labels), q[12:i + 5]
+            asked.append(name)
+            answers, rcode = b'', 3
+            a_record = struct.pack('>HHIH', 1, 1, 60, 4) + peer
+            if name == 'web.test':
+                answers, rcode, count = b'\xc0\x0c' + a_record, 0, 1
+            elif name == 'alias.test':
+                target = b'\x03web\x04test\x00'
+                answers = (b'\xc0\x0c' + struct.pack('>HHIH', 5, 1, 60, len(target)) + target
+                           + bytes((0xc0, 12 + len(question) + 12)) + a_record)
+                rcode, count = 0, 2
+            else:
+                count = 0
+            u.sendto(struct.pack('>HHHHHH', q[0] << 8 | q[1], 0x8180 | rcode, 1, count, 0, 0) + question + answers, a)
+
+
+def wget_tests(ns, serial, report):
+    """wget and host: HTTP and DNS against servers on the test peer."""
+    stop, asked = threading.Event(), []
+    servers = [ns.background(web_server, stop), ns.background(dns_server, stop, asked)]
+    time.sleep(0.5)
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    mark = len(serial.lines)
+    try:
+        m = re.search(r'dns (\d+\.\d+\.\d+\.\d+)', t.cmd('ifconfig'))
+        old_dns = m[1] if m else '0.0.0.0'
+        t.cmd('ifconfig eth0 198.18.0.2/30 dns 0.0.0.0')
+        before = t.cmd('free')
+        none = t.cmd('host web.test')
+        t.cmd('ifconfig eth0 198.18.0.2/30 dns 198.18.0.1')
+        out = t.cmd('host web.test', 10) + t.cmd('host alias.test', 10) + t.cmd('host nosuch.test', 10)
+        report.add('host', 'no DNS server' in none and 'web.test has address 198.18.0.1' in out
+                   and 'alias.test has address 198.18.0.1' in out and 'nosuch.test: not found' in out,
+                   out.strip().replace('\r\n', ' | '))
+        out = t.cmd('wget -O /home/w.txt http://web.test:8000/small.txt', 20) + t.cmd('cat /home/w.txt')
+        report.add('wget', 'HTTP/1.1 200 OK' in out and 'saved /home/w.txt: 20 bytes' in out
+                   and out.endswith('hello from the peer\r\n'), out.strip().replace('\r\n', ' | '))
+        started = time.monotonic()
+        out = t.cmd('wget -q -O /home/w.bin http://alias.test:8000/big.bin', 60) + t.cmd('sum /home/w.bin', 20)
+        took = time.monotonic() - started
+        report.add('wget 100 KB', f'{zlib.crc32(WGET_BIG):08x} 100000' in out, f'{took:.1f} s with the sum; ' + out.strip())
+        out = (t.cmd('wget -O - http://web.test:8000/redirect', 20) + t.cmd('wget -O - http://web.test:8000/abs', 20)
+               + t.cmd('wget -O - http://web.test:8000/chunked | wc', 20) + t.cmd('wget -O - http://198.18.0.1:8000/noclen', 20))
+        report.add('wget replies', out.count('hello from the peer') == 2 and re.search(r'\b2 3 311\b', out) is not None
+                   and 'no length, ends at close' in out, out.strip().replace('\r\n', ' | '))
+        out = (t.cmd('wget -O - http://web.test:8000/missing', 20) + t.cmd('echo $?') + t.cmd('wget -q http://web.test:8000/loop', 30)
+               + t.cmd('wget http://nosuch.test/', 20) + t.cmd('wget http://198.18.0.1:8001/', 30)
+               + t.cmd('wget https://web.test/') + t.cmd('wget'))
+        report.add('wget errors', 'answered 404\r\n1' in out and 'too many or bad redirects' in out and 'no such host' in out
+                   and 'refused or timed out' in out and 'https is not supported' in out and 'usage: wget' in out,
+                   out.strip().replace('\r\n', ' | '))
+        t.cmd('rm /home/w.txt /home/w.bin')
+        t.cmd(f'ifconfig eth0 198.18.0.2/30 dns {old_dns}')
+        time.sleep(0.3)
+        after = t.cmd('free')
+        fault = serial.wait_for(r'PANIC|HardFault|stack overflow', 1, mark)
+        report.add('wget memory freed', before == after and fault is None, after.strip().replace('\r\n', ' | '))
+    finally:
+        stop.set()
+        for s in servers:
+            s.join(2)
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
 def dhcp_server(stop, iface, log, lease=120):
     """Offers 198.18.0.2/30 (the board's test address, so sessions survive) with
     gateway and DNS 198.18.0.1. log gets (message type, length, broadcast flag, options)."""
@@ -2025,6 +2165,11 @@ def main():
             except (OSError, TimeoutError, ConnectionError, IndexError) as exc:
                 traceback.print_exc()
                 report.add('M5c tools', False, repr(exc))
+            try:
+                wget_tests(ns, serial, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
+                report.add('wget', False, repr(exc))
 
             if args.usb_bytes:
                 text, _ = ns.call(request, b'U', 1, args.usb_bytes, b'', None, 180)

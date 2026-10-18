@@ -56,7 +56,7 @@ flash: build/nnnix.bin
 # Programs for /bin, built like the SDK's (sdk/Makefile: -fropi -frwpi, run
 # from APROM by kernel/xip.c) from the commands in bin/: bin/main.c calls
 # cmd_NAME. tools/nnupdate.py --bin build/bin installs them.
-PROGRAMS = play ed wc head tail grep hexdump
+PROGRAMS = play ed wc head tail grep hexdump wget host
 PROG_SRCS_play = bin/play.c
 PROG_SRCS_ed = bin/ed.c bin/edcore.c
 PROG_SRCS_wc = bin/textutil.c
@@ -64,6 +64,8 @@ PROG_SRCS_head = bin/textutil.c
 PROG_SRCS_tail = bin/textutil.c
 PROG_SRCS_grep = bin/textutil.c
 PROG_SRCS_hexdump = bin/textutil.c
+PROG_SRCS_wget = bin/wget.c bin/dns.c
+PROG_SRCS_host = bin/dns.c
 PROG_CFLAGS = --target=arm-none-eabi -mcpu=cortex-m0 -mthumb -Os -ffreestanding -fno-builtin \
               -ffunction-sections -fdata-sections -fropi -frwpi -Wall -Wextra -Werror -std=c11 -Isdk/include -Ilib
 PROG_LDFLAGS = -nostdlib -fuse-ld=lld -Wl,-T,sdk/nxe.ld,--emit-relocs,--gc-sections

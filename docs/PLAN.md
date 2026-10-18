@@ -884,11 +884,30 @@ reports (`kernel/inputev.c`, host tested: modifiers, several keys, releases firs
 - Tests: diag `J` feeds CH9350 frames through the parser as if from UART1 (`uart1_inject`), or holds board
   keys down (bit 16 of the length); `input_tests` in nntest: `keys` (`sdk/examples/keys.c`) sees `a`, Shift+`a`,
   a mouse move and two keypad keys; a second reader gets EBUSY; SW_INT ends `keys spin` (no system calls);
-  `snake` (`sdk/examples/snake.c`, a game on the LCD) ends with Esc and with SW_INT; heap as before. Run on
+  `snake` (then `sdk/examples/snake.c`, now in `bin/`) ends with Esc and with SW_INT; heap as before. Run on
   the board by hand (not `make test`: `nnshare` was on), also typing into the LCD console through the
   CH9350 path while nobody holds `/dev/input`.
 - Cost: 2.5 KiB of firmware (the program area is now 28.5 KiB), 24 B of static RAM; free RAM with the
   console shell and one telnet session 5248 B.
+
+### Games: snake, tetris, flappy (2026-10-18)
+
+`bin/snake.c`, `bin/tetris.c`, `bin/flappy.c` (about 3 KiB of text each, 1-1.5 KiB of bss with the 1 KiB
+picture), sharing `bin/game.c`: `/dev/input` with `O_NONBLOCK` turned into actions (the same keys in every
+game, keyboard or keypad), a picture in `/dev/lcd`'s layout drawn with pixels, boxes and text, shown whole
+per frame, a xorshift random number, and the game-over box with the best score. The text uses the
+firmware's fonts, handed to programs in `nn_lib` version 2 (`font3x5`, `font5x7`: 8 bytes of firmware);
+`mknxe` now marks programs as needing version 2.
+- Tetris: a 10x20 board of 3-pixel cells between the score and the next piece; pieces turn clockwise in
+  their n x n box with kicks of 0, -1, +1, -2, +2 columns; DAS 180 ms then 60 ms; the speed rises every 10
+  rows. It redraws only when something moved: drawing the whole picture every 20 ms cost 30% of the CPU,
+  now 2%. Flappy: 30 ms frames, gravity and flap in 1/16 pixel, the bird's pixels tested against what was
+  drawn; 14% CPU while flying. Snake: 4-pixel cells under a score bar, a step every 160 ms down to 40.
+- On the host: `lib/sys.h` turns system calls into `host_syscall()` under `NNNIX_HOST`, and
+  `tests/host/game_sim.c` answers them with a clock of its own (a sleep takes no time), keys from a script
+  and PBM screenshots; `tests/host/test_games.py` plays each game (tetris until it is full, snake into a
+  wall, flappy to the ground, quit from both keyboards) and checks the pictures. On the board: each game
+  started, played and ended with Esc (`input_tests`), heap unchanged; stack peak 640 of 1024 B.
 
 ## 8. Source layout
 

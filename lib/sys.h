@@ -218,6 +218,15 @@ struct nn_netcfg {
 #define SYS_EAGAIN (-11)                   /* a connected UDP socket dropped a stranger's datagram */
 #define SYS_ETIMEDOUT (-110)
 
+#ifdef NNNIX_HOST
+/* Programs built for the host (tests/host/game_sim.c): the test answers. */
+#include <stdint.h>
+intptr_t host_syscall(int n, intptr_t a, intptr_t b, intptr_t c);
+#define NN_SYSCALL0(n) ({ (int32_t)host_syscall(n, 0, 0, 0); })
+#define NN_SYSCALL1(n, a) ({ (int32_t)host_syscall(n, (intptr_t)(a), 0, 0); })
+#define NN_SYSCALL2(n, a, b) ({ (int32_t)host_syscall(n, (intptr_t)(a), (intptr_t)(b), 0); })
+#define NN_SYSCALL3(n, a, b, c) ({ (int32_t)host_syscall(n, (intptr_t)(a), (intptr_t)(b), (intptr_t)(c)); })
+#else
 #define NN_SVC_CLOBBERS "r1", "r2", "r3", "r12", "lr", "cc", "memory"
 
 #define NN_SYSCALL0(n) ({ \
@@ -235,6 +244,7 @@ struct nn_netcfg {
     register int32_t r1_ __asm("r1") = (int32_t)(b); \
     register int32_t r2_ __asm("r2") = (int32_t)(c); \
     __asm volatile("svc %3" : "+r"(r0_), "+r"(r1_), "+r"(r2_) : "i"(n) : "r3", "r12", "lr", "cc", "memory"); r0_; })
+#endif
 
 struct task_info;
 struct kmem_stats;

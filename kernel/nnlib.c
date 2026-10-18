@@ -5,6 +5,8 @@
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../user/cmds.h"
+#include "../drivers/font3x5.h"
+#include "../drivers/font5x7.h"
 
 uint32_t __aeabi_uidiv(uint32_t n, uint32_t d);
 uint64_t __aeabi_uidivmod(uint32_t n, uint32_t d);
@@ -19,4 +21,5 @@ const struct nn_lib nn_lib = {
     .uidiv = __aeabi_uidiv, .uidivmod = __aeabi_uidivmod, .idiv = __aeabi_idiv, .idivmod = __aeabi_idivmod,
     .errstr = errstr,
     .gmtime = nn_gmtime, .mktime = nn_mktime, .format_time = nn_format_time,
+    .font3x5 = font3x5, .font5x7 = font5x7,
 };

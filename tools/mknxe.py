@@ -27,7 +27,7 @@ import zlib
 TEXT_MAX, DATA_MAX = 64 * 1024, 8 * 1024                 # kernel/exec.c: text; data + bss
 NXE_MAGIC = 0x3145584e
 NXE_VERSION = 3
-LIB_VERSION = 1
+LIB_VERSION = 2                                           # lib/nnlib.h NN_LIB_VERSION
 DATA_BASE = 0x10000000                                    # sdk/nxe.ld
 RELOC_DATA = 1
 

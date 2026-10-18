@@ -59,18 +59,21 @@ Put it in `sdk/examples/` (or build it from the current directory with
 - `examples/keys.c` prints the events of `/dev/input`: keyboard keys pressed
   and released, the mouse, the board's keypad ([docs/USER_ENV.md](../docs/USER_ENV.md),
   "Keyboard, mouse and keys for programs").
-- `examples/snake.c` is a game: `/dev/input` opened with `O_NONBLOCK` and
-  read between steps, a 1024-byte frame written to `/dev/lcd` per step. The
+- The games in `bin/` (`snake.c`, `tetris.c`, `flappy.c`) and what they
+  share (`bin/game.c`) show how a game works: `/dev/input` opened with
+  `O_NONBLOCK` and read between frames, the picture drawn in a 1024-byte
+  buffer and written whole to `/dev/lcd`, text in the firmware's fonts. The
   board's SW_INT button ends a game that hangs.
 
 The C library is not linked into the program: it is the firmware's own code in
 flash, reached through a function table that `_start` receives
 (`lib/nnlib.h`); `nn_write_all`, `fputs_fd` and `nn_interrupted` (Ctrl-C) are
-small helpers in `crt0.c`. `hello` has 232 bytes of code and needs 8 bytes of
+small helpers in `crt0.c`. Version 2 of the table also gives the console's
+fonts (`__nn_lib->font3x5`, `font5x7`), so text costs a program no code. `hello` has 232 bytes of code and needs 8 bytes of
 RAM for its data.
 
 The system's own programs (`play`, `ed`, `wc`, `head`, `tail`, `grep`,
-`hexdump`, `wget`, `host`) are built the same way, from `bin/` at the top of the repository
+`hexdump`, `wget`, `host`, and the games `snake`, `tetris`, `flappy`) are built the same way, from `bin/` at the top of the repository
 (`make programs`, into `build/bin/`), and installed in `/bin` by
 `tools/nnupdate.py --bin build/bin`.
 

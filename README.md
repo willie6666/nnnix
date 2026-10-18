@@ -74,7 +74,7 @@ pid name prio state stack_used stack_size cpu_ms
 - Network: interrupt-driven W5500, socket layer with self re-arming listeners, telnet server with three sessions
 - Shell `nsh`: built in `help echo ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir
   touch pwd cd df mkfile sum date ifconfig dhcp service netstat nc ntpdate`, and from `/bin` the programs
-  `wc head tail grep hexdump ed play wget host` (`bin/`); redirection `< > >>`, using only system calls
+  `wc head tail grep hexdump ed play wget host snake tetris flappy` (`bin/`); redirection `< > >>`, using only system calls
 - M5 shell: quotes/escapes, per-session variables (`set`, `unset`, `env`, `$NAME`, `${NAME}`, `$?`),
   `sh`/`source` scripts and optional `/etc/rc` at boot; streaming `wc head tail grep hexdump`
 - HTTP transfers: TCP port 8080, GET/PUT under `/home`, temporary-file uploads committed by atomic rename;
@@ -94,8 +94,10 @@ pid name prio state stack_used stack_size cpu_ms
   delta-coded format of our own with optional ADPCM sound; `play` shows them (all of Bad Apple at 30 fps;
   `play -s` adds the sound, though the buzzer carries rhythm far better than pitch)
 - Input for programs (games): `/dev/input` gives one program the USB keyboard and mouse and the board's 1-9
-  keypad as press/release events (`sdk/examples/keys.c`, the game `sdk/examples/snake.c`); the board's
-  SW_INT button ends the program holding the keys or the display, even one stuck in a loop
+  keypad as press/release events (`sdk/examples/keys.c`); the board's SW_INT button ends the program
+  holding the keys or the display, even one stuck in a loop
+- Games on the LCD: `snake`, `tetris`, `flappy` (`bin/`, sharing `bin/game.c`), with the keyboard or the
+  keypad; they also run on the host with a simulated clock and screenshots (`tests/host/game_sim.c`)
 - Firmware updates: `fwupdate FILE` (or `tools/nnupdate.py` from the NanoPi) stages an image in the SPI flash;
   the LDROM bootloader (`boot/`) installs it and repeats an installation that a reset or power loss cut short
 - Network: `ifconfig`, a DHCP client with lease renewal in the kernel daemon, `netstat`, `service` (telnetd,
@@ -126,7 +128,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Programs in APROM: written once and reused, two runs of one program at once, every relocation kind, a program filling the whole area, a new program going to RAM while running programs fill it, kept across a reboot | pass |
 | LCD player: a 60-frame video at its frame rate, one `/dev/lcd` writer at a time, picture until Enter, Ctrl-C, damaged files refused, RAM reclaimed | pass |
 | Sound: 2 s of samples in 2.0 s, one `/dev/audio` writer, a video with sound on time and without gaps, Ctrl-C silences it | pass |
-| `/dev/input`: keyboard and mouse frames through the CH9350 parser, the keypad, one reader at a time, SW_INT ending a program that makes no system calls and a game holding the LCD | pass |
+| `/dev/input`: keyboard and mouse frames through the CH9350 parser, the keypad, one reader at a time, SW_INT ending a program that makes no system calls and a game holding the LCD; `snake`, `tetris`, `flappy` start, play and end | pass |
 | Efficiency: a video during a USB copy on time (fsd sleeps while the CH376 works), a program killed during a copy exits cleanly, audio interrupt latency under `ps`/`/proc` | pass (13 us) |
 | Review fixes (R24-R35): two tasks sharing `/dev/audio`, cut-short NNV files, the last frame's time, `mv` into a directory, out-of-range `kill`, 0-byte reads, `ed`'s last line, flash dumps during writes, a `/usb` file open across the CH376 bench | pass |
 | Review fixes: background redirections, memory of killed programs, concurrent terminal output, DHCP lease end, same-file `cp`/`mv`, `nc` both ways with back-pressure (32 KiB) | pass |

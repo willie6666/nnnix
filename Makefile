@@ -56,7 +56,7 @@ flash: build/nnnix.bin
 # Programs for /bin, built like the SDK's (sdk/Makefile: -fropi -frwpi, run
 # from APROM by kernel/xip.c) from the commands in bin/: bin/main.c calls
 # cmd_NAME. tools/nnupdate.py --bin build/bin installs them.
-PROGRAMS = play ed wc head tail grep hexdump wget host
+PROGRAMS = play ed wc head tail grep hexdump wget host snake tetris flappy
 PROG_SRCS_play = bin/play.c
 PROG_SRCS_ed = bin/ed.c bin/edcore.c
 PROG_SRCS_wc = bin/textutil.c
@@ -66,6 +66,9 @@ PROG_SRCS_grep = bin/textutil.c
 PROG_SRCS_hexdump = bin/textutil.c
 PROG_SRCS_wget = bin/wget.c bin/dns.c bin/url.c
 PROG_SRCS_host = bin/dns.c
+PROG_SRCS_snake = bin/snake.c bin/game.c
+PROG_SRCS_tetris = bin/tetris.c bin/game.c
+PROG_SRCS_flappy = bin/flappy.c bin/game.c
 PROG_CFLAGS = --target=arm-none-eabi -mcpu=cortex-m0 -mthumb -Os -ffreestanding -fno-builtin \
               -ffunction-sections -fdata-sections -fropi -frwpi -Wall -Wextra -Werror -std=c11 -Isdk/include -Ilib
 PROG_LDFLAGS = -nostdlib -fuse-ld=lld -Wl,-T,sdk/nxe.ld,--emit-relocs,--gc-sections
@@ -142,6 +145,10 @@ build/host/test_scrollback: tests/host/test_scrollback.c kernel/scrollback.c
 build/host/test_url: tests/host/test_url.c bin/url.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+GAMES = snake tetris flappy
+build/host/sim_%: tests/host/game_sim.c bin/%.c bin/game.c lib/fmt.c drivers/font3x5.c drivers/font5x7.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -DGAME=cmd_$* -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_inputev: tests/host/test_inputev.c kernel/inputev.c drivers/hidkey.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
@@ -175,9 +182,10 @@ build/host/nnv_%.nnv: tools/mknnv.py
 build/host/test_nnv: tests/host/test_nnv.c lib/nnv.h $(NNV_DEMOS:%=build/host/nnv_%.nnv)
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $< -o $@
-host-test: $(HOST_TESTS) build/bin/wget.elf
+host-test: $(HOST_TESTS) build/bin/wget.elf $(GAMES:%=build/host/sim_%)
 	@for t in $(HOST_TESTS); do echo "== $$t"; (cd tests/host && ../../$$t) || exit 1; done
 	@echo "== tests/host/test_mknxe.py"; $(PYTHON) tests/host/test_mknxe.py build/bin/wget.elf
+	@echo "== tests/host/test_games.py"; $(PYTHON) tests/host/test_games.py
 
 size: build/nnnix.elf
 	$(SIZE) -A $<

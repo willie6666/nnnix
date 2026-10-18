@@ -486,9 +486,33 @@ with it. The kernel log says `input: SW_INT: ending pid N`. The keypad and
 SW_INT are read every 20 ms, only while a program holds `/dev/input` or
 `/dev/lcd`.
 
-`keys` (`sdk/examples/keys.c`) prints the events (Esc ends it); `snake`
-(`sdk/examples/snake.c`) is a small game on the LCD: arrows, WASD or keypad
-2 4 6 8, Esc, q or keypad 5 to stop.
+`keys` (`sdk/examples/keys.c`) prints the events (Esc ends it).
+
+### Games
+
+`snake`, `tetris` and `flappy` (in `/bin`, from `bin/`) play on the LCD with
+the USB keyboard or the board's keypad, the same keys in all three:
+
+| | keyboard | keypad |
+| --- | --- | --- |
+| directions | arrows, or W A S D | 2 4 6 8 |
+| A (turn in tetris, flap in flappy, play again) | Space, Enter | 5 |
+| quit | Esc, q | 1 |
+
+- `snake`: eat the dots, grow, do not hit the walls or yourself; faster as it
+  grows.
+- `tetris`: left and right move (held, they repeat), up or A turns (moving
+  aside if a wall is in the way), down drops faster; rows clear for 40, 100,
+  300 or 1200 points times the level, which rises every 10 rows.
+- `flappy`: A or up flaps; through the gaps, which narrow a little as the
+  score grows.
+
+After a game over, A plays again and quit ends it; the best score of the
+run is printed when it ends. A game takes about 3 KiB of APROM and 1.5 KiB of
+RAM (its stack and a 1 KiB picture) while it runs. They are also built for
+the host (`make build/host/sim_tetris` ...): `tests/host/game_sim.c` runs one
+on a simulated clock with keys from the command line and saves the screen as
+PBM pictures.
 
 ## Firmware updates
 

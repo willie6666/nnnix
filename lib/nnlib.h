@@ -11,7 +11,7 @@
  * of _start). Entries are only ever added at the end; `size` tells a program
  * how many there are, and NXE files name the version they need. */
 #define NN_LIB_MAGIC   0x42494c4eu   /* "NLIB" */
-#define NN_LIB_VERSION 1u
+#define NN_LIB_VERSION 2u           /* 2: the fonts */
 
 struct nn_lib {
     uint32_t magic, version, size;   /* size: bytes of this table */
@@ -34,6 +34,11 @@ struct nn_lib {
     void     (*gmtime)(uint32_t t, struct nn_tm *out);
     uint32_t (*mktime)(const struct nn_tm *t);
     void     (*format_time)(uint32_t t, char *buf);                /* 20 bytes */
+    /* Version 2: the console's fonts, characters 0x20-0x7f (index c - 0x20).
+     * 3x5: 15 bits a glyph, column 0 in bits 0-4 (bit 0 the top), column 1 in
+     * bits 5-9, column 2 in bits 10-14. 5x7: a byte per column, bit 0 the top. */
+    const uint16_t *font3x5;
+    const uint8_t (*font5x7)[5];
 };
 
 /* NXE: a program built with -fropi -frwpi (sdk/Makefile): its code and

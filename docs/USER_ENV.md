@@ -276,6 +276,34 @@ next write, so `nc -u -l PORT` answers whoever spoke last. W5500 sockets do not
 answer a SYN when no socket listens: a stopped service or closed port looks
 like a timeout, not a refusal, from the other side.
 
+### Internet through the computer
+
+`tools/nnshare.py` lets the board use the internet through the computer its
+cable goes to (the USB Ethernet adapter, `eth1` by default):
+
+```
+sudo python3 tools/nnshare.py on       # start (in the background)
+sudo python3 tools/nnshare.py status
+sudo python3 tools/nnshare.py off      # stop and undo everything
+sudo python3 tools/nnshare.py on --dry-run    # only show what it would change
+```
+
+It gives the adapter 198.18.0.1/30 (unless it has it), turns IPv4 forwarding
+on (unless it is), adds nftables tables `nnshare` (NAT for 198.18.0.0/30 to
+every other interface), and runs a DHCP server on the adapter and a DNS relay
+on 198.18.0.1 to the computer's own resolver. `off` undoes exactly what `on`
+changed. Then on the board:
+
+```
+ifconfig eth0 198.18.0.2/30 gw 198.18.0.1 dns 198.18.0.1
+wget http://example.org/
+```
+
+`dhcp` works too (it gets the same address), but a lease outlives `nnshare off`
+by up to an hour and then the board removes its address, so the fixed setting
+is the better one; it can go in `/etc/rc`. `make test` refuses to run while
+sharing is on: both would serve DHCP and DNS on the test network.
+
 `host` and `wget` (programs in `/bin`) ask the DNS server of the network
 settings (`ifconfig ... dns IP`, or the one DHCP gave) for an A record, over
 UDP, three tries of 2 s; a CNAME in the answer is followed. A dotted address

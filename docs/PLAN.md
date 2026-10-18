@@ -811,6 +811,20 @@ the firmware, and only data, bss and the stack take RAM.
   are no longer inlined into one 192-byte frame. A test now runs programs on the LCD console.
   `make test` 179/179; free RAM with the console shell and one telnet session 5288 B (16 B of marks).
 
+### Internet through the computer (2026-10-18)
+
+`tools/nnshare.py on|off|status|run [--iface eth1] [--dry-run]`: the adapter's address (if missing), IPv4
+forwarding (if off), nftables tables `nnshare` (masquerade for 198.18.0.0/30 out of every other
+interface, forwarding to and from the adapter), a DHCP server offering the board 198.18.0.2/30 with the
+computer as gateway and DNS, and a DNS relay on 198.18.0.1:53 to the computer's resolver (often
+systemd-resolved on 127.0.0.53, out of the board's reach). `on` starts a background process that records
+what it changed in `/run/nnshare.json` before changing it; `off` (or a stale record found by the next
+`on`) undoes exactly that, every step even if one fails. `make test` refuses to run while it is on.
+Tried: the DHCP server and the DNS relay against the board (a lease, `host example.org`, an unknown
+name); on, status, a second on refused, and off, in a throwaway network namespace with dummy
+interfaces (also with forwarding off before: turned on, and off again). NAT towards the real uplink was
+not applied here: that is the user's to turn on.
+
 ## 8. Source layout
 
 ```

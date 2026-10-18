@@ -173,6 +173,7 @@ sudo python3 tools/flash.py --ldrom build/boot.bin             # bootloader into
 sudo python3 tools/flash.py --boot ldrom                       # CONFIG0: start in the bootloader
 telnet 198.18.0.2 # log in (from the test network; see below)
 python3 tools/console.py   # kernel log (/dev/ttyUSB0, 115200 8N1)
+sudo python3 tools/nnshare.py on   # internet for the board through this computer (off: undo)
 sudo python3 tools/nncp.py --iface eth1 put local.bin /home/local.bin
 sudo python3 tools/nncp.py --iface eth1 get /home/local.bin copy.bin
 ```
@@ -204,7 +205,7 @@ third_party/   littlefs v2.11.3 (BSD-3-Clause), unmodified
 tests/host/    host unit tests (including a recorded CH9350 capture)
 boot/          LDROM bootloader: installs staged firmware images, then starts APROM
 tools/         flash.py (APROM, LDROM, CONFIG0), console.py, nntest.py, nncp.py (HTTP file transfer),
-               nnupdate.py (firmware update), mknxe.py (ELF to NXE)
+               nnupdate.py (firmware update), mknxe.py (ELF to NXE), nnshare.py (internet for the board)
 sdk/           loadable program SDK: crt0, nnnix.h, linker script, Makefile, examples
 docs/          development plan
 ```

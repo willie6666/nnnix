@@ -2025,6 +2025,9 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise SystemExit('run as root (network namespace setup)')
+    if Path('/run/nnshare.json').exists():
+        raise SystemExit('internet sharing is on (tools/nnshare.py), and it serves DHCP and DNS on the test '
+                         'network too: sudo python3 tools/nnshare.py off first')
 
     report = Report()
     log = REPO / 'build/nntest-serial.log'

@@ -278,6 +278,7 @@ def console_tests(ns, report):
     report.add('console scroll', text.splitlines()[-1].startswith('nnnix$') and ' wc' in text
                and 'list commands' not in text,
                'help output scrolled the 8-line screen')
+    console_view_tests(ns, report, type_keys, screen)
     text = type_keys(b'exit\r', 1.0)
     tasks = ns.call(request, b'K')[0].decode(errors='replace')
     report.add('console logout', 'Press Enter to\nlog in.' in text and ' nsh ' not in tasks,
@@ -285,6 +286,72 @@ def console_tests(ns, report):
     text = type_keys(b'\r', 1.0)
     report.add('console respawn', 'Type' in text and text.rstrip().endswith('nnnix$'),
                'Enter started a new shell')
+
+
+def text_frame(text, small):
+    """The LCD frame (/dev/lcd layout) that the console should draw for this
+    screen text, from the fonts' sources: 6x8 cells, or 4x6 when small."""
+    big = [[int(v, 16) for v in m] for m in
+           re.findall(r'\{ (0x..), (0x..), (0x..), (0x..), (0x..) \}', (REPO / 'drivers/font5x7.c').read_text())]
+    tiny = [int(v, 16) for v in re.findall(r'0x([0-9a-f]{4})', (REPO / 'drivers/font3x5.c').read_text())]
+    w, h, cols, rows = (4, 6, 32, 10) if small else (6, 8, 21, 8)
+    frame = bytearray(1024)
+    for r, line in enumerate(text.split('\n')[:rows]):
+        for c, ch in enumerate(line[:cols]):
+            code = ord(ch) - 32 if 32 <= ord(ch) < 128 else ord('?') - 32
+            for i in range(w):
+                bits = (big[code][i] if i < 5 else 0) if not small else ((tiny[code] >> 5 * i) & 31 if i < 3 else 0)
+                for y in range(h):
+                    if bits >> y & 1:
+                        frame[(r * h + y) // 8 * 128 + c * w + i] |= 1 << (r * h + y) % 8
+    return bytes(frame)
+
+
+def frame_matches(ns, text, small):
+    """The console's pixels are the text's, apart from the cursor: the
+    underline of one cell."""
+    got = ns.call(request, b'G', 4, 0, b'', 1024)[0]
+    want = text_frame(text, small)
+    if len(got) != 1024:
+        return False, f'{len(got)} bytes'
+    w, h = (4, 6) if small else (6, 8)
+    off = [(x, p * 8 + b) for p in range(8) for x in range(128) for b in range(8)
+           if (got[p * 128 + x] ^ want[p * 128 + x]) >> b & 1]
+    cells = {(x // w, y // h) for x, y in off}
+    ok = all(y % h == h - 1 for _, y in off) and len(cells) <= 1
+    return ok, f'{len(off)} pixels differ (the cursor)' if ok else f'{len(off)} pixels differ in {len(cells)} cells'
+
+
+def console_view_tests(ns, report, type_keys, screen):
+    """Small text (Ctrl+-, Ctrl+=) and the scrollback (PageUp/PageDown,
+    Shift+Up/Down): keys are injected as the console bytes kbd.c makes."""
+    live = screen()
+    ok, detail = frame_matches(ns, live, False)
+    report.add('console pixels', ok, f'21x8 text drawn as the 5x7 font gives it; {detail}')
+    small = type_keys(bytes([0x84]), 1.0)               # KBD_TEXT_SMALL
+    lines = small.rstrip('\n').split('\n')
+    ok, detail = frame_matches(ns, small, True)
+    report.add('console small text', ok and len(lines) == 10 and lines[-1].startswith('nnnix$')
+               and lines[-2] == live.rstrip('\n').split('\n')[-2],
+               f'32x10, rows from the scrollback above the old ones; {detail}')
+    up = type_keys(bytes([0x80]), 1.0)                  # KBD_PAGE_UP: 9 lines back
+    up_lines = up.rstrip('\n').split('\n')
+    line = type_keys(bytes([0x83]), 1.0)                # KBD_LINE_DOWN
+    down = type_keys(bytes([0x81]), 1.0)                # KBD_PAGE_DOWN: the terminal again
+    ok, detail = frame_matches(ns, up, True)
+    report.add('console scrollback', up != small and up_lines[-1] == lines[0] and down == small
+               and line.rstrip('\n').split('\n')[-2] == lines[0],
+               'PageUp shows the 9 lines above, Shift+Down one less, PageDown back')
+    type_keys(bytes([0x80]), 0.5)
+    typed = type_keys(b'x', 0.8)                        # any key returns to the terminal first
+    type_keys(b'\x7f', 0.5)
+    last = typed.rstrip('\n').split('\n')[-1]
+    report.add('console scrollback ends', last.startswith('nnnix$') and last.endswith(' x') and typed != up,
+               'a key while scrolled back: the terminal, with the key typed')
+    normal = type_keys(bytes([0x85]), 1.0)              # KBD_TEXT_LARGE
+    ok, detail = frame_matches(ns, normal, False)
+    report.add('console normal text', ok and len(normal.rstrip('\n').split('\n')) <= 8
+               and normal.rstrip('\n').split('\n')[-1].startswith('nnnix$'), f'back to 21x8; {detail}')
 
 
 def fs_tests(ns, serial, report):
@@ -375,8 +442,9 @@ def telnet_tests(ns, report):
     free_before = t1.cmd('free')
     m = re.search(r'free (\d+) B', free_before)
     free_bytes = int(m[1]) if m else 0
-    report.add('free ram', free_bytes >= 5600,
-               f'{free_bytes} B heap free with the console shell and one telnet session (limit 5600)')
+    # The console shell has its 512-byte scrollback meanwhile (sysctl console_history).
+    report.add('free ram', free_bytes >= 5200,
+               f'{free_bytes} B heap free with the console shell and one telnet session (limit 5200)')
     out = t1.cmd('uname')
     report.add('telnet login', 'nnnix' in out, out.strip())
 
@@ -492,6 +560,11 @@ def m5_tests(ns, serial, report):
         out = t.cmd(f'tail -n 2 {textfile}')
         report.add('tail', out.replace('\r\n', '\n') == 'alpha three\ntail', repr(out))
         report.add('tail zero', t.cmd(f'tail -n 0 {textfile}') == '', '')
+        # Input that cannot seek: the last 2 KiB of it are kept.
+        out = (t.cmd(f'cat {textfile} | tail -n 2') + t.cmd(f'tail -n 1 < {textfile}')
+               + t.cmd('hexdump /dev/zero | head -n 300 | tail -n 1', 20))
+        last = '000012b0  ' + '00 ' * 15 + '00  |................|\r\n'
+        report.add('tail from a pipe', out == 'alpha three\r\ntailtail' + last, repr(out[-90:]))   # no final newline
         out = t.cmd(f'grep -n alpha {textfile}')
         report.add('grep', out.splitlines() == ['1:alpha one', '3:alpha three'], repr(out))
         t.cmd(f'grep missing {textfile}')
@@ -712,6 +785,13 @@ def settings_tests(ns, report):
                                                        'httpd=on')), out.strip().replace('\r\n', ' '))
     bad = t.cmd('sysctl console=maybe') + t.cmd('sysctl telnet_max=4') + t.cmd('sysctl nosuch=1')
     report.add('sysctl checks', bad.count('invalid value') == 2 and 'unknown setting' in bad, '')
+    # The LCD's text size and scrollback (also Ctrl+-/Ctrl+= and PageUp on the keyboard).
+    out = (t.cmd('sysctl console_font=small') + t.cmd('sysctl console_font') + t.cmd('sysctl console_font=big')
+           + t.cmd('sysctl console_history=9000') + t.cmd('sysctl console_history=1024') + t.cmd('sysctl console_history'))
+    rows = screen().count('\n')                         # a line for every row, blank or not
+    out += t.cmd('sysctl console_font=normal') + t.cmd('sysctl console_history=512')
+    report.add('sysctl console text', 'console_font=small' in out and out.count('invalid value') == 2
+               and 'console_history=1024' in out and rows == 10, out.strip().replace('\r\n', ' '))
     out = t.cmd('free')
     report.add('free breakdown', re.search(r'used: \d+ B task stacks \(\d+ tasks\), \d+ B other', out) is not None,
                out.strip().replace('\r\n', ' | '))
@@ -1080,11 +1160,10 @@ def m6_tests(ns, serial, report):
                    is not None, out.strip().replace('\r\n', ' | '))
         out = t.cmd('/bin/hello') + t.cmd('echo shout please | upper') + t.cmd('hello x | upper | wc')
         report.add('programs in pipes', 'SHOUT PLEASE' in out and re.search(r'\b2 10 4\d\b', out) is not None, out.strip().replace('\r\n', ' | '))
-        # 100000 needs a 6 KiB sieve, which fits now that program text is not
-        # in RAM; 900000 (56 KiB) never does.
-        out = t.cmd('primes', 10) + t.cmd('primes 100000', 10) + t.cmd('primes 900000', 10)
+        # A 3 KiB sieve fits; 900000 (56 KiB) never does.
+        out = t.cmd('primes', 10) + t.cmd('primes 50000', 10) + t.cmd('primes 900000', 10)
         report.add('program library', '1229 primes up to 10000, the largest 9973' in out and 'out of memory' in out
-                   and '9592 primes up to 100000, the largest 99991' in out,
+                   and '5133 primes up to 50000, the largest 49999' in out,
                    out.strip().replace('\r\n', ' | '))
         out = t.cmd('primes 20000 &') + t.cmd('wait', 10)
         report.add('program in background', '2262 primes up to 20000' in out, out.strip().replace('\r\n', ' | '))

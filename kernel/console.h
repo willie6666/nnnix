@@ -14,7 +14,14 @@ int  console_mode(int mode);          /* set when mode >= 0; returns the mode, -
 void console_init(void);
 void console_poll(void);
 void console_input(const uint8_t *bytes, int n);    /* keyboard bytes (any task) */
-size_t console_snapshot(char *buf, size_t size);    /* screen text, for tests */
+size_t console_snapshot(char *buf, size_t size);    /* screen text as shown, for tests */
+/* The text size: 0 normal (21x8), 1 small (32x10); Ctrl+- and Ctrl+= on the
+ * keyboard. And the scrollback (PageUp/PageDown, Shift+Up/Down): bytes of
+ * history kept while the console shell runs. Set when >= 0; return the
+ * setting, -1 if invalid. */
+int console_text_size(int size);
+void console_frame(uint8_t out[1024]);   /* the text's pixels as on the LCD (/dev/lcd layout), for tests */
+int console_history(int bytes);
 
 /* Graphics (/dev/lcd): while claimed, text output still updates the terminal
  * but not the LCD; release redraws the text. One holder at a time. */

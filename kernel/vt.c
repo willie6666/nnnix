@@ -8,22 +8,21 @@ static void cell(struct vt *v, int col, int row)
 
 void vt_redraw(struct vt *v)
 {
-    for (int r = 0; r < VT_ROWS; ++r)
-        for (int c = 0; c < VT_COLS; ++c) cell(v, c, r);
+    if (v->redraw) { v->redraw(v->ctx); return; }
+    for (int r = 0; r < v->rows; ++r)
+        for (int c = 0; c < v->cols; ++c) cell(v, c, r);
 }
 
 static void clear_rows(struct vt *v, int from, int to)
 {
     for (int r = from; r < to; ++r)
-        for (int c = 0; c < VT_COLS; ++c) v->grid[r][c] = ' ';
+        for (int c = 0; c < VT_COLS_MAX; ++c) v->grid[r][c] = ' ';
 }
 
 void vt_init(struct vt *v, void (*draw)(void *ctx, int col, int row, char c, int cursor), void *ctx)
 {
-    v->x = v->y = v->esc = v->param = 0;
-    v->draw = draw;
-    v->ctx = ctx;
-    clear_rows(v, 0, VT_ROWS);
+    *v = (struct vt){ .cols = VT_COLS, .rows = VT_ROWS, .draw = draw, .ctx = ctx };
+    clear_rows(v, 0, VT_ROWS_MAX);
     vt_redraw(v);
 }
 
@@ -34,23 +33,31 @@ static void move(struct vt *v, int x, int y)
     v->x = (uint8_t)x;
     v->y = (uint8_t)y;
     if (ox != x || oy != y) {
-        if (ox < VT_COLS) cell(v, ox, oy);
-        if (x < VT_COLS) cell(v, x, y);
+        if (ox < v->cols) cell(v, ox, oy);
+        if (x < v->cols) cell(v, x, y);
     }
+}
+
+/* Drop n rows at the top (into the scrollback), the rest moving up. */
+static void shift_up(struct vt *v, int n)
+{
+    for (int r = 0; r < n; ++r)
+        if (v->scrolled) v->scrolled(v->ctx, v->grid[r], VT_COLS_MAX);
+    for (int r = n; r < v->rows; ++r)
+        for (int c = 0; c < VT_COLS_MAX; ++c) v->grid[r - n][c] = v->grid[r][c];
+    clear_rows(v, v->rows - n, v->rows);
 }
 
 static void newline(struct vt *v)
 {
-    if (v->y + 1 < VT_ROWS) { move(v, v->x, v->y + 1); return; }
-    for (int r = 1; r < VT_ROWS; ++r)
-        for (int c = 0; c < VT_COLS; ++c) v->grid[r - 1][c] = v->grid[r][c];
-    clear_rows(v, VT_ROWS - 1, VT_ROWS);
+    if (v->y + 1 < v->rows) { move(v, v->x, v->y + 1); return; }
+    shift_up(v, 1);
     vt_redraw(v);
 }
 
 static void put(struct vt *v, char c)
 {
-    if (v->x >= VT_COLS) { v->x = 0; newline(v); }  /* deferred wrap */
+    if (v->x >= v->cols) { v->x = 0; newline(v); }  /* deferred wrap */
     v->grid[v->y][v->x] = c;
     cell(v, v->x, v->y);
     move(v, v->x + 1, v->y);
@@ -68,9 +75,12 @@ static void escape(struct vt *v, char c)
     if (c < 0x40 || c > 0x7e) return;
     v->esc = 0;
     if (c == 'H') move(v, 0, 0);
-    else if (c == 'J' && v->param == 2) { clear_rows(v, 0, VT_ROWS); vt_redraw(v); }
+    else if (c == 'J' && v->param == 2) { clear_rows(v, 0, VT_ROWS_MAX); vt_redraw(v); }
     else if (c == 'K') {
-        for (int col = v->x; col < VT_COLS; ++col) { v->grid[v->y][col] = ' '; cell(v, col, v->y); }
+        for (int col = v->x; col < VT_COLS_MAX; ++col) {
+            v->grid[v->y][col] = ' ';
+            if (col < v->cols) cell(v, col, v->y);
+        }
     }
 }
 
@@ -82,8 +92,8 @@ void vt_write(struct vt *v, const char *s, size_t n)
         switch (c) {
         case '\r': move(v, 0, v->y); break;
         case '\n': newline(v); break;
-        case '\b': if (v->x) move(v, (v->x >= VT_COLS ? VT_COLS : v->x) - 1, v->y); break;
-        case '\t': do put(v, ' '); while (v->x % 4 && v->x < VT_COLS); break;
+        case '\b': if (v->x) move(v, (v->x >= v->cols ? v->cols : v->x) - 1, v->y); break;
+        case '\t': do put(v, ' '); while (v->x % 4 && v->x < v->cols); break;
         case '\a': break;
         case 0x1b: v->esc = 1; break;
         default:
@@ -93,11 +103,37 @@ void vt_write(struct vt *v, const char *s, size_t n)
     }
 }
 
+void vt_resize(struct vt *v, int cols, int rows)
+{
+    if (cols < 1 || cols > VT_COLS_MAX || rows < 1 || rows > VT_ROWS_MAX) return;
+    if (rows < v->rows) {
+        int drop = v->y >= rows ? v->y - rows + 1 : 0;   /* keep the cursor's row */
+        shift_up(v, drop);
+        v->y = (uint8_t)(v->y - drop);
+        clear_rows(v, rows, VT_ROWS_MAX);
+    } else {
+        /* The text moves down; the rows above it come back from the scrollback. */
+        int grow = rows - v->rows, back = 0;
+        char row[VT_COLS_MAX];
+        while (back < grow && v->unscroll && v->unscroll(v->ctx, row, VT_COLS_MAX)) {
+            for (int r = v->rows + back; r > 0; --r)
+                for (int c = 0; c < VT_COLS_MAX; ++c) v->grid[r][c] = v->grid[r - 1][c];
+            for (int c = 0; c < VT_COLS_MAX; ++c) v->grid[0][c] = row[c];
+            ++back;
+        }
+        v->y = (uint8_t)(v->y + back);
+    }
+    v->cols = (uint8_t)cols;
+    v->rows = (uint8_t)rows;
+    if (v->x > cols) v->x = (uint8_t)cols;            /* a wrap pending */
+    vt_redraw(v);
+}
+
 size_t vt_snapshot(const struct vt *v, char *buf, size_t size)
 {
     size_t n = 0;
-    for (int r = 0; r < VT_ROWS; ++r) {
-        int end = VT_COLS;
+    for (int r = 0; r < v->rows; ++r) {
+        int end = v->cols;
         while (end > 0 && v->grid[r][end - 1] == ' ') --end;
         for (int c = 0; c < end && n < size; ++c) buf[n++] = v->grid[r][c];
         if (n < size) buf[n++] = '\n';

@@ -100,7 +100,7 @@ These are programs in `/bin` (see [Programs](#programs)).
 | --- | --- |
 | `wc [FILE...]` | Count newline characters, whitespace-separated words and bytes |
 | `head [-n COUNT] [FILE...]` | Print the first lines (default 10) |
-| `tail [-n COUNT] [FILE...]` | Print the last lines (default 10); requires a seekable file |
+| `tail [-n COUNT] [FILE...]` | Print the last lines (default 10); from a pipe or the terminal, of the last 2 KiB of it |
 | `grep [-n] TEXT [FILE...]` | Literal substring search, optionally with line numbers |
 | `hexdump [FILE]` | 16 bytes per row, offset, hexadecimal and printable ASCII |
 
@@ -280,6 +280,27 @@ and `listen` do not wait: programs poll `sockinfo` for the state, which keeps
 Ctrl-C working while they wait.
 
 
+## The LCD console
+
+The text on the LCD comes in two sizes, and lines that scrolled off the top
+can be looked at again:
+
+| Keys | Effect |
+| --- | --- |
+| Ctrl+- (or Ctrl and the keypad's -) | small text: 32 columns by 10 rows |
+| Ctrl+= (Ctrl++), Ctrl+0 | normal text: 21 columns by 8 rows |
+| PageUp, PageDown (with or without Shift) | a screen back or forward in the scrollback |
+| Shift+Up, Shift+Down | a line back or forward |
+| any other key | back to the live screen (and the key is typed) |
+
+Changing the size keeps the text at the bottom: rows that no longer fit go to
+the scrollback, and getting taller brings the latest ones back. A row written
+at 32 columns keeps its end when the text is normal again, out of sight until
+the next switch. While the screen is scrolled back it stays put, even when
+programs print; the scrollback lives while the console shell does (512 bytes
+by default, `sysctl console_history`). `sysctl console_font=small` in
+`/etc/rc` starts with the small text.
+
 ## Settings and RAM
 
 nnnix has about 13 KiB of heap. Shells are what use it up: each one, on the LCD
@@ -302,6 +323,8 @@ free                       heap, and how much of it is task stacks
 | `telnet_max` | `0`-`3` | how many telnet sessions are accepted at once; sessions already open stay |
 | `telnetd`, `httpd` | `on`, `off` | the same as `service ... start/stop`; idle servers cost no RAM, only their sessions do |
 | `watchdog` | `0`, `2`, `7`, `26` | seconds without the kernel daemon before the chip resets (default 26; 0 turns it off) |
+| `console_font` | `normal`, `small` | the LCD's text: 21x8 with the 5x7 font, or 32x10 with a 3x5 one (also Ctrl+- and Ctrl+= on the keyboard). No RAM effect |
+| `console_history` | bytes, `0`-`8192` | the LCD's scrollback, allocated while the console shell runs (default 512, about 30 lines); `0` keeps none |
 
 Settings last until the next reset; put them in `/etc/rc` to apply them at boot,
 for example:

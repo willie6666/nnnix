@@ -78,11 +78,51 @@ static int head_fd(int fd, uint32_t lines)
     return c < -1 ? c : 0;
 }
 
+/* The last lines of input that cannot seek (a pipe, the terminal): the
+ * stream's last TAIL_RING bytes are kept, so at most that much comes out,
+ * starting at a whole line when the lines asked for do not all fit. */
+#define TAIL_RING 2048u
+
+static int tail_stream(int fd, uint32_t lines)
+{
+    uint32_t size = TAIL_RING;
+    char *ring = sys_alloc(size);
+    if (!ring) ring = sys_alloc(size = 512u);
+    if (!ring) return SYS_ENOMEM;
+    uint32_t total = 0;
+    int e;
+    for (;;) {
+        if (nn_interrupted()) { e = SYS_EINTR; break; }
+        uint32_t at = total % size, room = size - at;
+        e = sys_read(fd, ring + at, room < 64u ? room : 64u);
+        if (e <= 0) break;
+        total += (uint32_t)e;
+    }
+    if (e < 0) { sys_free(ring); return e; }
+    uint32_t have = total < size ? total : size, first = total - have, start = first, newline = 0;
+    for (uint32_t i = total; i-- > first;) {                 /* back over the lines asked for */
+        if (ring[i % size] != '\n' || i == total - 1) continue;
+        if (!newline) newline = i + 1;
+        if (!--lines) { start = i + 1; break; }
+    }
+    if (lines && total > size && newline) {                  /* not all kept: from a whole line */
+        for (uint32_t i = first; i < total; ++i)
+            if (ring[i % size] == '\n') { start = i + 1; break; }
+    }
+    for (uint32_t i = start; i < total && !e;) {             /* in up to two pieces */
+        uint32_t at = i % size, n = total - i < size - at ? total - i : size - at;
+        if (write_all(ring + at, (int)n)) e = SYS_EIO;
+        i += n;
+    }
+    sys_free(ring);
+    return e;
+}
+
 static int tail_fd(int fd, uint32_t lines)
 {
     if (!lines) return 0;
     int end = sys_lseek(fd, 0, SEEK_END);
-    if (end < 0) return end;
+    if (end < 0) return tail_stream(fd, lines);
     int at = end, start = 0;
     char buf[64];
     while (at > 0 && !start) {

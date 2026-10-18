@@ -66,7 +66,7 @@ pid name prio state stack_used stack_size cpu_ms
 - Synchronisation: wait queues, mutexes, semaphores (can be given from interrupts); SPI bus lock and CH376S device lock
 - System calls: entered with `svc`; the kernel function runs in the caller's own task context, so it may block; user-side interface in `lib/sys.h`
 - Terminals: canonical line editing (backspace, Ctrl-U, Ctrl-C, Ctrl-D, arrow keys ignored) over a byte backend
-- Console tty0: onboard 128x64 LCD as a 21x8 text terminal plus the USB keyboard (Shift, Caps Lock, Ctrl, arrows, auto-repeat); by default the shell starts when Enter is pressed and its RAM is freed at logout
+- Console tty0: onboard 128x64 LCD as a text terminal plus the USB keyboard (Shift, Caps Lock, Ctrl, arrows, auto-repeat); by default the shell starts when Enter is pressed and its RAM is freed at logout. Two text sizes, 21x8 (5x7 font) and 32x10 (3x5 font): Ctrl+- and Ctrl+=; a scrollback: PageUp/PageDown, Shift+Up/Down ([docs/USER_ENV.md](docs/USER_ENV.md#the-lcd-console))
 - Run-time settings (`sysctl`): console off/ask/on, idle logout, telnet session limit, telnetd/httpd on or off,
   watchdog timeout (a hardware watchdog resets the board if the kernel daemon stops running)
 - Kernel daemon `kd`: one event loop for the network, keyboard, telnet and diag listeners, the console shell and module supervision
@@ -113,9 +113,10 @@ pid name prio state stack_used stack_size cpu_ms
 | `ed` interactively and from a script, `date`/time zone, RTC across a reboot (within 1 s) | pass |
 | DHCP lease (0.2 s), packet format, no-server fallback; NTP; `nc` TCP/UDP client, server, interactive, Ctrl-C | pass |
 | `/etc/rc` configures the network by DHCP and starts telnetd at boot (lease 2.4 s after reset) | pass |
-| Settings: console on/ask/off (1736 B freed when the console logs out), idle logout, telnet session limit | pass |
+| Settings: console on/ask/off (2144 B freed when the console logs out), idle logout, telnet session limit | pass |
 | Firmware update through the bootloader, an installation interrupted by a reset, the power-on path | pass |
 | Programs: `/bin/hello` with arguments and exit status, in pipelines and the background, Ctrl-C, from USB, damaged files refused, RAM reclaimed | pass |
+| LCD console: pixels as the fonts give them in both sizes, the scrollback a screen and a line at a time, a key returning to the terminal, `sysctl console_font`/`console_history`; `tail` from a pipe | pass |
 | Programs in APROM: written once and reused, two runs of one program at once, every relocation kind, a program filling the whole area, a new program going to RAM while running programs fill it, kept across a reboot | pass |
 | LCD player: a 60-frame video at its frame rate, one `/dev/lcd` writer at a time, picture until Enter, Ctrl-C, damaged files refused, RAM reclaimed | pass |
 | Sound: 2 s of samples in 2.0 s, one `/dev/audio` writer, a video with sound on time and without gaps, Ctrl-C silences it | pass |
@@ -131,11 +132,11 @@ pid name prio state stack_used stack_size cpu_ms
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot, watchdog reset | pass |
-| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 6032 B (test limit 5600 B) |
+| Free RAM floor: heap free while `free` runs with the console shell (and its 512 B scrollback) and one telnet session | 5304 B (test limit 5200 B) |
 | Code size / static RAM including crash records / main stack / heap | 93 KiB / 2.6 KiB / 512 B / 13.0 KiB |
 | APROM for program code / writing a new program / RAM `hello` needs besides its stack | 35 KiB / 20 ms per 512 B page / 24 B |
 
-Host tests: 5851 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder and the APROM slots on a simulated flash), plus 80 243
+Host tests: 7403 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder, the APROM slots on a simulated flash and the console's scrollback), plus 80 243
 date conversions compared with the host C library.
 
 ## Hardware

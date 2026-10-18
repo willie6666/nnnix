@@ -199,6 +199,12 @@ static int32_t sys_sysctl_k(int32_t key, int32_t value)
     case NN_CTL_TELNET_MAX:
         r = telnetd_max_sessions(value);
         break;
+    case NN_CTL_CONSOLE_FONT:
+        r = console_text_size(value);
+        break;
+    case NN_CTL_CONSOLE_HISTORY:
+        r = console_history(value);
+        break;
     case NN_CTL_WATCHDOG:
         if (value >= 0 && value != wdt_seconds()) {
             if (wdt_set(value)) break;

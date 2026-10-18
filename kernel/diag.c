@@ -16,6 +16,7 @@
 #include "../user/demo.h"
 #include "../net/net.h"
 #include "console.h"
+#include "../drivers/lcd.h"
 #include "../fs/vfs.h"
 #include "../drivers/spiflash.h"
 
@@ -27,7 +28,7 @@
 
 /* Allocated by the worker for the length of one session; buf only for the
  * commands that move bulk data (NEEDS_BUF), not for short text replies. */
-#define NEEDS_BUF "LTRIM"
+#define NEEDS_BUF "LTRIMG"
 static uint8_t *buf;                 /* network transfers */
 static char *reply;
 static unsigned reply_len;
@@ -313,6 +314,10 @@ static void session(void)
     }
     case 'V':
         reply_len = (unsigned)console_snapshot(reply, REPLY);
+        break;
+    case 'G':                                        /* the text screen's pixels, as drawn on the LCD */
+        console_frame(buf);
+        w5500_send(SOCK, buf, LCD_FRAME, 2000);
         break;
     case 'O':
         report(task_spawn("ovf", demo_overflow, 0, 512, 4, 1) ? "overflow task started\n" : "spawn failed\n");

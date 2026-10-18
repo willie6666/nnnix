@@ -740,9 +740,10 @@ the firmware, and only data, bss and the stack take RAM.
   in its 1 KiB stack. The kernel log's time stamp was formatted with `nn_snprintf` under `kvprintf`'s own
   `nn_vformat`, 200 B more on whatever stack logs. It is now built by hand: `play -s` peaks at 820 B, fsd
   at 932 B instead of 1260 B, kd at 600 B instead of 748 B.
-- RAM: `hello` takes 24 B besides its stack (it took its whole 276-byte image); `primes 100000` now finds
-  room for its 6 KiB sieve. The firmware's static RAM grew by 40 B (the slot state), so free RAM with the
-  console shell and one telnet session is 6032 B.
+- RAM: `hello` takes 24 B besides its stack (it took its whole 276-byte image); `primes 100000` found room
+  for its 6 KiB sieve (until the console's scrollback, below, took 200 B of static RAM again). The
+  firmware's static RAM grew by 40 B (the slot state), so free RAM with the console shell and one telnet
+  session was 6032 B; `make test` 165/165.
 - Tests: `test_xip` (54 checks on a simulated APROM: slots found again after a reboot, an unfinished slot
   ignored, the oldest giving way, slots in use never, no room, failing writes, damaged headers). On the
   board (`xip_tests`): `relocs` (every relocation kind) twice with one slot written, two runs at once, a
@@ -752,6 +753,38 @@ the firmware, and only data, bss and the stack take RAM.
   were run without it; the full `make test` is still to be repeated.
 - Cost: the first run of a new program holds interrupts off 20 ms per page erased (the sound stutters, a
   burst of console input could overflow the UART FIFO); later runs write nothing.
+
+### A bigger LCD terminal, scrollback, `tail` from pipes (2026-10-18)
+
+- Two text sizes: the 5x7 font in 6x8 cells (21x8) and a new 3x5 font (`drivers/font3x5.c`, drawn for
+  nnnix, 192 B) in 4x6 cells (32x10). A 6-pixel row straddles the LCD's 8-pixel pages and the LCD cannot
+  be read back, so the console no longer draws characters but pixel columns: a page is computed from the
+  (at most two) rows it shows and streamed to the controller column by column (`lcd_run_*`), no frame
+  buffer. A changed cell repaints its columns of the pages it touches; a scroll repaints the 8 pages.
+- `kernel/vt.c` keeps a 32x10 grid and uses `cols x rows` of it (`vt_resize`): the text stays at the
+  bottom, rows that no longer fit go to the scrollback, and growing takes the latest back. Columns past
+  the width keep their text, so a 32-column row is whole again after a trip to 21 columns.
+- Scrollback (`kernel/scrollback.c`): rows that leave the top, trimmed, in a byte ring of
+  `console_history` bytes (default 512, about 30 lines) allocated from the top of the heap while the
+  console shell runs. While scrolled back the screen stays put even when programs print, and drawing then
+  happens only for the keys (in the kernel daemon), so the 64 B of row buffers it needs are never on a
+  writer's stack.
+- Keys (`drivers/kbd.c`): PageUp/PageDown, Shift+Up/Down, Ctrl+-, Ctrl+= (and Ctrl+0, the keypad's
+  -/+) become bytes from 0x80 up, which no key produced before; `console_input` acts on them and passes
+  nothing on. Any other key while scrolled back returns to the terminal first. `sysctl console_font` and
+  `console_history` set the same from a shell or `/etc/rc`.
+- Tests: `test_console` (resizing both ways with the scrollback, the keys) and `test_scrollback` (order,
+  trimming, the full ring never showing a cut line, taking lines back). On the board a new diag command
+  (`G`) returns the pixels the console computes, and `nntest` compares them with the fonts' sources for
+  both sizes (only the cursor's underline may differ), then pages and scrolls through the scrollback.
+- `tail` reads input that cannot seek (a pipe, the terminal) into a 2 KiB ring (512 B if that is not
+  free) and prints the last lines of it.
+- RAM: the grid and console state take 200 B more static RAM, the scrollback 520 B while the console shell
+  runs: free RAM with the console shell and one telnet session is 5304 B (the test's floor is now
+  5200 B); `sysctl console_history=0` gives the 520 B back. Logging the console out frees 2144 B.
+- `make test` 171/172 (the CP2102 is back): the failure was the program test's expectation that
+  `primes 100000` fits, which the 200 B ended; it now checks `primes 50000` and passes. Interrupt latency
+  at most 14 us.
 
 ## 8. Source layout
 

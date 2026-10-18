@@ -5,7 +5,7 @@
 #include "../lib/string.h"
 #include "../lib/sys.h"
 
-enum { KIND_CONSOLE, KIND_NUMBER, KIND_SERVICE };
+enum { KIND_CONSOLE, KIND_NUMBER, KIND_SERVICE, KIND_FONT };
 
 struct setting {
     const char *name;
@@ -15,6 +15,8 @@ struct setting {
 
 static const struct setting settings[] = {
     { "console", KIND_CONSOLE, NN_CTL_CONSOLE, "off|ask|on: LCD shell (1.5 KiB while it runs)" },
+    { "console_font", KIND_FONT, NN_CTL_CONSOLE_FONT, "normal|small: LCD text 21x8 or 32x10 (Ctrl+= / Ctrl+-)" },
+    { "console_history", KIND_NUMBER, NN_CTL_CONSOLE_HISTORY, "bytes of LCD scrollback (PageUp/PageDown), 0-8192" },
     { "idle_logout", KIND_NUMBER, NN_CTL_IDLE_LOGOUT, "seconds without input before logout; 0 never" },
     { "telnet_max", KIND_NUMBER, NN_CTL_TELNET_MAX, "telnet sessions at once, 0-3 (1.5 KiB each)" },
     { "watchdog", KIND_NUMBER, NN_CTL_WATCHDOG, "reset after 0 (off), 2, 7 or 26 s without the kernel daemon" },
@@ -24,6 +26,7 @@ static const struct setting settings[] = {
 #define COUNT (sizeof settings / sizeof settings[0])
 
 static const char *const console_modes[] = { "off", "ask", "on" };
+static const char *const fonts[] = { "normal", "small" };
 
 static void show(const struct setting *s)
 {
@@ -35,6 +38,7 @@ static void show(const struct setting *s)
     }
     int v = sys_sysctl(s->key, -1);
     if (s->kind == KIND_CONSOLE) printf("%s=%s\n", s->name, v >= 0 && v <= 2 ? console_modes[v] : "?");
+    else if (s->kind == KIND_FONT) printf("%s=%s\n", s->name, v >= 0 && v <= 1 ? fonts[v] : "?");
     else printf("%s=%d\n", s->name, v);
 }
 
@@ -52,6 +56,9 @@ static int set(const struct setting *s, const char *value)
     if (s->kind == KIND_CONSOLE) {
         v = -1;
         for (int i = 0; i < 3; ++i) if (!strcmp(value, console_modes[i])) v = i;
+        if (v < 0) return -1;
+    } else if (s->kind == KIND_FONT) {
+        v = !strcmp(value, "normal") ? 0 : !strcmp(value, "small") ? 1 : -1;
         if (v < 0) return -1;
     } else {
         if (!*value) return -1;

@@ -6,7 +6,15 @@
 /* USB boot-keyboard reports to terminal bytes (host tested): ASCII with Shift
  * and Caps Lock, Ctrl+letter as control characters, Enter as CR, Backspace as
  * DEL, arrows/Home/End/Delete as ANSI sequences. A held key repeats after
- * 500 ms every 50 ms. */
+ * 500 ms every 50 ms.
+ * Keys for the console itself come out as bytes from 0x80 up, which no key
+ * gives otherwise: the console acts on them and passes nothing on. */
+#define KBD_PAGE_UP     0x80u        /* PageUp (with Shift too): scroll back a screen */
+#define KBD_PAGE_DOWN   0x81u        /* PageDown */
+#define KBD_LINE_UP     0x82u        /* Shift+Up: a line */
+#define KBD_LINE_DOWN   0x83u        /* Shift+Down */
+#define KBD_TEXT_SMALL  0x84u        /* Ctrl+-: small text, more of it */
+#define KBD_TEXT_LARGE  0x85u        /* Ctrl+= (Ctrl++) or Ctrl+0: the normal size */
 #define KBD_REPEAT_DELAY 500u
 #define KBD_REPEAT_RATE  50u
 

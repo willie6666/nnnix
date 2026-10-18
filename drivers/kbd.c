@@ -3,6 +3,7 @@
 #include "hidkey.h"
 
 #define MOD_CTRL 0x11u
+#define MOD_SHIFT 0x22u
 #define USAGE_CAPS 0x39u
 
 static int contains(const uint8_t *report, uint8_t usage)
@@ -25,14 +26,20 @@ static int translate(uint8_t usage, uint8_t mods, int caps, uint8_t *out, int ma
     switch (usage) {
     case 0x28: out[0] = '\r'; return 1;
     case 0x2a: out[0] = 0x7f; return 1;
+    case 0x4b: out[0] = KBD_PAGE_UP; return 1;
+    case 0x4e: out[0] = KBD_PAGE_DOWN; return 1;
     case 0x4f: return sequence("\033[C", out, max);
     case 0x50: return sequence("\033[D", out, max);
-    case 0x51: return sequence("\033[B", out, max);
-    case 0x52: return sequence("\033[A", out, max);
+    case 0x51: if (mods & MOD_SHIFT) { out[0] = KBD_LINE_DOWN; return 1; } return sequence("\033[B", out, max);
+    case 0x52: if (mods & MOD_SHIFT) { out[0] = KBD_LINE_UP; return 1; } return sequence("\033[A", out, max);
     case 0x4a: return sequence("\033[H", out, max);
     case 0x4d: return sequence("\033[F", out, max);
     case 0x4c: return sequence("\033[3~", out, max);
     default: break;
+    }
+    if (mods & MOD_CTRL) {                        /* text size: Ctrl with - = 0, or the keypad's - + */
+        if (usage == 0x2d || usage == 0x56) { out[0] = KBD_TEXT_SMALL; return 1; }
+        if (usage == 0x2e || usage == 0x27 || usage == 0x57) { out[0] = KBD_TEXT_LARGE; return 1; }
     }
     char c = hid_to_ascii(usage, mods, caps);
     if (!c) return 0;

@@ -2,7 +2,6 @@
 /* Initialisation sequence from the board vendor's sample (bias, contrast,
  * mapping, display on). */
 #include "lcd.h"
-#include "font5x7.h"
 #include "../arch/nuc140/regs.h"
 
 #define SPI3_BASE 0x40134000u
@@ -70,21 +69,16 @@ void lcd_clear(void)
     cs(0);
 }
 
-void lcd_char(int col, int row, char c, int cursor)
+/* Logical x is controller column 129 - x: a run from x_hi downwards goes out
+ * in the controller's (rising) order. */
+void lcd_run_begin(int page, int x_hi)
 {
-    if (col < 0 || col >= LCD_COLS || row < 0 || row >= LCD_ROWS) return;
-    uint8_t ch = (uint8_t)c;
-    const uint8_t *glyph = font5x7[(ch >= 0x20 && ch <= 0x7f ? ch : '?') - 0x20];
-    uint8_t under = cursor ? 0x80u : 0;
-    int x = col * 6;
-    /* Logical columns x..x+5 are controller columns 129-x down to 124-x; write
-     * them upwards from 124-x: the spacing column first, then the glyph reversed. */
     cs(1);
-    address((uint8_t)row, (uint8_t)(124 - x));
-    data(under);
-    for (int i = 4; i >= 0; --i) data((uint8_t)(glyph[i] | under));
-    cs(0);
+    address((uint8_t)page, (uint8_t)(129 - x_hi));
 }
+
+void lcd_run_byte(uint8_t b) { data(b); }
+void lcd_run_end(void) { cs(0); }
 
 void lcd_bytes(uint32_t off, const uint8_t *p, uint32_t n)
 {

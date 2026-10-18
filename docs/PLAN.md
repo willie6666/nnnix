@@ -963,28 +963,33 @@ firmware's fonts, handed to programs in `nn_lib` version 2 (`font3x5`, `font5x7`
   existing sound tests now go through `/dev/adpcm` (32000 samples, 0 short); `cat x.u8 > /dev/audio` and
   `audioshare` (16000 samples) unchanged.
 
-### The computer's screen on the LCD: `nnscreen.py`, `nninput.py`, `nc -i` (2026-10-19)
+### The computer's screen on the LCD: `remote`, `nnscreen.py`, `nninput.py` (2026-10-19)
 
-- The board side was first tried as `cat /dev/input | nc -l 1234 | play`: five tasks with the shell, and
-  too little RAM left to even start the diag service's worker; `cat` also stays blocked in `/dev/input`
-  (holding the keyboard) after the stream ends, until a key gets it `EPIPE`. Taken instead: `nc -i`, which
-  reads `/dev/input` with `O_NONBLOCK` in its own receive loop (between socket reads, every 10 ms while
-  nothing arrives) and sends the events, so `nc -i -l 1234 | play` runs the same tasks as `nc -l 1234 |
-  play`; firmware 248 B larger, no static RAM.
+- The board side was first `cat /dev/input | nc -l 1234 | play`: five tasks with the shell, too little RAM
+  left to even start the diag service's worker, and `cat` stays blocked in `/dev/input` (holding the
+  keyboard) after the stream ends, until a key gets it `EPIPE`. Then `nc -i` (the events sent from nc's own
+  receive loop); replaced, on request, by a program of its own: `remote` (`bin/remote.c`, 2.2 KiB of text
+  in APROM), which listens, decodes the stream a piece at a time into its one frame for `/dev/lcd`, and
+  polls `/dev/input` with `O_NONBLOCK` between socket reads (every 10 ms while nothing arrives), sending
+  the events back on the same connection. One task and no pipe: about 1 KiB more free than `nc -l | play`.
 - `play` treats a header with no time per frame (and a frame count other than 1) as a live stream: each
-  frame shows when it has come, none counts as late. `nnscreen.py` sends frames only when they change, so
-  nothing queues between the computer and the board.
+  frame shows when it has come, none counts as late (so `nnscreen.py | nc` into `nc -l | play` works too).
+  `nnscreen.py` sends frames only when they change, so nothing queues between the computer and the board.
 - On the computer, GNOME's Mutter D-Bus services (`tools/mutter.py`): a screen cast into GStreamer
-  (`max-framerate`, `videoscale` to about twice the LCD size; `videorate` aborts on Mutter's variable rate),
-  and a remote desktop session for the input. `nninput.py` moves the pointer to absolute positions it keeps
-  and shares them with `nnscreen.py` through a file, which draws the pointer (no program may ask GNOME
-  where it is, and the cast's cursor metadata does not reach GStreamer).
-- Measured: raw frames at about 100 per second through `nc -i -l | play`; an event to the computer's pointer
-  in about 25 ms; lowest free 896 B (a diag request beside it) and 1456 B with the console shell logged in;
+  (`max-framerate`; `videoscale` to about twice what the LCD shows, its caps changed as the zoom changes,
+  and `keepalive-time` so a still screen still comes at the new scale; `videorate` aborts on Mutter's
+  variable rate), and a remote desktop session for the input. `nninput.py` moves the pointer to absolute
+  positions it keeps and shares them, with the zoom the board's keypad chose (2 closer, 8 farther, 5 the
+  whole screen; 8 4 2 1 screen pixels per LCD pixel), through a file; `nnscreen.py` draws the pointer (no
+  program may ask GNOME where it is, and the cast's cursor metadata does not reach GStreamer) and keeps the
+  point under it in place across zoom steps, moving the zoomed part once the pointer nears an edge.
+- Measured with the console shell and telnet logged in: raw frames at about 120 per second through
+  `remote`, lowest free 2848 B (`nc -l | play`: 1768 B); an event to the computer's pointer in about 25 ms;
   `nnscreen.py` about 45% of one RK3588 core at 10 fps.
-- Tests: `input_tests` runs `nc -i -l 1234 | play -v` with a live stream and gets back the events fed
-  through the CH9350 parser; `tests/host/test_nnscreen.py` checks the scaling, placement, levels, pointer,
-  a live stream that decodes, and `nninput.py`'s keys, mouse, keypad and release on a stand-in session.
+- Tests: `input_tests` runs `remote -v` with a live stream and gets back the events fed through the CH9350
+  parser and the keypad; `tests/host/test_nnscreen.py` checks the zoomed parts, scaling, placement,
+  levels, pointer, a live stream that decodes, and `nninput.py`'s keys, mouse, keypad zoom and release on
+  a stand-in session.
 
 ## 8. Source layout
 

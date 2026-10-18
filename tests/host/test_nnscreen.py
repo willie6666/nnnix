@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """tools/nnscreen.py and tools/nninput.py without a desktop (run by `make
-host-test`): the screen scaled into the LCD's picture with the pointer drawn
-where it is, the levels stretched, a live stream that decodes; the board's
-events replayed as the right key codes, pointer moves, buttons and wheel steps
-(on a stand-in for Mutter's session), and everything held let go at the end."""
+host-test`): the part of the screen shown at each zoom, the screen scaled into
+the LCD's picture with the pointer drawn where it is, the levels stretched, a
+live stream that decodes; the board's events replayed as the right key codes,
+pointer moves, buttons and wheel steps (on a stand-in for Mutter's session),
+its keypad as zoom steps, and everything held let go at the end."""
 import os
 import struct
 import sys
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp()           # the pointer file goes here
+os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp()           # the state file goes here
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
 import mknnv                                                  # noqa: E402
@@ -32,12 +33,6 @@ def check(ok, what):
         print(f'test_nnscreen: FAILED: {what}', file=sys.stderr)
 
 
-class Args:
-    follow = False
-    area = None
-    zoom = 2
-
-
 # ---- the picture ----
 g = np.zeros((90, 160), dtype=np.uint8)
 g[:, 80:] = 200
@@ -46,14 +41,23 @@ check(small.shape == (2, 4) and (small[:, :2] == 0).all() and (small[:, 2:] == 2
 check((nnscreen.shrink(np.full((7, 13), 99, np.uint8), 5, 3) == 99).all(), 'shrink by uneven steps')
 
 screen = (1920, 1080)
-check(nnscreen.region(Args, screen, None) == (0, 0, 1920, 1080), 'region: the whole screen')
-a = Args()
-a.area = [1800, 1000, 400, 400]
-check(nnscreen.region(a, screen, None) == (1800, 1000, 120, 80), 'region: --area cut at the edge')
-a = Args()
-a.follow = True
-check(nnscreen.region(a, screen, (960, 540)) == (832, 476, 256, 128), 'region: --follow around the pointer')
-check(nnscreen.region(a, screen, (5, 1079)) == (0, 952, 256, 128), 'region: --follow at a corner')
+v = nnscreen.View(screen)
+check(v.region(0, (500, 500)) == (0, 0, 1920, 1080), 'the whole screen')
+check(nnscreen.View(screen, [1800, 1000, 400, 400]).region(0, None) == (1800, 1000, 120, 80), '--area cut at the edge')
+check(v.region(8, (960, 540)) == (448, 284, 1024, 512), 'zoomed in from the whole screen: the pointer stays put')
+r = v.region(2, (960, 540))
+check(r == (832, 476, 256, 128), f'closer: the point under the pointer stays put: {r}')
+check(v.region(2, (1000, 540)) == r, 'the pointer moves inside: the part stays')
+r = v.region(2, (1080, 540))
+check(r == (856, 476, 256, 128), f'near the right edge: the part moves along: {r}')
+check(v.region(1, (1919, 1079)) == (1792, 1016, 128, 64), 'at the screen\'s corner: kept on the screen')
+check(v.region(0, (5, 5)) == (0, 0, 1920, 1080), 'back to the whole screen')
+check(nnscreen.View(screen).region(2, (5, 1079)) == (0, 952, 256, 128), 'zoomed from the start, at a corner')
+check(nnscreen.scale_for((0, 0, 1920, 1080)) == 2 * 128 / 1920 and nnscreen.scale_for((0, 0, 256, 128)) == 1.0,
+      'the stream scaled to about twice what the LCD shows')
+check((nnscreen.shrink(np.arange(6, dtype=np.uint8).reshape(2, 3), 6, 4) ==
+       np.repeat(np.repeat(np.arange(6, dtype=np.uint8).reshape(2, 3), 2, 0), 2, 1)).all(),
+      'shrink repeats pixels where the picture is smaller (just after a zoom)')
 
 f = 256 / 1920                                               # the stream comes at 256x144
 gray = np.full((144, 256), 30, dtype=np.uint8)
@@ -113,12 +117,20 @@ def ev(kind, code, value=0, dx=0, dy=0):
 
 s = Session()
 r = nninput.Replay(s, 2.0, False)
-for e in (ev(1, 0x04, 1), ev(1, 0x04, 0), ev(1, 0xe1, 1), ev(1, 0x52, 1), ev(3, 5, 1), ev(3, 5, 0), ev(1, 0x99, 1)):
+for e in (ev(1, 0x04, 1), ev(1, 0x04, 0), ev(1, 0xe1, 1), ev(1, 0x52, 1), ev(1, 0x99, 1)):
     r.event(*e)
 check(s.calls == [('NotifyKeyboardKeycode', 30, True), ('NotifyKeyboardKeycode', 30, False),
-                  ('NotifyKeyboardKeycode', 42, True), ('NotifyKeyboardKeycode', 103, True),
-                  ('NotifyKeyboardKeycode', 28, True), ('NotifyKeyboardKeycode', 28, False)],
-      f'keys: a, Shift, Up, the keypad\'s 5 as Enter, an unknown usage left out: {s.calls}')
+                  ('NotifyKeyboardKeycode', 42, True), ('NotifyKeyboardKeycode', 103, True)],
+      f'keys: a, Shift, Up, an unknown usage left out: {s.calls}')
+s.calls.clear()
+zooms = []
+for code in (2, 2, 2, 2, 2, 8, 5, 8, 2, 3):
+    r.event(*ev(3, code, 1))
+    r.event(*ev(3, code, 0))
+    zooms.append(mutter.read_state()[2])
+check(zooms == [8, 4, 2, 1, 1, 2, 0, 0, 8, 8] and not s.calls,
+      f'the keypad zooms: 2 closer, 8 farther, 5 the whole screen, others nothing: {zooms}')
+r.event(*ev(3, 5, 1))
 check(all(0 < k < 256 for k in nninput.HID_TO_EVDEV.values()) and nninput.HID_TO_EVDEV[0x27] == 11
       and nninput.HID_TO_EVDEV[0x45] == 88, 'the key table')
 s.calls.clear()
@@ -132,10 +144,10 @@ check(s.calls == [('NotifyPointerMotionAbsolute', Session.stream, 980.0, 530.0),
                   ('NotifyPointerButton', 0x110, False), ('NotifyPointerButton', 0x111, False),
                   ('NotifyPointerAxisDiscrete', 0, -1), ('NotifyPointerAxisDiscrete', 0, 1)],
       f'the mouse: a move from the middle, buttons, the wheel up then down: {s.calls}')
-check(mutter.read_pointer() == (980.0, 530.0), f'the pointer file: {mutter.read_pointer()}')
+check(mutter.read_state() == (980.0, 530.0, 0), f'the state file: {mutter.read_state()}')
 for _ in range(20):
     r.event(*ev(2, 0, 0, -127, 127))
-check(mutter.read_pointer() == (0.0, 1079.0), f'the pointer stays on the screen: {mutter.read_pointer()}')
+check(mutter.read_state()[:2] == (0.0, 1079.0), f'the pointer stays on the screen: {mutter.read_state()}')
 s.calls.clear()
 r.event(*ev(1, 0xe0, 1))
 r.event(*ev(2, 4, 0))
@@ -144,8 +156,8 @@ r.release()
 check(sorted(s.calls) == [('NotifyKeyboardKeycode', 29, False), ('NotifyKeyboardKeycode', 42, False),
                           ('NotifyKeyboardKeycode', 103, False), ('NotifyPointerButton', 0x112, False)],
       f'the end lets go of what is held: {s.calls}')
-mutter.remove_pointer()
-check(mutter.read_pointer() is None, 'no pointer file once nninput ends')
+mutter.remove_state()
+check(mutter.read_state() is None, 'no state file once nninput ends')
 
 print(f'test_nnscreen: {checks} checks, {failures} failed')
 sys.exit(1 if failures else 0)

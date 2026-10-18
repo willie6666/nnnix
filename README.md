@@ -93,9 +93,9 @@ pid name prio state stack_used stack_size cpu_ms
   (PWM on PB11, timer interrupt), `/dev/adpcm` the same from NNV's ADPCM records, decoded in the interrupt; `tools/mknnv.py` converts pictures and videos through ffmpeg into NNV, a
   delta-coded format of our own with optional ADPCM sound; `play` shows them (all of Bad Apple at 30 fps;
   `play -s` adds the sound, though the buzzer carries rhythm far better than pitch); `nc -l 1234 | play`
-  plays a video streamed over the network (all of Bad Apple: 0 frames late); `tools/nnscreen.py` streams
-  a GNOME computer's screen to it and `tools/nninput.py` works that computer with the board's keyboard and
-  mouse (`nc -i -l 1234 | play` on the board)
+  plays a video streamed over the network (all of Bad Apple: 0 frames late); `remote` shows a GNOME
+  computer's screen (`tools/nnscreen.py`) and works it with the board's keyboard and mouse
+  (`tools/nninput.py`); the board's keypad zooms in at the pointer
 - Input for programs (games): `/dev/input` gives one program the USB keyboard and mouse and the board's 1-9
   keypad as press/release events (`sdk/examples/keys.c`); the board's SW_INT button ends the program
   holding the keys or the display, even one stuck in a loop

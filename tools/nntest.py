@@ -1786,8 +1786,9 @@ def input_tests(ns, serial, report):
                              r"key 0xe1 up \r\nkey 0x04 up \r\nmouse buttons 1 dx 5 dy -3 wheel 0\r\n"
                              r"pad 5 down\r\npad 9 down\r\n", out) is not None,
                    out.strip().replace('\r\n', ' | '))
-        # nc -i: the events go back to the peer while a live stream (a header
-        # with no time per frame) plays, as for tools/nnscreen.py | nc | nninput.py.
+        # remote: a live stream (a header with no time per frame) shown, and the
+        # events fed through the CH9350 parser and the keypad sent back on the
+        # same connection, as for tools/nnscreen.py | nc | nninput.py.
         def remote():
             for _ in range(50):
                 try:
@@ -1805,8 +1806,11 @@ def input_tests(ns, serial, report):
                 for f in (ch9350_keys(0x04), ch9350_keys(), bytes([0x57, 0xab, 0x02, 1, 5, 0xfd, 0]),
                           bytes([0x57, 0xab, 0x02, 0, 0, 0, 0])):
                     request(b'J', 4, len(f), f)
+                request(b'J', 4, 0x10000 | 0x002)                    # keypad 2
+                time.sleep(0.15)
+                request(b'J', 4, 0x10000)
                 limit = time.monotonic() + 5
-                while len(got) < 32 and time.monotonic() < limit:
+                while len(got) < 48 and time.monotonic() < limit:
                     try:
                         d = c.recv(64)
                     except socket.timeout:
@@ -1818,13 +1822,14 @@ def input_tests(ns, serial, report):
                 time.sleep(0.5)
             return got
 
-        t.send('nc -i -l 1234 | play -v\r\n')
-        time.sleep(0.5)
+        t.send('remote -v\r\n')
+        time.sleep(0.8)
         got = ns.call(remote)
         out = t.read_until(Telnet.PROMPT, 10)
         events = [struct.unpack_from('<BBBbbb', got, i) for i in range(0, len(got) - 7, 8)]
-        report.add('nc -i', events == [(1, 0x04, 1, ord('a'), 0, 0), (1, 0x04, 0, 0, 0, 0), (2, 1, 0, 0, 5, -3),
-                                       (2, 0, 0, 0, 0, 0)] and 'play: 2 frames in' in out and ', 0 late' in out,
+        report.add('remote', events == [(1, 0x04, 1, ord('a'), 0, 0), (1, 0x04, 0, 0, 0, 0), (2, 1, 0, 0, 5, -3),
+                                        (2, 0, 0, 0, 0, 0), (3, 2, 1, 0, 0, 0), (3, 2, 0, 0, 0, 0)]
+                   and 'remote: 2 frames, 26 bytes in' in out and '6 events sent' in out,
                    f'events {events}; ' + out.strip().replace('\r\n', ' | '))
         t.cmd('keys spin &')
         time.sleep(0.8)

@@ -56,8 +56,9 @@ flash: build/nnnix.bin
 # Programs for /bin, built like the SDK's (sdk/Makefile: -fropi -frwpi, run
 # from APROM by kernel/xip.c) from the commands in bin/: bin/main.c calls
 # cmd_NAME. tools/nnupdate.py --bin build/bin installs them.
-PROGRAMS = play ed wc head tail grep hexdump wget host snake tetris flappy
+PROGRAMS = play ed wc head tail grep hexdump wget host snake tetris flappy remote
 PROG_SRCS_play = bin/play.c
+PROG_SRCS_remote = bin/remote.c
 PROG_SRCS_ed = bin/ed.c bin/edcore.c
 PROG_SRCS_wc = bin/textutil.c
 PROG_SRCS_head = bin/textutil.c

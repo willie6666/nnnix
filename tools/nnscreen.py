@@ -2,27 +2,30 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """This computer's screen as an NNV stream for the board's LCD (docs/NNV.md).
 
-  nnscreen.py [options] | nc BOARD 1234            on the board: nc -l 1234 | play
-  nnscreen.py [options] | nc BOARD 1234 | nninput.py      board: nc -i -l 1234 | play
+  nnscreen.py [options] | nc BOARD 1234 | nninput.py      on the board: remote
+  nnscreen.py [options] | nc BOARD 1234                   board: nc -l 1234 | play
 
-The second form also hands the board's keyboard, mouse and keypad to this
-computer (tools/nninput.py). Standard output gets a live stream: its header
-gives no frame count and no time per frame, so `play` shows each frame as soon
-as it comes, and frames go out only when the picture changes. Into a file
-(`-o FILE`, or a redirection) it records a timed video instead, every frame,
-with the count filled in at the end (Ctrl-C or --duration ends it).
+The first form also hands the board's keyboard and mouse to this computer
+(tools/nninput.py), and its keypad zooms the picture at the pointer: 2 closer,
+8 farther, 5 the whole screen. The second only shows the screen. Standard
+output gets a live stream: its header gives no frame count and no time per
+frame, so the board shows each frame as soon as it comes, and frames go out
+only when the picture changes. Into a file (`-o FILE`, or a redirection) it
+records a timed video instead, every frame, with the count filled in at the
+end (Ctrl-C or --duration ends it).
 
 Needs a GNOME desktop session (Mutter's screen cast, through PipeWire and
 GStreamer). The picture is scaled to 128x64 by averaging, then dithered. The
-whole screen at that size shows windows, not text: --area shows part of it,
---follow a part that moves with the pointer.
+whole screen at that size shows windows, not text; zoomed in (2: two screen
+pixels per LCD pixel) text can be read. The zoomed part follows the pointer
+once it comes near an edge.
 
   --fps N              pictures per second (default 10)
-  --area X,Y,W,H       only this part of the screen (in screen pixels)
-  --follow [--zoom N]  a part around the pointer, N screen pixels per LCD
-                       pixel (default 2: 256x128, where text can be read);
-                       needs nninput.py running, which knows where the
-                       pointer is
+  --zoom N             start zoomed: N screen pixels per LCD pixel, one of
+                       8 4 2 1 (default 0: the whole screen); the board's
+                       keypad changes it while nninput.py runs
+  --area X,Y,W,H       show this part of the screen (in screen pixels) instead
+                       of the whole screen
   --monitor NAME       a monitor other than the primary one (such as HDMI-1)
   --fit pad|crop|stretch, --dither bayer|threshold|floyd|atkinson,
   --threshold N, --invert          as in mknnv.py convert
@@ -53,25 +56,61 @@ W, H = mknnv.W, mknnv.H
 ARROW = ['1', '11', '121', '1221', '12221', '122221', '1222111', '12121', '11 11', '    11']
 
 
-def region(args, screen, pointer):
-    """The part of the screen to show: x, y, w, h."""
-    sw, sh = screen
-    if args.follow:
-        w, h = min(sw, W * args.zoom), min(sh, H * args.zoom)
-        px, py = pointer if pointer else (sw / 2, sh / 2)
-        x = int(min(max(px - w / 2, 0), sw - w))
-        y = int(min(max(py - h / 2, 0), sh - h))
-        return x, y, w, h
-    if args.area:
-        x, y, w, h = args.area
+class View:
+    """Which part of the screen to show (x, y, w, h in screen pixels). Zoomed,
+    it is 128 x 64 times the zoom; a new zoom keeps the point under the
+    pointer where it was on the LCD, and the part moves along once the pointer
+    comes within an eighth of an edge."""
+
+    def __init__(self, screen, area=None):
+        self.screen, self.area = screen, area
+        self.zoom, self.cur = None, None
+
+    def whole(self):
+        sw, sh = self.screen
+        if not self.area:
+            return 0, 0, sw, sh
+        x, y, w, h = self.area
         x, y = min(max(x, 0), sw - 1), min(max(y, 0), sh - 1)
         return x, y, max(1, min(w, sw - x)), max(1, min(h, sh - y))
-    return 0, 0, sw, sh
+
+    def region(self, zoom, pointer):
+        sw, sh = self.screen
+        if not zoom:
+            r = self.whole()
+        else:
+            w, h = min(sw, W * zoom), min(sh, H * zoom)
+            px, py = pointer if pointer else (sw / 2, sh / 2)
+            if self.cur is None:
+                x, y = px - w / 2, py - h / 2
+            elif zoom != self.zoom:                      # the point under the pointer stays put
+                ox, oy, ow, oh = self.cur
+                x, y = px - (px - ox) * w / ow, py - (py - oy) * h / oh
+            else:
+                x, y = self.cur[:2]
+            mx, my = w / 8, h / 8                        # and the pointer stays away from the edges
+            x = px - mx if px < x + mx else px - w + mx if px > x + w - mx else x
+            y = py - my if py < y + my else py - h + my if py > y + h - my else y
+            r = int(min(max(x, 0), sw - w)), int(min(max(y, 0), sh - h)), w, h
+        self.zoom, self.cur = zoom, r
+        return r
+
+
+def scale_for(region):
+    """How far the stream is scaled down for a region: to about twice what
+    the LCD shows of it, so GStreamer does the heavy part of the averaging."""
+    _, _, w, h = region
+    return min(1.0, 2 * max(W / w, H / h))
 
 
 def shrink(gray, ow, oh):
-    """Average gray (rows) down to oh x ow."""
+    """Average gray (rows) down to oh x ow (or repeat its pixels where it is
+    smaller: just after a zoom, until the stream comes at its new scale)."""
     h, w = gray.shape
+    if oh > h:
+        gray, h = gray[np.arange(oh) * h // oh], oh
+    if ow > w:
+        gray, w = gray[:, np.arange(ow) * w // ow], ow
     rows = np.linspace(0, h, oh + 1).astype(int)
     cols = np.linspace(0, w, ow + 1).astype(int)
     rows, cols = rows[:-1], cols[:-1]
@@ -162,8 +201,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--fps', type=float, default=10)
     ap.add_argument('--area', type=parse_area, metavar='X,Y,W,H')
-    ap.add_argument('--follow', action='store_true')
-    ap.add_argument('--zoom', type=int, default=2)
+    ap.add_argument('--zoom', type=int, default=0, choices=mutter.ZOOMS)
     ap.add_argument('--monitor', default='')
     ap.add_argument('--fit', choices=('pad', 'crop', 'stretch'), default='pad')
     ap.add_argument('--dither', choices=('bayer', 'threshold', 'floyd', 'atkinson'), default='bayer')
@@ -176,10 +214,6 @@ def main():
     args = ap.parse_args()
     if not 0.5 <= args.fps <= 60:
         ap.error('--fps: 0.5 to 60')
-    if args.zoom < 1:
-        ap.error('--zoom: 1 or more')
-    if args.follow and args.area:
-        ap.error('--area or --follow, not both')
 
     out = open(args.output, 'wb') if args.output else sys.stdout.buffer
     if out.isatty():
@@ -190,11 +224,8 @@ def main():
         session = mutter.Session(args.monitor, mutter.CURSOR_EMBEDDED)
     except mutter.Error as e:
         sys.exit(f'nnscreen: {e}')
-    # The stream comes scaled to about twice what the LCD shows of it: GStreamer
-    # does the heavy part of the averaging.
-    _, _, rw, rh = region(args, session.size, None)
-    f = min(1.0, 2 * max(W / rw, H / rh))
-    frames = mutter.Frames(session, args.fps, f)
+    view = View(session.size, args.area)
+    frames = mutter.Frames(session, args.fps, scale_for(view.region(args.zoom, None)))
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
     period = 1 / args.fps
     levels = None if args.no_levels else Levels()
@@ -213,9 +244,13 @@ def main():
         out.write(header(0, period * 1000 if record else 0))
         start = due = time.monotonic()
         while args.duration is None or time.monotonic() - start < args.duration:
+            state = mutter.read_state()
+            pointer, zoom = (state[:2], state[2]) if state else (None, args.zoom)
+            area = view.region(zoom, pointer)
+            frames.set_scale(scale_for(area))
             gray = frames.latest()
-            pointer = mutter.read_pointer()
-            grey, place = picture(gray, region(args, session.size, pointer), args.fit, f, tone)
+            f = gray.shape[1] / session.size[0]          # what came: the scale may have just changed
+            grey, place = picture(gray, area, args.fit, f, tone)
             dark = mknnv.dither(grey, args.dither, args.threshold)
             if pointer and not args.no_cursor:
                 draw_arrow(dark, pointer, place)

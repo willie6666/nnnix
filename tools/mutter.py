@@ -7,9 +7,10 @@ input as if from a device. Both only answer programs in the desktop session,
 and GNOME shows its screen sharing indicator while a session runs; a session
 ends with the program that started it (or from that indicator).
 
-The pointer's position goes through a file, so that nnscreen.py can draw it:
-`nninput.py` moves the pointer to absolute positions it keeps itself, and
-writes them to POINTER_FILE.
+The pointer's position and the zoom chosen on the board go through a file
+(STATE_FILE), from nninput.py to nnscreen.py: nninput.py moves the pointer to
+absolute positions it keeps itself, and nnscreen.py draws the pointer and
+shows the part of the screen around it.
 """
 import os
 import time
@@ -23,7 +24,9 @@ except (ImportError, ValueError):                            # the tests need no
 
 RD_BUS, RD_PATH = 'org.gnome.Mutter.RemoteDesktop', '/org/gnome/Mutter/RemoteDesktop'
 SC_BUS, SC_PATH = 'org.gnome.Mutter.ScreenCast', '/org/gnome/Mutter/ScreenCast'
-POINTER_FILE = os.path.join(os.environ.get('XDG_RUNTIME_DIR', '/tmp'), 'nninput-pointer')
+STATE_FILE = os.path.join(os.environ.get('XDG_RUNTIME_DIR', '/tmp'), 'nninput-state')
+# Zoom steps, in screen pixels per LCD pixel; 0 is the whole screen.
+ZOOMS = (0, 8, 4, 2, 1)
 
 CURSOR_HIDDEN, CURSOR_EMBEDDED = 0, 1
 
@@ -105,20 +108,33 @@ class Session:
 
 class Frames:
     """The newest picture of a session's stream, in grey (uint8 rows), at most
-    fps times a second, scaled by `scale` (1: the monitor's own size)."""
+    fps times a second, scaled by `scale` (1: the monitor's own size; set_scale
+    changes it as it runs). A screen that stays the same still sends its
+    picture every 300 ms, so a new scale shows without waiting for a change."""
 
     def __init__(self, session, fps, scale=1.0):
         import numpy as np
         self.np = np
+        self.size = session.size
         Gst.init(None)
-        w, h = (max(1, round(v * scale)) for v in session.size)
         self.pipe = Gst.parse_launch(
-            f'pipewiresrc path={session.node} always-copy=true ! video/x-raw,max-framerate={max(1, round(fps))}/1 '
-            f'! videoscale method=bilinear2 ! video/x-raw,width={w},height={h},pixel-aspect-ratio=1/1 '
+            f'pipewiresrc path={session.node} always-copy=true keepalive-time=300 ! video/x-raw,max-framerate={max(1, round(fps))}/1 '
+            f'! videoscale method=bilinear2 ! capsfilter name=size caps={self.caps(scale)} '
             '! videoconvert ! video/x-raw,format=GRAY8 ! appsink name=out max-buffers=1 drop=true sync=false')
         self.sink = self.pipe.get_by_name('out')
+        self.filter = self.pipe.get_by_name('size')
+        self.scale = scale
         self.pipe.set_state(Gst.State.PLAYING)
         self.gray = None
+
+    def caps(self, scale):
+        w, h = (max(1, round(v * scale)) for v in self.size)
+        return f'video/x-raw,width={w},height={h},pixel-aspect-ratio=1/1'
+
+    def set_scale(self, scale):
+        if scale != self.scale:
+            self.scale = scale
+            self.filter.set_property('caps', Gst.Caps.from_string(self.caps(scale)))
 
     def latest(self, wait=0.0):
         """The newest picture (the last one again while the screen stays the same)."""
@@ -145,25 +161,25 @@ class Frames:
         self.pipe.set_state(Gst.State.NULL)
 
 
-def read_pointer():
-    """(x, y) last written by nninput.py, or None while it is not running."""
+def read_state():
+    """(x, y, zoom) last written by nninput.py, or None while it is not running."""
     try:
-        with open(POINTER_FILE) as f:
-            x, y = f.read().split()[:2]
-        return float(x), float(y)
+        with open(STATE_FILE) as f:
+            x, y, zoom = f.read().split()[:3]
+        return float(x), float(y), int(zoom)
     except (OSError, ValueError):
         return None
 
 
-def write_pointer(x, y):
-    tmp = POINTER_FILE + '.new'
+def write_state(x, y, zoom):
+    tmp = STATE_FILE + '.new'
     with open(tmp, 'w') as f:
-        f.write(f'{x:.1f} {y:.1f}\n')
-    os.replace(tmp, POINTER_FILE)
+        f.write(f'{x:.1f} {y:.1f} {zoom}\n')
+    os.replace(tmp, STATE_FILE)
 
 
-def remove_pointer():
+def remove_state():
     try:
-        os.unlink(POINTER_FILE)
+        os.unlink(STATE_FILE)
     except OSError:
         pass

@@ -2,19 +2,22 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The board's keyboard, mouse and keypad, working this computer.
 
-  nnscreen.py | nc BOARD 1234 | nninput.py        on the board: nc -i -l 1234 | play
+  nnscreen.py | nc BOARD 1234 | nninput.py        on the board: remote
 
-Reads the board's input events (`nc -i`: /dev/input events, 8 bytes each,
-lib/sys.h struct nn_input_event) from standard input and replays them on the
-GNOME desktop through Mutter's remote desktop service: keys as the same keys
-(this computer's keyboard layout applies), the mouse as the pointer, the board's
-1-9 keypad as a few keys (KEYPAD below). Whoever can send to standard input
-controls this computer: feed it only from your board.
+Reads the board's input events (sent by the board's `remote`: /dev/input
+events, 8 bytes each, lib/sys.h struct nn_input_event) from standard input and
+replays them on the GNOME desktop through Mutter's remote desktop service:
+keys as the same keys (this computer's keyboard layout applies), the mouse as
+the pointer. The board's keypad zooms the picture nnscreen.py sends, at the
+pointer: 2 closer, 8 farther, 5 the whole screen again (mutter.ZOOMS). Whoever
+can send to standard input controls this computer: feed it only from your
+board.
 
 The pointer is moved to positions this program keeps (starting in the middle
 of the screen), so a mouse used here meanwhile makes it jump back on the next
-move from the board. It writes the position for nnscreen.py, which draws the
-pointer on the LCD (the screen is too small there to show GNOME's own).
+move from the board. It writes the position and the zoom for nnscreen.py, which
+draws the pointer on the LCD (the screen is too small there to show GNOME's
+own) and shows the part of the screen around it.
 When the input ends (the board's SW_INT button ends nc, or the stream
 stops), keys and buttons still held are let go.
 
@@ -56,8 +59,8 @@ HID_TO_EVDEV = {
     0x87: 89, 0x88: 93, 0x89: 124, 0x8a: 92, 0x8b: 94, 0x90: 122, 0x91: 123,
     0xe0: 29, 0xe1: 42, 0xe2: 56, 0xe3: 125, 0xe4: 97, 0xe5: 54, 0xe6: 100, 0xe7: 126,   # modifiers
 }
-# The board's keypad: 2 4 6 8 arrows, 5 Enter, 1 Esc, 3 Tab, 7 Backspace, 9 Space.
-KEYPAD = {1: 1, 2: 103, 3: 15, 4: 105, 5: 28, 6: 106, 7: 14, 8: 108, 9: 57}
+# The board's keypad: zoom steps (mutter.ZOOMS) closer, farther, or back to the whole screen.
+KEYPAD = {2: +1, 8: -1, 5: 0}
 BUTTONS = ((0x01, 0x110), (0x02, 0x111), (0x04, 0x112))      # left, right, middle: BTN_*
 
 
@@ -68,6 +71,7 @@ class Replay:
         self.x, self.y = self.w / 2, self.h / 2
         self.keys, self.buttons = set(), 0
         self.moved = False
+        self.zoom = 0                                        # an index into mutter.ZOOMS
 
     def key(self, code, down):
         if down:
@@ -81,14 +85,16 @@ class Replay:
             print(f'type {kind} code {code:#04x} value {value} dx {dx} dy {dy}', file=sys.stderr)
         if kind == KEY and code in HID_TO_EVDEV:
             self.key(HID_TO_EVDEV[code], value)
-        elif kind == PAD and code in KEYPAD:
-            self.key(KEYPAD[code], value)
+        elif kind == PAD and code in KEYPAD and value:
+            step = KEYPAD[code]
+            self.zoom = min(max(self.zoom + step, 0), len(mutter.ZOOMS) - 1) if step else 0
+            self.save()
         elif kind == MOUSE:
             if dx or dy or not self.moved:
                 self.x = min(max(self.x + dx * self.speed, 0), self.w - 1)
                 self.y = min(max(self.y + dy * self.speed, 0), self.h - 1)
                 self.s.input('NotifyPointerMotionAbsolute', self.s.stream, self.x, self.y)
-                mutter.write_pointer(self.x, self.y)
+                self.save()
                 self.moved = True
             for bit, button in BUTTONS:
                 if (code ^ self.buttons) & bit:
@@ -97,6 +103,9 @@ class Replay:
             wheel = value - 256 if value > 127 else value
             if wheel:
                 self.s.input('NotifyPointerAxisDiscrete', 0, -wheel)  # the wheel turned away: up
+
+    def save(self):
+        mutter.write_state(self.x, self.y, mutter.ZOOMS[self.zoom])
 
     def release(self):
         for code in list(self.keys):
@@ -121,7 +130,7 @@ def main():
         sys.exit(f'nninput: {e}')
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
     replay = Replay(session, args.speed, args.verbose)
-    mutter.write_pointer(replay.x, replay.y)
+    replay.save()
     data = b''
     try:
         while True:
@@ -142,7 +151,7 @@ def main():
             replay.release()
         except mutter.GLib.Error:
             pass
-        mutter.remove_pointer()
+        mutter.remove_state()
         session.stop()
 
 

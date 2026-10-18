@@ -86,6 +86,7 @@ enum {
 #define O_TRUNC     0x0400
 #define O_APPEND    0x0800
 #define O_DIRECTORY 0x1000
+#define O_NONBLOCK  0x2000           /* /dev/input: a read with nothing waiting returns SYS_EAGAIN */
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
@@ -96,6 +97,45 @@ enum { NN_TYPE_FILE = 1, NN_TYPE_DIR = 2, NN_TYPE_DEV = 3 };
 struct nn_stat { uint32_t size; uint8_t type; };
 struct nn_dirent { char name[NN_NAME_MAX]; uint32_t size; uint8_t type; };
 struct nn_statfs { uint32_t block_size, blocks, free_blocks; };
+
+/* /dev/input (kernel/input.c): the USB keyboard and mouse (through the
+ * CH9350) and the board's 1-9 keypad, for one program at a time. While it is
+ * open the keyboard types nothing into the console; reads return whole
+ * events, waiting for the first (with O_NONBLOCK: SYS_EAGAIN when none waits).
+ * The board's SW_INT button ends the program holding /dev/input (or else the
+ * one holding /dev/lcd), also one that never makes a system call. */
+enum { NN_INPUT_KEY = 1, NN_INPUT_MOUSE = 2, NN_INPUT_PAD = 3 };
+struct nn_input_event {
+    uint8_t type;                    /* NN_INPUT_* */
+    uint8_t code;                    /* KEY: HID usage (NN_KEY_*); PAD: 1-9; MOUSE: buttons (NN_MOUSE_*) */
+    uint8_t value;                   /* KEY, PAD: 1 pressed, 0 released; MOUSE: wheel (signed) */
+    char ch;                         /* KEY pressed: the character it types (Shift, Caps Lock), else 0 */
+    int8_t dx, dy;                   /* MOUSE: motion since the last event (dy > 0: down) */
+    uint16_t ms;                     /* uptime in ms when it happened, low 16 bits */
+};
+#define NN_MOUSE_LEFT   0x01
+#define NN_MOUSE_RIGHT  0x02
+#define NN_MOUSE_MIDDLE 0x04
+/* Some HID keyboard usages: letters are NN_KEY_A + 0..25, digits 1-9 then 0
+ * are NN_KEY_1 + 0..9; modifiers come as keys of their own. */
+#define NN_KEY_A      0x04
+#define NN_KEY_1      0x1e
+#define NN_KEY_ENTER  0x28
+#define NN_KEY_ESC    0x29
+#define NN_KEY_BACKSPACE 0x2a
+#define NN_KEY_TAB    0x2b
+#define NN_KEY_SPACE  0x2c
+#define NN_KEY_F1     0x3a           /* F1-F12: 0x3a-0x45 */
+#define NN_KEY_RIGHT  0x4f
+#define NN_KEY_LEFT   0x50
+#define NN_KEY_DOWN   0x51
+#define NN_KEY_UP     0x52
+#define NN_KEY_LCTRL  0xe0
+#define NN_KEY_LSHIFT 0xe1
+#define NN_KEY_LALT   0xe2
+#define NN_KEY_RCTRL  0xe4
+#define NN_KEY_RSHIFT 0xe5
+#define NN_KEY_RALT   0xe6
 /* A child task running main(argc, argv) in this program image. argv is copied.
  * fd_in/fd_out (or -1 for the terminal) become the child's fd 0 and 1. */
 struct nn_spawn {

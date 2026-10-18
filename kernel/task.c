@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "task.h"
 #include "xip.h"
+#include "exec.h"
 #include "kmem.h"
 #include "klog.h"
 #include "panic.h"
@@ -428,6 +429,26 @@ int task_kill(uint16_t pid)
     }
     irq_restore(s);
     return r;
+}
+
+int task_end_now(uint16_t pid)
+{
+    uint32_t s = irq_save();
+    struct task *t = find(pid);
+    if (!t || t->state == TASK_ZOMBIE) { irq_restore(s); return 0; }
+    /* Preempted (so not inside the kernel: system calls run in the task, but
+     * a task blocked in one is not TASK_READY with its pc in program code).
+     * Saved: r4-r11, then r0 r1 r2 r3 r12 lr pc xpsr. */
+    if (t != cur() && t->user && t->killed && t->state == TASK_READY && exec_is_program_code(t->sp[14])) {
+        uint32_t *frame = (uint32_t *)(((uintptr_t)t->stack + t->stack_size) & ~(uintptr_t)7u) - 16;
+        for (int i = 0; i < 16; ++i) frame[i] = 0;
+        frame[8] = 130;                          /* r0: the exit code of a kill */
+        frame[14] = (uint32_t)(uintptr_t)task_exit & ~1u;
+        frame[15] = 0x01000000u;                 /* xPSR: Thumb */
+        t->sp = frame;
+    }
+    irq_restore(s);
+    return 1;
 }
 
 int task_wait_pid(uint16_t pid, int *status, uint32_t timeout_ms)

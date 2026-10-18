@@ -9,18 +9,23 @@
  *
  * audio: the buzzer (drivers/audio.h): unsigned 8-bit mono samples at 8 kHz.
  * One writer at a time; writes block while the 128 ms buffer is full; the
- * close plays out what is queued. */
+ * close plays out what is queued.
+ *
+ * input: keyboard, mouse and board keypad events (kernel/input.h, struct
+ * nn_input_event in lib/sys.h) for one reader at a time, others get EBUSY;
+ * while it is open the keyboard does not type into the console. */
 #include "vfs.h"
 #include "../arch/nuc140/arch.h"
 #include "../kernel/console.h"
+#include "../kernel/input.h"
 #include "../kernel/task.h"
 #include "../kernel/tty.h"
 #include "../drivers/audio.h"
 #include "../drivers/lcd.h"
 #include "../lib/string.h"
 
-enum { DEV_DIR, DEV_NULL, DEV_ZERO, DEV_TTY, DEV_LED, DEV_LCD, DEV_AUDIO };
-static const char *const names[] = { 0, "null", "zero", "tty", "led", "lcd", "audio" };
+enum { DEV_DIR, DEV_NULL, DEV_ZERO, DEV_TTY, DEV_LED, DEV_LCD, DEV_AUDIO, DEV_INPUT };
+static const char *const names[] = { 0, "null", "zero", "tty", "led", "lcd", "audio", "input" };
 #define DEVICES (sizeof names / sizeof names[0])
 
 static int find(const char *path)
@@ -41,6 +46,11 @@ static int d_open(struct mount *m, const char *path, int flags, struct file *f)
         int e = dev == DEV_LCD ? console_lcd_claim() : audio_open();
         if (e) return e;
     }
+    if (dev == DEV_INPUT) {
+        if ((flags & O_ACCMODE) != O_RDONLY) return SYS_EINVAL;
+        int e = input_claim();
+        if (e) return e;
+    }
     f->priv = (void *)(uintptr_t)dev;
     return 0;
 }
@@ -50,6 +60,7 @@ static int d_read(struct file *f, void *buf, uint32_t n)
     switch ((uintptr_t)f->priv) {
     case DEV_ZERO: memset(buf, 0, n); return (int)n;
     case DEV_TTY: return tty_read(task_self()->tty, buf, n);
+    case DEV_INPUT: return input_read(buf, n, f->flags & O_NONBLOCK);
     case DEV_DIR: return SYS_EISDIR;
     default: return 0;
     }
@@ -83,6 +94,7 @@ static int d_write(struct file *f, const void *buf, uint32_t n)
 
 static int d_close(struct file *f)
 {
+    if ((uintptr_t)f->priv == DEV_INPUT) input_release();
     if ((f->flags & O_ACCMODE) == O_RDONLY) return 0;
     if ((uintptr_t)f->priv == DEV_LCD) console_lcd_release();
     if ((uintptr_t)f->priv == DEV_AUDIO) audio_close();

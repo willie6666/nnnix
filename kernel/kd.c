@@ -97,6 +97,7 @@ static void kd_main(void *arg)
 
 void kd_init(void)
 {
+    input_init();
     uart1_set_notify(kd_notify);
     w5500_set_notify(kd_notify);
     if (!task_spawn("kd", kd_main, 0, 1024, 2, 1)) panic("cannot start kd");

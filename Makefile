@@ -111,7 +111,7 @@ test: build/nnnix.bin programs sdk
 
 HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty build/host/test_console build/host/test_shparse build/host/test_http \
              build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs build/host/test_boot build/host/test_nnv build/host/test_xip build/host/test_scrollback \
-             build/host/test_url build/host/test_spi
+             build/host/test_url build/host/test_spi build/host/test_inputev
 build/host/test_lib: tests/host/test_lib.c lib/fmt.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin $^ -o $@
@@ -142,6 +142,9 @@ build/host/test_scrollback: tests/host/test_scrollback.c kernel/scrollback.c
 build/host/test_url: tests/host/test_url.c bin/url.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_inputev: tests/host/test_inputev.c kernel/inputev.c drivers/hidkey.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_spi: tests/host/test_spi.c drivers/spi.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@

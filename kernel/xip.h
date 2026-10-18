@@ -21,6 +21,7 @@ struct loaded_image {
 };
 
 void xip_init(void);                         /* scan the slots; logs the area */
+uint32_t xip_base(void);                     /* the area's start: APROM from here holds only program text */
 
 /* Everything below runs under this lock (the loader's: one program at a time
  * is looked up or written, and registered before the lock is released). */

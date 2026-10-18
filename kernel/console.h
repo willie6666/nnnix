@@ -28,6 +28,7 @@ int console_history(int bytes);
 /* Graphics (/dev/lcd): while claimed, text output still updates the terminal
  * but not the LCD; release redraws the text. One holder at a time. */
 int  console_lcd_claim(void);         /* 0, or SYS_EBUSY */
+uint16_t console_lcd_owner(void);     /* the pid holding /dev/lcd, 0 if none */
 void console_lcd_write(uint32_t off, const void *p, uint32_t n);   /* lcd_bytes */
 void console_lcd_release(void);
 

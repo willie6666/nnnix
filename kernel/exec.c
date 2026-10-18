@@ -146,6 +146,11 @@ static const uint8_t *text_in_aprom(struct file_at *f, const struct nxe_header *
     return 0;
 }
 
+int exec_is_program_code(uint32_t pc)
+{
+    return (pc >= xip_base() && pc < 0x20000u) || (pc >= 0x20000000u && pc < 0x20004000u);
+}
+
 int exec_program(const struct nn_exec *req)
 {
     if (!req->path || !req->argv || req->argc < 1) return SYS_EINVAL;

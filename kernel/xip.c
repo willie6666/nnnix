@@ -107,6 +107,8 @@ void xip_init(void)
     kprintf("xip: APROM 0x%05x-0x%05x (%u KiB) for programs, %u kept\n", base, AP_END, (AP_END - base) / 1024u, count);
 }
 
+uint32_t xip_base(void) { return base; }
+
 const uint8_t *xip_find(uint32_t crc, uint32_t size)
 {
     for (uint32_t a = base, s; (s = next_slot(&a));) {

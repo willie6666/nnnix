@@ -11,5 +11,8 @@ struct loaded_image;
 int spawn_child(const struct nn_spawn *req, struct loaded_image *image);
 /* Load an NXE file into RAM and start it; pid or a negative error. */
 int exec_program(const struct nn_exec *req);
+/* pc lies in program text: APROM above the firmware (kernel/xip.c), or RAM
+ * (where text goes when APROM has no room; the kernel never runs there). */
+int exec_is_program_code(uint32_t pc);
 
 #endif

@@ -81,6 +81,10 @@ void task_report_leftovers(void);    /* kernel daemon: log leftover memory freed
  * pipes, terminal input, wait) end early with -EINTR. When a task exits, its
  * children are killed and detached, like a hang-up. */
 int  task_kill(uint16_t pid);
+/* A killed program running its own code without system calls: once it is
+ * preempted there, it is made to exit (130) when it next runs, its frames
+ * dropped. 1 while the task is still there (call again), 0 once it is gone. */
+int  task_end_now(uint16_t pid);
 int  task_wait_pid(uint16_t pid, int *status, uint32_t timeout_ms);  /* pid, 0 if still running, <0 error */
 int  task_tty_users(const struct tty *tty);                          /* tasks using this terminal */
 int  sched_block_interruptible(struct waitq *q, uint32_t timeout_ms, uint32_t primask);

@@ -29,6 +29,7 @@ static struct sem input_ready;
  * and /dev/lcd: lcd_lock keeps their SPI transfers apart. */
 static struct mutex lcd_lock;
 static volatile uint8_t graphics;    /* /dev/lcd owns the picture */
+static uint16_t graphics_owner;      /* the pid that opened it */
 
 /* ---- The text on the LCD ----
  * Two sizes: the 5x7 font in 6x8 cells (21x8) and the 3x5 font in 4x6 cells
@@ -203,9 +204,12 @@ int console_lcd_claim(void)
     uint32_t s = irq_save();
     int busy = graphics;
     graphics = 1;
+    if (!busy) graphics_owner = task_self()->pid;
     irq_restore(s);
     return busy ? SYS_EBUSY : 0;
 }
+
+uint16_t console_lcd_owner(void) { return graphics ? graphics_owner : 0; }
 
 void console_lcd_write(uint32_t off, const void *p, uint32_t n)
 {
@@ -218,6 +222,7 @@ void console_lcd_release(void)
 {
     mutex_lock(&lcd_lock);
     graphics = 0;
+    graphics_owner = 0;
     view = 0;
     lcd_clear();
     vt_redraw(&vt);

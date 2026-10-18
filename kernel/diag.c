@@ -16,6 +16,7 @@
 #include "../user/demo.h"
 #include "../net/net.h"
 #include "console.h"
+#include "input.h"
 #include "../drivers/lcd.h"
 #include "../fs/vfs.h"
 #include "../drivers/spiflash.h"
@@ -28,7 +29,7 @@
 
 /* Allocated by the worker for the length of one session; buf only for the
  * commands that move bulk data (NEEDS_BUF), not for short text replies. */
-#define NEEDS_BUF "LTRIMG"
+#define NEEDS_BUF "LTRIMGJ"
 static uint8_t *buf;                 /* network transfers */
 static char *reply;
 static unsigned reply_len;
@@ -297,6 +298,25 @@ static void session(void)
         }
         console_input(buf, (int)got);
         report("injected %u bytes\n", got);
+        break;
+    }
+    case 'J': {
+        /* Input for tests: the payload as if from the CH9350 (keyboard and
+         * mouse frames), or, with bit 16 of length set, its low bits as the
+         * board keys held down (input_inject_keys). */
+        uint32_t got = 0, fed = 0;
+        if (length > 0xffffu) { input_inject_keys((uint16_t)length); report("board keys 0x%03x\n", (unsigned)length & 0x3ffu); break; }
+        if (length > CHUNK) length = CHUNK;
+        while (got < length) {
+            int n = net_recv(SOCK, buf + got, (uint16_t)(length - got), 2000);
+            if (n <= 0) break;
+            got += (uint32_t)n;
+        }
+        for (uint32_t tries = 0; fed < got && tries < 100; ++tries) {
+            fed += input_feed(buf + fed, got - fed);
+            if (fed < got) task_sleep(10);
+        }
+        report("fed %u bytes\n", fed);
         break;
     }
     case 'M': {

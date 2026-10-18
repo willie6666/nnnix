@@ -863,6 +863,33 @@ leaving its file as it was; 8 KiB of scrollback refused beside the shells with t
 `ntpdate` setting the clock from the third answer after two forged ones; http://example.org/ through
 `nnshare`. Not run on the board: the forged DNS answer (the relay of `nnshare` holds port 53).
 
+### Input for programs: `/dev/input` and the SW_INT button (2026-10-18)
+
+For games. `/dev/input` (`kernel/input.c`, `fs/devfs.c`): opened read-only by one task at a time (others
+EBUSY), it takes the keyboard from the console and gives the holder 8-byte events (`struct nn_input_event`,
+`lib/sys.h`): keyboard keys pressed and released by HID usage, with the character typed; modifiers as keys
+`0xe0`-`0xe7`; mouse buttons, motion and wheel; the board keypad's 1-9. A read waits for the first event,
+or with the new `O_NONBLOCK` returns `SYS_EAGAIN`; the 32-event queue (264 B) is allocated while the file
+is open, and mouse motion merges in it. Key events come from the difference between two boot-keyboard
+reports (`kernel/inputev.c`, host tested: modifiers, several keys, releases first, ErrorRollOver, the queue).
+- The board (from the BSP's `Scankey.c`): the keypad on PA0-PA5, quasi-bidirectional, PA2/PA1/PA0 low in
+  turn and the rows read on PA3-PA5 (keys 1 4 7, 2 5 8, 3 6 9); SW_INT on PB15, low when pressed. Both are
+  scanned by kd every 20 ms, and only while a program holds `/dev/input` or `/dev/lcd`; a state counts when
+  two scans agree. All nine keys are read, so several may be held.
+- SW_INT ends the holder of `/dev/input`, or else of `/dev/lcd`: `task_kill`, which takes effect at the next
+  system call, and, for a program that makes none (a game stuck in a loop), `task_end_now`: once the task
+  has been preempted with its pc in program text (APROM above the firmware or RAM, where the kernel never
+  runs), its saved frame is replaced by one at the top of its stack that calls `task_exit(130)`. A task
+  blocked in a system call is never rewritten (its pc is in the kernel); kd retries every scan for 3 s.
+- Tests: diag `J` feeds CH9350 frames through the parser as if from UART1 (`uart1_inject`), or holds board
+  keys down (bit 16 of the length); `input_tests` in nntest: `keys` (`sdk/examples/keys.c`) sees `a`, Shift+`a`,
+  a mouse move and two keypad keys; a second reader gets EBUSY; SW_INT ends `keys spin` (no system calls);
+  `snake` (`sdk/examples/snake.c`, a game on the LCD) ends with Esc and with SW_INT; heap as before. Run on
+  the board by hand (not `make test`: `nnshare` was on), also typing into the LCD console through the
+  CH9350 path while nobody holds `/dev/input`.
+- Cost: 2.5 KiB of firmware (the program area is now 28.5 KiB), 24 B of static RAM; free RAM with the
+  console shell and one telnet session 5248 B.
+
 ## 8. Source layout
 
 ```

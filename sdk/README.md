@@ -56,6 +56,12 @@ Put it in `sdk/examples/` (or build it from the current directory with
 - `examples/audioshare.c` has a worker and the program write to one open
   `/dev/audio` at once (a test; its samples are silent).
 - `examples/readzero.c` checks that reads of 0 bytes return at once (a test).
+- `examples/keys.c` prints the events of `/dev/input`: keyboard keys pressed
+  and released, the mouse, the board's keypad ([docs/USER_ENV.md](../docs/USER_ENV.md),
+  "Keyboard, mouse and keys for programs").
+- `examples/snake.c` is a game: `/dev/input` opened with `O_NONBLOCK` and
+  read between steps, a 1024-byte frame written to `/dev/lcd` per step. The
+  board's SW_INT button ends a game that hangs.
 
 The C library is not linked into the program: it is the firmware's own code in
 flash, reached through a function table that `_start` receives
@@ -71,7 +77,7 @@ The system's own programs (`play`, `ed`, `wc`, `head`, `tail`, `grep`,
 ## Limits
 
 - Code (text: code and read-only data): at most 64 KiB, and the APROM above the
-  firmware holds about 31 KiB of programs at a time (what the firmware leaves). Data and bss: at most
+  firmware holds about 28.5 KiB of programs at a time (what the firmware leaves). Data and bss: at most
   8 KiB, in RAM. Each program also gets a task stack, 1 KiB by default
   (`make STACK=2048`), and a few hundred bytes of kernel bookkeeping. When
   every page of the APROM area belongs to a program that is running, a new

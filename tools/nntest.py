@@ -1721,6 +1721,78 @@ def dns_server(stop, asked):
             u.sendto(struct.pack('>HHHHHH', q[0] << 8 | q[1], 0x8180 | rcode, 1, count, 0, 0) + question + answers, a)
 
 
+def ch9350_keys(*keys, mods=0):
+    """A CH9350 keyboard frame: a boot report with these key usages held."""
+    return bytes([0x57, 0xab, 0x01, mods, 0] + list(keys) + [0] * (6 - len(keys)))
+
+
+def input_tests(ns, serial, report):
+    """/dev/input: keyboard and mouse frames fed through the CH9350 parser (diag
+    J), the board keypad and SW_INT pressed by diag; one holder at a time; the
+    SW_INT button ends a program that never makes a system call, and a game
+    holding /dev/lcd too."""
+    def feed(data):
+        return ns.call(request, b'J', 4, len(data), data)[0].decode(errors='replace')
+
+    def board(mask, hold=0.15):
+        ns.call(request, b'J', 4, 0x10000 | mask)
+        time.sleep(hold)
+
+    statuses = [ns.call(http_request, 'PUT', f'/bin/{name}', (REPO / f'sdk/build/{name}.nxe').read_bytes())[0]
+                for name in ('keys', 'snake')]
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    mark = len(serial.lines)
+    try:
+        idle_httpd(t)
+        before = t.cmd('free')
+        t.send('keys 9\r\n')
+        time.sleep(0.8)
+        fed = [feed(f) for f in (ch9350_keys(0x04), ch9350_keys(), ch9350_keys(0x04, mods=0x02), ch9350_keys(),
+                                 bytes([0x57, 0xab, 0x02, 1, 5, 0xfd, 0]))]
+        board(0x010)
+        board(0x110)
+        board(0)
+        out = t.read_until(Telnet.PROMPT, 5)
+        report.add('input events', all('fed' in f for f in fed) and
+                   re.search(r"key 0x04 down 'a'\r\nkey 0x04 up \r\nkey 0xe1 down \r\nkey 0x04 down 'A'\r\n"
+                             r"key 0xe1 up \r\nkey 0x04 up \r\nmouse buttons 1 dx 5 dy -3 wheel 0\r\n"
+                             r"pad 5 down\r\npad 9 down\r\n", out) is not None,
+                   out.strip().replace('\r\n', ' | '))
+        t.cmd('keys spin &')
+        time.sleep(0.8)
+        busy = t.cmd('keys 1')
+        board(0x200, 0.2)
+        board(0, 0.6)
+        jobs = t.cmd('jobs') + t.cmd('ps')
+        line = serial.wait_for(r'input: SW_INT: ending pid \d+ \(/dev/input\)', 2, mark)
+        report.add('input SW_INT', 'busy' in busy and 'done' in jobs and ' keys ' not in jobs and line is not None,
+                   'a second reader gets EBUSY; SW_INT ended `keys spin` (no system calls) '
+                   + (serial.lines[line] if line is not None else 'no log line'))
+        t.send('snake\r\n')
+        time.sleep(1.5)
+        board(0x080)
+        board(0)
+        feed(ch9350_keys(0x29))
+        feed(ch9350_keys())
+        out = t.read_until(Telnet.PROMPT, 5)
+        t.send('snake\r\n')
+        time.sleep(1.0)
+        board(0x200, 0.2)
+        board(0, 0.5)
+        out2 = t.read_until(Telnet.PROMPT, 5)
+        idle_httpd(t)
+        after = t.cmd('free')
+        fault = serial.wait_for(r'PANIC|HardFault|stack overflow', 1, mark)
+        report.add('input snake', 'snake: length 3, score 0' in out and 'snake: length' not in out2
+                   and before == after and fault is None and all(s in (201, 204) for s in statuses),
+                   'Esc ends it; SW_INT ends it while it holds /dev/lcd and /dev/input; heap as before')
+    finally:
+        for name in ('keys', 'snake'):
+            t.cmd(f'rm /bin/{name}')
+        t.send('exit\r\n'); t.close()
+
+
 def wget_tests(ns, serial, report):
     """wget and host: HTTP and DNS against servers on the test peer."""
     stop, asked = threading.Event(), []
@@ -2236,6 +2308,11 @@ def main():
             except (OSError, TimeoutError, ConnectionError, IndexError) as exc:
                 traceback.print_exc()
                 report.add('M5c tools', False, repr(exc))
+            try:
+                input_tests(ns, serial, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
+                report.add('input', False, repr(exc))
             try:
                 wget_tests(ns, serial, report)
             except (OSError, TimeoutError, ConnectionError) as exc:

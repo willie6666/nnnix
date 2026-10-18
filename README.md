@@ -83,7 +83,7 @@ pid name prio state stack_used stack_size cpu_ms
 - `ed` line editor; `date` with the on-chip RTC on the 32.768 kHz crystal, `/etc/tz`, `ntpdate`
 - Loadable programs (`sdk/`, [sdk/README.md](sdk/README.md)): NXE files built position-independent
   (`-fropi -frwpi`: code PC-relative, data through r9). The loader keeps their code in the APROM above the
-  firmware (about 31 KiB, `kernel/xip.c`), written once and found again by its CRC after a reboot, checked
+  firmware (about 28.5 KiB, `kernel/xip.c`), written once and found again by its CRC after a reboot, checked
   against the CRC of what was written each time it is used, oldest
   first giving way to new ones but never while running; with no room left the code goes to RAM. Data and bss
   get RAM per run; the C library is the firmware's own (a function table), so `hello` needs 24 bytes of RAM
@@ -93,6 +93,9 @@ pid name prio state stack_used stack_size cpu_ms
   (PWM on PB11, timer interrupt); `tools/mknnv.py` converts pictures and videos through ffmpeg into NNV, a
   delta-coded format of our own with optional ADPCM sound; `play` shows them (all of Bad Apple at 30 fps;
   `play -s` adds the sound, though the buzzer carries rhythm far better than pitch)
+- Input for programs (games): `/dev/input` gives one program the USB keyboard and mouse and the board's 1-9
+  keypad as press/release events (`sdk/examples/keys.c`, the game `sdk/examples/snake.c`); the board's
+  SW_INT button ends the program holding the keys or the display, even one stuck in a loop
 - Firmware updates: `fwupdate FILE` (or `tools/nnupdate.py` from the NanoPi) stages an image in the SPI flash;
   the LDROM bootloader (`boot/`) installs it and repeats an installation that a reset or power loss cut short
 - Network: `ifconfig`, a DHCP client with lease renewal in the kernel daemon, `netstat`, `service` (telnetd,
@@ -123,6 +126,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Programs in APROM: written once and reused, two runs of one program at once, every relocation kind, a program filling the whole area, a new program going to RAM while running programs fill it, kept across a reboot | pass |
 | LCD player: a 60-frame video at its frame rate, one `/dev/lcd` writer at a time, picture until Enter, Ctrl-C, damaged files refused, RAM reclaimed | pass |
 | Sound: 2 s of samples in 2.0 s, one `/dev/audio` writer, a video with sound on time and without gaps, Ctrl-C silences it | pass |
+| `/dev/input`: keyboard and mouse frames through the CH9350 parser, the keypad, one reader at a time, SW_INT ending a program that makes no system calls and a game holding the LCD | pass |
 | Efficiency: a video during a USB copy on time (fsd sleeps while the CH376 works), a program killed during a copy exits cleanly, audio interrupt latency under `ps`/`/proc` | pass (13 us) |
 | Review fixes (R24-R35): two tasks sharing `/dev/audio`, cut-short NNV files, the last frame's time, `mv` into a directory, out-of-range `kill`, 0-byte reads, `ed`'s last line, flash dumps during writes, a `/usb` file open across the CH376 bench | pass |
 | Review fixes: background redirections, memory of killed programs, concurrent terminal output, DHCP lease end, same-file `cp`/`mv`, `nc` both ways with back-pressure (32 KiB) | pass |
@@ -135,11 +139,11 @@ pid name prio state stack_used stack_size cpu_ms
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot, watchdog reset | pass |
-| Free RAM floor: heap free while `free` runs with the console shell (and its 512 B scrollback) and one telnet session | 5272 B (test limit 5200 B) |
-| Code size / static RAM including crash records / main stack / heap | 96.7 KiB / 2.7 KiB / 512 B / 13.0 KiB |
-| APROM for program code / writing a new program / RAM `hello` needs besides its stack | 31 KiB / 20 ms per 512 B page / 24 B |
+| Free RAM floor: heap free while `free` runs with the console shell (and its 512 B scrollback) and one telnet session | 5248 B (test limit 5200 B) |
+| Code size / static RAM including crash records / main stack / heap | 99.2 KiB / 2.8 KiB / 512 B / 12.7 KiB |
+| APROM for program code / writing a new program / RAM `hello` needs besides its stack | 28.5 KiB / 20 ms per 512 B page / 24 B |
 
-Host tests: 7574 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder, the APROM slots on a simulated flash, the console's scrollback, URL resolution against RFC 3986's examples, SPI1 with a stuck controller and `mknxe` on damaged ELF files), plus 80 243
+Host tests: 7647 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder, the APROM slots on a simulated flash, the console's scrollback, URL resolution against RFC 3986's examples, SPI1 with a stuck controller, `mknxe` on damaged ELF files and `/dev/input`'s events), plus 80 243
 date conversions compared with the host C library.
 
 ## Hardware
@@ -154,6 +158,7 @@ NU-LB_002 Rev 2.1 (NUC140VE3CN). The external modules run from an MB-102 5 V sup
 | W5500 | SCK PC9, MISO PC10, MOSI PC11, CS PB10, INT PB2, RST PB8 |
 | Onboard LCD | SPI3: CS PD8, CLK PD9, MOSI PD11 |
 | Onboard buzzer | PB11 (low: on), driven as PWM4 for `/dev/audio` |
+| Onboard keys | SW_INT PB15 (ends the program holding the keys or the display); 1-9 keypad PA0-PA5 (`/dev/input`) |
 | Onboard SPI flash (W25Q16, 2 MiB) | SPI2: CS PD0, CLK PD1, MISO PD2, MOSI PD3 |
 
 Board details and constraints (LIN sharing, byte-only CH376S transfers and more) are in [docs/PLAN.md](docs/PLAN.md), section 2.

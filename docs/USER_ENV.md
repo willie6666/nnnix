@@ -459,6 +459,37 @@ they allocated) comes back when they end. A file that is not a valid NXE
 program, or was damaged in transfer (CRC check), is refused with "not an
 executable". See [sdk/README.md](../sdk/README.md) for writing programs.
 
+### Keyboard, mouse and keys for programs (games)
+
+A program that opens `/dev/input` (read only) gets the input devices for
+itself: the USB keyboard and mouse (through the CH9350) and the board's 1-9
+keypad. Until it closes the file (or ends), the keyboard types nothing into
+the console. One program at a time: another gets `busy`. Each read returns
+whole 8-byte events (`struct nn_input_event` in `lib/sys.h`), waiting for the
+first; opened with `O_NONBLOCK`, a read with nothing waiting returns
+`SYS_EAGAIN` at once, which suits a game loop.
+
+| type | code | value | also |
+| --- | --- | --- | --- |
+| `NN_INPUT_KEY` | the HID usage (`NN_KEY_UP`, `NN_KEY_A` + n, ...; Shift, Ctrl, Alt are keys `0xe0`-`0xe7`) | 1 pressed, 0 released | `ch`: the character it types (with Shift and Caps Lock) |
+| `NN_INPUT_MOUSE` | buttons (`NN_MOUSE_LEFT`, `_RIGHT`, `_MIDDLE`) | the wheel (signed) | `dx`, `dy`: motion (`dy` > 0 is down); motion is merged while nobody reads |
+| `NN_INPUT_PAD` | the keypad's key, 1-9 | 1 pressed, 0 released | |
+
+Every event has `ms`, the low 16 bits of the uptime. Keys do not repeat. The
+queue holds 32 events; more are dropped until the program reads.
+
+The board's **SW_INT** button is not an input: it ends the program holding
+`/dev/input`, or, if none does, the one holding `/dev/lcd`. It works also on a
+program stuck in a loop that never makes a system call (ended where it was
+preempted), so a game that hangs cannot take the board's keyboard and display
+with it. The kernel log says `input: SW_INT: ending pid N`. The keypad and
+SW_INT are read every 20 ms, only while a program holds `/dev/input` or
+`/dev/lcd`.
+
+`keys` (`sdk/examples/keys.c`) prints the events (Esc ends it); `snake`
+(`sdk/examples/snake.c`) is a small game on the LCD: arrows, WASD or keypad
+2 4 6 8, Esc, q or keypad 5 to stop.
+
 ## Firmware updates
 
 The board's LDROM holds a bootloader, and CONFIG0 makes the chip start in it at

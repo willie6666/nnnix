@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "uart.h"
 #include "../arch/nuc140/regs.h"
+#include "../arch/nuc140/arch.h"
 
 /* UART clock is HIRC 22.1184 MHz: DIV_X_EN | DIV_X_ONE, BRD 190 -> 115200 baud. */
 #define BAUD_115200 0x300000beu
@@ -54,6 +55,15 @@ void UART1_IRQHandler(void)
 }
 
 void uart1_set_notify(void (*fn)(void)) { notify = fn; }
+
+uint32_t uart1_inject(const uint8_t *p, uint32_t n)
+{
+    uint32_t done = 0, s = irq_save();
+    for (; done < n && head - tail < RX_RING; ++done) { ring[head % RX_RING] = p[done]; head = head + 1u; }
+    irq_restore(s);
+    if (notify) notify();
+    return done;
+}
 
 void uart1_init(void)
 {

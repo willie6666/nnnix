@@ -9,6 +9,7 @@
 #include "../kernel/kmem.h"
 #include "../kernel/modules.h"
 #include "../kernel/task.h"
+#include "../kernel/xip.h"
 #include "../lib/fmt.h"
 #include "../lib/string.h"
 #include "../arch/nuc140/arch.h"
@@ -75,11 +76,22 @@ static void gen_klog(struct gen *g)
     if (g->t) g->t->len = (uint32_t)klog_read(g->t->data, g->cap);
     else g->count = TEXT_MAX;                        /* the log's tail: as much as fits */
 }
+/* Program text in APROM (kernel/xip.c): the area, then a line per slot. */
+static void gen_xip(struct gen *g)
+{
+    struct xip_stats st;
+    xip_stats(&st);
+    say(g, "area 0x%05x %u\nused %u\nwritten %u\naddr size crc users\n", st.base, st.size, st.used, st.writes);
+    uint32_t addr, size, crc;
+    int users;
+    for (int i = 0; xip_slot(i, &addr, &size, &crc, &users); ++i) say(g, "0x%05x %u %08x %d\n", addr, size, crc, users);
+}
+
 static void gen_crash(struct gen *g) { if (fault_last_report()[0]) say(g, "%s\n", fault_last_report()); }
 
 static const struct { const char *name; void (*gen)(struct gen *g); } files[] = {
     { "version", gen_version }, { "uptime", gen_uptime }, { "meminfo", gen_meminfo },
-    { "tasks", gen_tasks }, { "modules", gen_modules }, { "klog", gen_klog }, { "crash", gen_crash }, { "stacks", gen_stacks },
+    { "tasks", gen_tasks }, { "modules", gen_modules }, { "klog", gen_klog }, { "crash", gen_crash }, { "stacks", gen_stacks }, { "xip", gen_xip },
 };
 #define FILES (sizeof files / sizeof files[0])
 

@@ -30,6 +30,13 @@ void arch_reboot(void) __attribute__((noreturn));
 void arch_reboot_bootloader(void) __attribute__((noreturn));   /* through LDROM (fmc.c) */
 void arch_reboot_chip(void) __attribute__((noreturn));         /* like power-on */
 uint32_t fmc_read(uint32_t addr);                              /* LDROM 0x100000, CONFIG 0x300000 */
+/* fn(argc, argv, &nn_lib) with r9 = sb: a loaded program's static base (lib/nnlib.h). */
+int arch_call_sb(int (*fn)(int, char **, const void *), int argc, char **argv, void *sb);
+/* APROM above the firmware: erase a 512-byte page, write a word (once per
+ * erase). Interrupts stay off for each: 20 ms for an erase, 40 us a word. */
+#define FMC_PAGE 512u
+int fmc_erase(uint32_t page);
+int fmc_write(uint32_t addr, uint32_t word);
 int  wdt_set(int seconds);           /* watchdog: 0 off, 2, 7 or 26 s; -1 for other values (wdt.c) */
 int  wdt_seconds(void);
 void wdt_kick(void);

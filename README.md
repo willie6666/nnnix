@@ -10,7 +10,9 @@ flash and a USB drive, and later stand-alone loadable programs. The full plan is
 
 **M6 loadable programs and firmware updates over the network complete**: programs built with the SDK run from
 `/bin`, and an LDROM bootloader installs new firmware sent over the network (power-loss safe). M0-M6 are done;
-the remaining M7 items are optional.
+the remaining M7 items are optional. Programs run in place from the chip's flash: their code is written once
+into the APROM above the firmware, so a program takes RAM only for its data and stack, and `play`, `ed` and the
+text tools are programs in `/bin` rather than part of the firmware.
 
 ```
 nnnix$ ls / | grep usb
@@ -70,21 +72,25 @@ pid name prio state stack_used stack_size cpu_ms
 - Kernel daemon `kd`: one event loop for the network, keyboard, telnet and diag listeners, the console shell and module supervision
 - File systems: VFS with `/` (littlefs on the SPI flash), `/usb` (CH376S FAT drive), `/dev`, `/proc`; per-task file descriptors and working directory; littlefs and CH376S work runs in the `fsd` task
 - Network: interrupt-driven W5500, socket layer with self re-arming listeners, telnet server with three sessions
-- Shell `nsh`: `help echo ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir touch pwd
-  cd df mkfile sum wc head tail grep hexdump ed date ifconfig dhcp service netstat nc ntpdate`, redirection
-  `< > >>`, using only system calls
+- Shell `nsh`: built in `help echo ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir
+  touch pwd cd df mkfile sum date ifconfig dhcp service netstat nc ntpdate`, and from `/bin` the programs
+  `wc head tail grep hexdump ed play` (`bin/`); redirection `< > >>`, using only system calls
 - M5 shell: quotes/escapes, per-session variables (`set`, `unset`, `env`, `$NAME`, `${NAME}`, `$?`),
   `sh`/`source` scripts and optional `/etc/rc` at boot; streaming `wc head tail grep hexdump`
 - HTTP transfers: TCP port 8080, GET/PUT under `/home`, temporary-file uploads committed by atomic rename;
   `tools/nncp.py` transfers binary files with no third-party host dependencies
 - Pipes (`a | b | c`), background jobs (`&`, `jobs`, `kill`, `wait`) and Ctrl-C
 - `ed` line editor; `date` with the on-chip RTC on the 32.768 kHz crystal, `/etc/tz`, `ntpdate`
-- Loadable programs (`sdk/`, [sdk/README.md](sdk/README.md)): NXE files linked at 0 and relocated by the
-  loader; the C library is the firmware's own (a function table), so `hello` needs 276 bytes of RAM
+- Loadable programs (`sdk/`, [sdk/README.md](sdk/README.md)): NXE files built position-independent
+  (`-fropi -frwpi`: code PC-relative, data through r9). The loader keeps their code in the APROM above the
+  firmware (about 35 KiB, `kernel/xip.c`), written once and found again by its CRC after a reboot, oldest
+  first giving way to new ones but never while running; with no room left the code goes to RAM. Data and bss
+  get RAM per run; the C library is the firmware's own (a function table), so `hello` needs 24 bytes of RAM
+  besides its stack
 - Pictures and videos on the LCD ([docs/NNV.md](docs/NNV.md)): `/dev/lcd` gives a program the display as a
   1024-byte frame (the console text returns when it closes), `/dev/audio` plays 8 kHz sound on the buzzer
   (PWM on PB11, timer interrupt); `tools/mknnv.py` converts pictures and videos through ffmpeg into NNV, a
-  delta-coded format of our own with optional ADPCM sound; the built-in `play` shows them (all of Bad Apple at 30 fps;
+  delta-coded format of our own with optional ADPCM sound; `play` shows them (all of Bad Apple at 30 fps;
   `play -s` adds the sound, though the buzzer carries rhythm far better than pitch)
 - Firmware updates: `fwupdate FILE` (or `tools/nnupdate.py` from the NanoPi) stages an image in the SPI flash;
   the LDROM bootloader (`boot/`) installs it and repeats an installation that a reset or power loss cut short
@@ -110,6 +116,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Settings: console on/ask/off (1736 B freed when the console logs out), idle logout, telnet session limit | pass |
 | Firmware update through the bootloader, an installation interrupted by a reset, the power-on path | pass |
 | Programs: `/bin/hello` with arguments and exit status, in pipelines and the background, Ctrl-C, from USB, damaged files refused, RAM reclaimed | pass |
+| Programs in APROM: written once and reused, two runs of one program at once, every relocation kind, a program filling the whole area, a new program going to RAM while running programs fill it, kept across a reboot | pass |
 | LCD player: a 60-frame video at its frame rate, one `/dev/lcd` writer at a time, picture until Enter, Ctrl-C, damaged files refused, RAM reclaimed | pass |
 | Sound: 2 s of samples in 2.0 s, one `/dev/audio` writer, a video with sound on time and without gaps, Ctrl-C silences it | pass |
 | Efficiency: a video during a USB copy on time (fsd sleeps while the CH376 works), a program killed during a copy exits cleanly, audio interrupt latency under `ps`/`/proc` | pass (13 us) |
@@ -124,10 +131,11 @@ pid name prio state stack_used stack_size cpu_ms
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot, watchdog reset | pass |
-| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 6072 B (test limit 5600 B) |
-| Code size / static RAM including crash records / main stack / heap | 88 KiB / 2.5 KiB / 512 B / 12.9 KiB |
+| Free RAM floor: heap free while `free` runs with the console shell and one telnet session | 6032 B (test limit 5600 B) |
+| Code size / static RAM including crash records / main stack / heap | 93 KiB / 2.6 KiB / 512 B / 13.0 KiB |
+| APROM for program code / writing a new program / RAM `hello` needs besides its stack | 35 KiB / 20 ms per 512 B page / 24 B |
 
-Host tests: 5797 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model and the NNV decoder against the encoder), plus 80 243
+Host tests: 5851 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder and the APROM slots on a simulated flash), plus 80 243
 date conversions compared with the host C library.
 
 ## Hardware
@@ -151,13 +159,13 @@ Board details and constraints (LIN sharing, byte-only CH376S transfers and more)
 Requires `clang`, `ld.lld`, `llvm-objcopy`, Python 3 and an OpenOCD (0.12) with Nu-Link support.
 
 ```sh
-make              # build/nnnix.elf, build/nnnix.bin
+make              # build/nnnix.elf, build/nnnix.bin, and the programs for /bin: build/bin/*.nxe
 make host-test    # unit tests on the build machine
 make flash        # program APROM through Nu-Link (APROM only; CONFIG and LDROM are never touched)
 make test         # build the SDK examples, flash, on-target tests (needs sudo for a network namespace)
 make -C sdk       # loadable programs: sdk/build/*.nxe (see sdk/README.md)
 make boot         # LDROM bootloader: build/boot.bin
-sudo python3 tools/nnupdate.py --iface eth1 build/nnnix.bin   # firmware update over the network
+sudo python3 tools/nnupdate.py --iface eth1 build/nnnix.bin --bin build/bin   # firmware and /bin over the network
 sudo python3 tools/flash.py --ldrom build/boot.bin             # bootloader into LDROM (Nu-Link)
 sudo python3 tools/flash.py --boot ldrom                       # CONFIG0: start in the bootloader
 telnet 198.18.0.2 # log in (from the test network; see below)
@@ -182,12 +190,13 @@ OpenOCD lookup order: `$NNNIX_OPENOCD_ROOT` (an extracted Debian openocd package
 
 ```
 arch/nuc140/   startup, vector table, clock, pins, context switch, HardFault, linker script
-kernel/        scheduler, synchronisation, system calls, kmalloc, klog, panic, kd (kernel daemon), tty, line editor, vt, console, input, module supervision, diag service
+kernel/        scheduler, synchronisation, system calls, kmalloc, klog, panic, kd (kernel daemon), tty, line editor, vt, console, input, module supervision, diag service, program loader and APROM slots (xip)
 net/           socket layer, sockets for programs, interface config, DHCP client, telnet filter, telnetd, HTTP server
 drivers/       uart spi ch376 w5500 ch9350 hidkey kbd lcd font5x7 spiflash rtc
 fs/            vfs and fsd, rootfs (littlefs), usbfs (CH376S), devfs, procfs, littlefs port
 lib/           printf subset, string functions, calendar time, EABI division (no divide instruction on M0), system-call stubs (sys.h), user stdio
-user/          nsh shell, parser, file/text/network commands, ed, scheduler demo programs
+user/          nsh shell and its built-in commands (file, network, settings), parser, scheduler demo programs
+bin/           the programs for /bin: play, ed, wc head tail grep hexdump (built like SDK programs)
 third_party/   littlefs v2.11.3 (BSD-3-Clause), unmodified
 tests/host/    host unit tests (including a recorded CH9350 capture)
 boot/          LDROM bootloader: installs staged firmware images, then starts APROM

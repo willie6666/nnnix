@@ -9,8 +9,8 @@ SDK     := $(patsubst %/,%,$(dir $(lastword $(MAKEFILE_LIST))))
 CLANG   ?= clang
 PYTHON  ?= python3
 STACK   ?= 0
-CFLAGS  = --target=arm-none-eabi -mcpu=cortex-m0 -mthumb -Os -g -ffreestanding -fno-builtin \
-          -ffunction-sections -fdata-sections -fno-exceptions -Wall -Wextra -std=c11 \
+CFLAGS  = --target=arm-none-eabi -mcpu=cortex-m0 -mthumb -Os -ffreestanding -fno-builtin \
+          -ffunction-sections -fdata-sections -fno-exceptions -fropi -frwpi -Wall -Wextra -std=c11 \
           -I$(SDK)/include -I$(SDK)/../lib
 LDFLAGS = -nostdlib -fuse-ld=lld -Wl,-T,$(SDK)/nxe.ld,--emit-relocs,--gc-sections
 

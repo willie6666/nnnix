@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Small streaming tools: memory use does not grow with file size. */
-#include "cmds.h"
+#include "../user/cmds.h"
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../lib/sys.h"

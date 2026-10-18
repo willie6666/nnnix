@@ -36,6 +36,22 @@ uint32_t *arch_task_stack_init(uint32_t *top, void (*entry)(void *), void *arg, 
     return sp;
 }
 
+__attribute__((naked)) int arch_call_sb(int (*fn)(int, char **, const void *), int argc, char **argv, void *sb)
+{
+    __asm volatile(
+        "push  {r4, lr}\n"
+        "mov   r4, r9\n"
+        "mov   r9, r3\n"
+        "mov   r3, r0\n"
+        "mov   r0, r1\n"
+        "mov   r1, r2\n"
+        "ldr   r2, =nn_lib\n"
+        "blx   r3\n"
+        "mov   r9, r4\n"
+        "pop   {r4, pc}\n"
+        ".ltorg\n");
+}
+
 __attribute__((naked)) void PendSV_Handler(void)
 {
     __asm volatile(

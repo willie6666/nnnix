@@ -165,13 +165,6 @@ static const struct command commands[] = {
     { "fwupdate", cmd_fwupdate, "install firmware: [-n] FILE, -c" },
     { "mkfile", cmd_mkfile, "NAME SIZE test file" },
     { "sum", cmd_sum, "CRC-32 of files" },
-    { "wc", cmd_wc, "count lines, words, bytes" },
-    { "head", cmd_head, "first lines (-n COUNT)" },
-    { "tail", cmd_tail, "last lines (-n COUNT)" },
-    { "grep", cmd_grep, "literal text search" },
-    { "hexdump", cmd_hexdump, "hexadecimal and ASCII" },
-    { "ed", cmd_ed, "line editor" },
-    { "play", cmd_play, "show an NNV picture or video" },
     { "date", cmd_date, "show or set the clock" },
     { "ifconfig", cmd_ifconfig, "network address" },
     { "dhcp", cmd_dhcp, "get an address by DHCP" },
@@ -198,6 +191,20 @@ static int cmd_help(int argc, char **argv)
     (void)argc; (void)argv;
     for (unsigned i = 0; i < sizeof commands / sizeof commands[0]; ++i)
         printf("  %-8s %s\n", commands[i].name, commands[i].help);
+    int fd = sys_open("/bin", O_RDONLY);             /* and the programs: each NAME is /bin/NAME */
+    if (fd < 0) return 0;
+    struct nn_dirent d;
+    unsigned col = 0;
+    printf("programs in /bin:\n ");
+    while (sys_readdir(fd, &d) > 0) {
+        if (d.type != NN_TYPE_FILE) continue;
+        unsigned n = (unsigned)strlen(d.name) + 1u;
+        if (col && col + n > 30u) { printf("\n "); col = 0; }
+        printf(" %s", d.name);
+        col += n;
+    }
+    printf("\n");
+    sys_close(fd);
     return 0;
 }
 
@@ -515,9 +522,7 @@ static int execute_line(struct shell *s)
     }
     if (!strcmp(argv[0], "exit") || !strcmp(argv[0], "logout")) return 1;
     const struct command *c = find_command(argv[0]);
-    /* A program from a file runs as a child; so does play, which needs more
-     * stack than is left on top of the shell's. */
-    if (!c || c->run == cmd_play) {
+    if (!c) {                                        /* a program from a file runs as a child */
         s->status = run_children(s, 1, 0);
         return 0;
     }

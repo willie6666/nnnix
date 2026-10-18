@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Update nnnix over the network: upload an APROM image, have the board stage it
 and restart through its LDROM bootloader, wait until it is back, show the result.
+With --bin, also (or only) install the programs for /bin (build/bin/*.nxe:
+`play`, `ed`, `grep`... are programs, not part of the firmware).
 
-  sudo python3 tools/nnupdate.py --iface eth1 build/nnnix.bin
+  sudo python3 tools/nnupdate.py --iface eth1 build/nnnix.bin --bin build/bin
 
 Needs the bootloader in LDROM (tools/flash.py --ldrom build/boot.bin). The
 board keeps running the old firmware if anything before the restart fails.
@@ -38,6 +40,32 @@ def upload(host, data):
             raise RuntimeError(f'upload: HTTP {r.status} {r.reason}')
     finally:
         c.close()
+
+
+def put(host, path, data):
+    c = http.client.HTTPConnection(host, 8080, timeout=30)
+    try:
+        c.request('PUT', path, body=data, headers={'Content-Length': str(len(data))})
+        r = c.getresponse()
+        r.read()
+        return r.status
+    finally:
+        c.close()
+
+
+def install_programs(ns, host, folder):
+    files = sorted(folder.glob('*.nxe'))
+    if not files:
+        raise RuntimeError(f'no programs (*.nxe) in {folder}')
+    t = Telnet(ns, host=host)
+    t.read_until(Telnet.PROMPT)
+    t.cmd('mkdir /bin')                              # an error if it is there already
+    t.send('exit\r\n'); t.wait_closed(); t.close()
+    for f in files:
+        status = ns.call(put, host, f'/bin/{f.stem}', f.read_bytes())
+        if status not in (201, 204):
+            raise RuntimeError(f'/bin/{f.stem}: HTTP {status}')
+    print(f'installed in /bin: {" ".join(f.stem for f in files)}')
 
 
 def update(ns, host, data):
@@ -86,23 +114,31 @@ def update(ns, host, data):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('image', type=Path)
+    parser.add_argument('image', type=Path, nargs='?')
+    parser.add_argument('--bin', type=Path, metavar='DIR', help='install DIR/*.nxe in /bin (after the update)')
     parser.add_argument('--host', default='198.18.0.2')
     parser.add_argument('--iface', help='temporarily use this unused adapter (requires root)')
     args = parser.parse_args()
-    data = args.image.read_bytes()
-    if not 8 <= len(data) <= 128 * 1024:
+    if not args.image and not args.bin:
+        parser.error('nothing to do: give an image, --bin DIR, or both')
+    data = args.image.read_bytes() if args.image else None
+    if data is not None and not 8 <= len(data) <= 128 * 1024:
         parser.error('not an APROM image (8 bytes to 128 KiB)')
     if args.iface and args.host != '198.18.0.2':
         parser.error('--iface uses the isolated 198.18.0.0/30 test network')
     if args.iface and os.geteuid() != 0:
         parser.error('--iface requires root for the temporary network namespace')
     try:
+        def run(ns):
+            if data is not None:
+                update(ns, args.host, data)
+            if args.bin:
+                install_programs(ns, args.host, args.bin)
         if args.iface:
             with Namespace(args.iface) as ns:
-                update(ns, args.host, data)
+                run(ns)
         else:
-            update(Direct(), args.host, data)
+            run(Direct())
     except (OSError, RuntimeError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:
         print(f'nnupdate: {exc}', file=sys.stderr)
         return 1

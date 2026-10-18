@@ -1,7 +1,9 @@
 # nnnix SDK
 
 Build programs that nnnix loads from its file system and runs, without
-reflashing the firmware.
+reflashing the firmware. Their code runs straight from the chip's flash
+(APROM), so a program costs RAM only for its data, its stack and what it
+allocates.
 
 ```sh
 make -C sdk                                   # examples/*.c -> sdk/build/*.nxe
@@ -45,28 +47,38 @@ Put it in `sdk/examples/` (or build it from the current directory with
 - `printf`, `snprintf`, `puts`, `mem*`, `str*`, `errstr`, `malloc`/`free`
   (blocks still allocated are freed when the program ends) and `exit`;
 - `sys_spawn` starts a function of the program as another task
-  (`examples/spawn.c`); it shares the program's RAM image and its malloc'd
+  (`examples/spawn.c`); it shares the program's data and its malloc'd
   memory, which stay until the last of them has ended. When the program ends,
   its children are stopped at their next system call.
 - `examples/memtest.c` checks that heap blocks keep their contents over time.
-- `examples/play.c` shows pictures and videos on the LCD through `/dev/lcd`
-  ([docs/NNV.md](../docs/NNV.md)): the firmware's built-in `play`
-  (`user/play.c`) built as a program, an example of a larger one; run it as
-  `/bin/play`, since the shell's `play` is the built-in.
+- `examples/relocs.c` holds every kind of address a program can have in its
+  tables and checks them as it runs (a test).
 - `examples/audioshare.c` has a worker and the program write to one open
   `/dev/audio` at once (a test; its samples are silent).
 - `examples/readzero.c` checks that reads of 0 bytes return at once (a test).
 
 The C library is not linked into the program: it is the firmware's own code in
 flash, reached through a function table that `_start` receives
-(`lib/nnlib.h`). So `hello` takes 276 bytes of RAM for code and data.
+(`lib/nnlib.h`); `nn_write_all`, `fputs_fd` and `nn_interrupted` (Ctrl-C) are
+small helpers in `crt0.c`. `hello` has 232 bytes of code and needs 8 bytes of
+RAM for its data.
+
+The system's own programs (`play`, `ed`, `wc`, `head`, `tail`, `grep`,
+`hexdump`) are built the same way, from `bin/` at the top of the repository
+(`make programs`, into `build/bin/`), and installed in `/bin` by
+`tools/nnupdate.py --bin build/bin`.
 
 ## Limits
 
-- Code, data and bss together: at most 8 KiB, and they must fit in free RAM
-  (about 5-7 KiB with one shell logged in). Each program also gets a task
-  stack, 1 KiB by default (`make STACK=2048`), and a few hundred bytes of
-  kernel bookkeeping.
+- Code (text: code and read-only data): at most 64 KiB, and the APROM above the
+  firmware holds about 35 KiB of programs at a time. Data and bss: at most
+  8 KiB, in RAM. Each program also gets a task stack, 1 KiB by default
+  (`make STACK=2048`), and a few hundred bytes of kernel bookkeeping. When
+  every page of the APROM area belongs to a program that is running, a new
+  program's code goes to RAM instead (and must then fit there too).
+- Build with `-fropi -frwpi` (the SDK's Makefile does): r9 holds the address of
+  the program's data and must not be used otherwise. Debug information (`-g`)
+  does not link with `-frwpi` and is left out.
 - No memory protection (the Cortex-M0 has no MPU): a program that writes
   through a bad pointer can damage the kernel, and a fault resets the board.
 - Single precision floating point, 64-bit division and similar compiler
@@ -74,10 +86,27 @@ flash, reached through a function table that `_start` receives
 
 ## How it works
 
-`sdk/nxe.ld` links the program at address 0 and `ld.lld --emit-relocs` keeps
-the relocations. `tools/mknxe.py` writes an NXE file: a header, the image
-(code, read-only data, data) and the offsets of every 32-bit absolute address
-in it (`R_ARM_ABS32`; calls and branches are PC-relative and need nothing).
-The loader (`kernel/exec.c`) reads the file into one heap block, checks the
-CRC-32, adds the block's address to those words, clears bss and starts
-`_start(argc, argv, &nn_lib)` as a child task that owns the block.
+Built with `-fropi -frwpi`, code and read-only data (text) reach each other
+PC-relative, and data and bss are reached through r9, the static base. So
+text runs at any address, and one copy serves every run of the program, also
+two at once, each with its own data. `sdk/nxe.ld` links text at 0 and data at
+0x10000000 (in a segment of its own, so r9-relative offsets count from the data
+start), and `ld.lld --emit-relocs` keeps the relocations. `tools/mknxe.py`
+writes an NXE file: a header, the text and the offsets of its words that hold
+a text address (tables of pointers to strings or functions), then the data
+and the offsets of its words that hold an address (marked when it points into
+data or bss). Anything else that would need changing when the program moves
+is refused at build time.
+
+The loader (`kernel/exec.c`) looks for the text in APROM above the firmware
+(`kernel/xip.c`): a slot holding text with the same CRC-32 is used as it is;
+otherwise one is written, its relocations applied on the way and the text
+checked against its CRC. A slot stays across reboots and is written only when
+the program is new or changed; the oldest slots make room for new ones, but
+never one a running program uses. Writing costs 20 ms with interrupts off per
+512-byte page erased (the flash allows nothing else meanwhile), about 0.3 s
+for a 7 KiB program. The data then comes from the file into a RAM block, the
+loader adds the block's address (or the text's) to the listed words, clears
+bss and starts `_start(argc, argv, &nn_lib)` with r9 at the block, as a child
+task; the block goes with the last task that uses it. `cat /proc/xip` lists
+the area and its slots (address, text size, CRC, running programs).

@@ -33,8 +33,8 @@
  *   0xc0-0xff  one byte follows, repeated (c&0x3f)+1 times
  *
  * nnv_dec decodes a delta record a piece at a time, so a player needs only
- * the frame and a small read buffer. Shared by sdk/examples/play.c and the
- * host test against tools/mknnv.py. */
+ * the frame and a small read buffer. Shared by bin/play.c and the host test
+ * against tools/mknnv.py. */
 
 #define NNV_WIDTH 128u
 #define NNV_HEIGHT 64u

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # nnnix build. Targets:
-#   make            build build/nnnix.elf and build/nnnix.bin
+#   make            build build/nnnix.elf and build/nnnix.bin, and the programs
+#                   for /bin (build/bin/*.nxe, sources in bin/)
 #   make flash      program APROM through Nu-Link (tools/flash.py)
 #   make test       flash + on-target tests (tools/nntest.py, needs sudo for the test netns)
 #   make host-test  unit tests that run on the build machine
@@ -23,8 +24,8 @@ LDFLAGS = -nostdlib -fuse-ld=lld -Wl,-T,arch/nuc140/link.ld,--gc-sections,-Map,b
 SRCS = $(wildcard arch/nuc140/*.c kernel/*.c drivers/*.c lib/*.c net/*.c fs/*.c user/*.c) third_party/littlefs/lfs.c
 OBJS = $(SRCS:%.c=build/%.o)
 
-.PHONY: all flash test host-test size clean sdk boot
-all: build/nnnix.bin
+.PHONY: all flash test host-test size clean sdk boot programs
+all: build/nnnix.bin programs
 
 build/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -52,6 +53,40 @@ FORCE:
 flash: build/nnnix.bin
 	$(PYTHON) tools/flash.py build/nnnix.bin
 
+# Programs for /bin, built like the SDK's (sdk/Makefile: -fropi -frwpi, run
+# from APROM by kernel/xip.c) from the commands in bin/: bin/main.c calls
+# cmd_NAME. tools/nnupdate.py --bin build/bin installs them.
+PROGRAMS = play ed wc head tail grep hexdump
+PROG_SRCS_play = bin/play.c
+PROG_SRCS_ed = bin/ed.c bin/edcore.c
+PROG_SRCS_wc = bin/textutil.c
+PROG_SRCS_head = bin/textutil.c
+PROG_SRCS_tail = bin/textutil.c
+PROG_SRCS_grep = bin/textutil.c
+PROG_SRCS_hexdump = bin/textutil.c
+PROG_CFLAGS = --target=arm-none-eabi -mcpu=cortex-m0 -mthumb -Os -ffreestanding -fno-builtin \
+              -ffunction-sections -fdata-sections -fropi -frwpi -Wall -Wextra -Werror -std=c11 -Isdk/include -Ilib
+PROG_LDFLAGS = -nostdlib -fuse-ld=lld -Wl,-T,sdk/nxe.ld,--emit-relocs,--gc-sections
+
+programs: $(PROGRAMS:%=build/bin/%.nxe)
+build/prog/%.o: bin/%.c
+	@mkdir -p $(dir $@)
+	$(CLANG) $(PROG_CFLAGS) -MMD -MP -c $< -o $@
+build/prog/crt0.o: sdk/crt0.c sdk/include/nnnix.h
+	@mkdir -p $(dir $@)
+	$(CLANG) $(PROG_CFLAGS) -c $< -o $@
+build/prog/main_%.o: bin/main.c
+	@mkdir -p $(dir $@)
+	$(CLANG) $(PROG_CFLAGS) -DMAIN=cmd_$* -c $< -o $@
+prog_objs = $(patsubst bin/%.c,build/prog/%.o,$(PROG_SRCS_$1))
+.SECONDEXPANSION:
+build/bin/%.elf: build/prog/crt0.o build/prog/main_%.o $$(call prog_objs,$$*) sdk/nxe.ld
+	@mkdir -p $(dir $@)
+	$(CLANG) $(PROG_CFLAGS) $(PROG_LDFLAGS) $(filter %.o,$^) -o $@
+build/bin/%.nxe: build/bin/%.elf tools/mknxe.py
+	$(PYTHON) tools/mknxe.py $< $@
+.SECONDARY: $(PROGRAMS:%=build/bin/%.elf) $(PROGRAMS:%=build/prog/main_%.o) $(patsubst bin/%.c,build/prog/%.o,$(wildcard bin/*.c))
+
 # LDROM bootloader (boot/): at most 4 KiB.
 BOOT_OBJS = build/boot/boot.o build/boot/update.o
 build/boot/%.o: boot/%.c lib/fwupdate.h boot/update.h build/.version
@@ -69,11 +104,11 @@ boot: build/boot.bin
 sdk:
 	$(MAKE) -C sdk
 
-test: build/nnnix.bin sdk
+test: build/nnnix.bin programs sdk
 	sudo $(PYTHON) tools/nntest.py --flash build/nnnix.bin
 
 HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty build/host/test_console build/host/test_shparse build/host/test_http \
-             build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs build/host/test_boot build/host/test_nnv
+             build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs build/host/test_boot build/host/test_nnv build/host/test_xip
 build/host/test_lib: tests/host/test_lib.c lib/fmt.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin $^ -o $@
@@ -98,7 +133,10 @@ build/host/test_http: tests/host/test_http.c net/http.c
 build/host/test_time: tests/host/test_time.c lib/time.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
-build/host/test_ed: tests/host/test_ed.c user/edcore.c lib/fmt.c
+build/host/test_xip: tests/host/test_xip.c kernel/xip.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_ed: tests/host/test_ed.c bin/edcore.c lib/fmt.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_boot: tests/host/test_boot.c boot/update.c
@@ -131,4 +169,4 @@ size: build/nnnix.elf
 clean:
 	rm -rf build
 
--include $(OBJS:.o=.d)
+-include $(OBJS:.o=.d) $(wildcard build/prog/*.d)

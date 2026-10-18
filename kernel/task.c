@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "task.h"
+#include "xip.h"
 #include "kmem.h"
 #include "klog.h"
 #include "panic.h"
@@ -365,7 +366,7 @@ static void task_free(struct task *t, uint32_t peak)
     irq_restore(s);
     kfree(cwd);
     kfree(owned);
-    kfree(image);
+    xip_release(image);
     kfree(block);
 }
 

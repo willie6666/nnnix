@@ -20,15 +20,34 @@ static void emit(const char *s, size_t n)
 /* Serialises whole messages between tasks; a no-op before the scheduler runs. */
 static struct mutex lock;
 
+/* "[sssss.mmm] " without the formatter: kprintf runs on the caller's stack,
+ * often a program's, and a second nn_vformat under the first took 200 B more
+ * of it. */
+static size_t stamp(char buf[16])
+{
+    uint32_t now = jiffies, sec = now / 1000u, ms = now % 1000u;
+    char digits[8];
+    size_t n = 0, k = 0;
+    do { digits[n++] = (char)('0' + sec % 10u); sec /= 10u; } while (sec);
+    buf[k++] = '[';
+    for (size_t i = n; i < 5; ++i) buf[k++] = ' ';
+    while (n) buf[k++] = digits[--n];
+    buf[k++] = '.';
+    buf[k++] = (char)('0' + ms / 100u);
+    buf[k++] = (char)('0' + ms / 10u % 10u);
+    buf[k++] = (char)('0' + ms % 10u);
+    buf[k++] = ']';
+    buf[k++] = ' ';
+    return k;
+}
+
 static void put_locked(const char *buf, size_t n)
 {
     const char *p = buf, *endp = buf + n;
     while (p < endp) {
         if (line_start) {
-            char stamp[16];
-            uint32_t now = jiffies;
-            int m = nn_snprintf(stamp, sizeof stamp, "[%5u.%03u] ", now / 1000u, now % 1000u);
-            emit(stamp, (size_t)m);
+            char text[16];
+            emit(text, stamp(text));
             line_start = 0;
         }
         const char *nl = p;

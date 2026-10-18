@@ -12,6 +12,7 @@
 #include "../drivers/rtc.h"
 #include "console.h"
 #include "kd.h"
+#include "xip.h"
 #include "../fs/vfs.h"
 #include "panic.h"
 #include "../net/telnetd.h"
@@ -73,6 +74,7 @@ void kmain(void)
     spiflash_init();
     kprintf("spiflash: jedec id %06x, %u KiB\n", spiflash_jedec_id(), spiflash_size() / 1024u);
     vfs_init();
+    xip_init();
     kd_init();
     if (!task_spawn("init", nsh_boot, 0, NSH_STACK, 5, 1)) panic("cannot start init");
     struct kmem_stats m;

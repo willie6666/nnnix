@@ -36,20 +36,31 @@ struct nn_lib {
     void     (*format_time)(uint32_t t, char *buf);                /* 20 bytes */
 };
 
-/* NXE: a program linked at address 0. The loader copies the image to RAM,
- * adds the load address to the 32-bit words listed in the relocation table,
- * clears bss and starts _start(argc, argv, lib) as a child task.
- *   header | image (image bytes) | relocations (nrelocs x uint32 offsets) */
+/* NXE: a program built with -fropi -frwpi (sdk/Makefile): its code and
+ * read-only data (text) reach each other PC-relative, and its data and bss
+ * through r9, the static base. So text can run from anywhere and is shared by
+ * every run: the loader keeps it in APROM above the firmware (kernel/xip.c),
+ * written once and found again by its CRC, or in RAM when APROM has no room.
+ * Each run gets only data and bss in RAM; the loader starts
+ * _start(argc, argv, lib) with r9 pointing at them.
+ *   header | text | text relocations | data | data relocations
+ * Text relocations: offsets of words in text that hold a text address (tables
+ * of pointers to strings or functions); the loader adds where text is. Data
+ * relocations: offsets of words in data, bit 0 set when the word holds an
+ * offset into data or bss (the loader adds where data is), clear when it holds
+ * a text address. */
 #define NXE_MAGIC   0x3145584eu      /* "NXE1" */
-#define NXE_VERSION 1u
+#define NXE_VERSION 2u
+#define NXE_RELOC_DATA 1u            /* in a data relocation: the word points into data or bss */
 struct nxe_header {
     uint32_t magic;
     uint16_t version, lib_version;   /* lib_version: the nn_lib version it needs */
-    uint32_t image, bss;             /* bytes; image is a multiple of 4 */
-    uint32_t entry;                  /* offset of _start, Thumb bit set */
-    uint32_t nrelocs;
+    uint32_t text, data, bss;        /* bytes, multiples of 4 */
+    uint32_t entry;                  /* offset of _start in text, Thumb bit set */
+    uint16_t text_relocs, data_relocs;
     uint32_t stack;                  /* task stack bytes; 0 for the default */
-    uint32_t crc;                    /* CRC-32 (zlib) of the image and the relocations */
+    uint32_t text_crc;               /* CRC-32 (zlib) of text and its relocations: names the APROM copy */
+    uint32_t data_crc;               /* CRC-32 of data and its relocations */
 };
 
 #endif

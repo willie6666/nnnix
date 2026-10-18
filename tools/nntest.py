@@ -274,7 +274,9 @@ def console_tests(ns, report):
     text = type_keys(b'clear\r')
     report.add('console clear', text.startswith('nnnix$') and text.count('nnnix$') == 1, repr(text[:30]))
     text = type_keys(b'help\r', 2.0)          # 50 lines through the LCD
-    report.add('console scroll', text.splitlines()[-1].startswith('nnnix$') and 'exit' in text,
+    # The end of the list: the programs in /bin, by name (wc is the last of them).
+    report.add('console scroll', text.splitlines()[-1].startswith('nnnix$') and ' wc' in text
+               and 'list commands' not in text,
                'help output scrolled the 8-line screen')
     text = type_keys(b'exit\r', 1.0)
     tasks = ns.call(request, b'K')[0].decode(errors='replace')
@@ -895,13 +897,172 @@ def review_tests(ns, serial, report, iface):
         stop.set(); server.join()
 
 
+def install_programs(ns, report):
+    """The programs for /bin (build/bin, `make programs`): play, ed, grep... are
+    programs, not built-in commands; later sections use them."""
+    files = sorted((REPO / 'build/bin').glob('*.nxe'))
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    t.cmd('mkdir /bin')
+    t.send('exit\r\n'); t.wait_closed(); t.close()
+    statuses = [ns.call(http_request, 'PUT', f'/bin/{f.stem}', f.read_bytes())[0] for f in files]
+    report.add('programs installed', len(files) >= 7 and all(s in (201, 204) for s in statuses),
+               ' '.join(f.stem for f in files))
+
+
+NXE = struct.Struct('<IHHIIIIHHIII')
+
+
+def nxe(text, data=b'', bss=0, stack=0, trel=(), drel=()):
+    """An NXE file (lib/nnlib.h) from its parts; the entry is the start of text."""
+    t = b''.join(struct.pack('<I', r) for r in trel)
+    d = b''.join(struct.pack('<I', r) for r in drel)
+    return (NXE.pack(0x3145584e, 2, 1, len(text), len(data), bss, 1, len(trel), len(drel), stack,
+                     zlib.crc32(text + t), zlib.crc32(data + d)) + text + t + data + d)
+
+
+def nxe_text_crc(data):
+    return NXE.unpack_from(data)[10]
+
+
+def retag(data, tag):
+    """relocs.nxe with another 8-character tag: other text, so another CRC."""
+    f = list(NXE.unpack_from(data))
+    text, trel = NXE.size, NXE.size + f[3]
+    out = bytearray(data)
+    at = out.index(b'TAG:00000000', text, trel)
+    out[at + 4:at + 12] = tag.encode()
+    f[10] = zlib.crc32(bytes(out[text:trel + 4 * f[7]]))
+    out[:NXE.size] = NXE.pack(*f)
+    return bytes(out)
+
+
+def padded(pages, code, mark):
+    """A program whose text and slot header fill exactly `pages` APROM pages."""
+    size = pages * 512 - 32
+    return nxe(code + mark + bytes(size - len(code) - len(mark)), stack=768)
+
+
+QUIT = struct.pack('<HH', 0x2000, 0x4770)                 # movs r0, #0; bx lr
+SLEEPER = struct.pack('<HHHH', 0x2064, 0xdf02, 0xe7fc, 0)  # movs r0, #100; svc SYS_SLEEP; b .-4
+
+
+def xip_area(t):
+    """/proc/xip: (area bytes, slots written since boot, {crc: (address, users)})."""
+    out = t.cmd('cat /proc/xip')
+    size = re.search(r'area 0x[0-9a-f]+ (\d+)', out)
+    written = re.search(r'written (\d+)', out)
+    slots = {int(m[3], 16): (int(m[1], 16), int(m[4])) for m in re.finditer(r'0x([0-9a-f]+) (\d+) ([0-9a-f]{8}) (\d+)', out)}
+    return (int(size[1]) if size else 0), (int(written[1]) if written else -1), slots
+
+
+def idle_httpd(t):
+    for _ in range(20):                               # an HTTP worker may still be closing
+        if ' httpd ' not in t.cmd('ps'):
+            break
+        time.sleep(0.2)
+    time.sleep(0.3)
+
+
+def xip_tests(ns, serial, report):
+    """Program text in APROM (kernel/xip.c): written once, run in place by every
+    run, kept across a reboot, giving way oldest first but never while a
+    program runs from it; with no room left, the text goes to RAM."""
+    base = (REPO / 'sdk/build/relocs.nxe').read_bytes()
+    tags = [f'{int(time.time()) % 100000000 + i:08d}'[-8:] for i in range(3)]
+    copies = {tag: retag(base, tag) for tag in tags}
+    statuses = [ns.call(http_request, 'PUT', f'/bin/r{i}', data)[0] for i, data in enumerate(copies.values())]
+    t = Telnet(ns)
+    t.read_until(Telnet.PROMPT)
+    mark = len(serial.lines)
+    sleepers = []
+    try:
+        size, written, slots = xip_area(t)
+        pages = size // 512
+        report.add('xip area', size >= 24 * 1024 and written >= 0, f'{size} B of APROM ({pages} pages) for programs')
+        crc0 = nxe_text_crc(copies[tags[0]])
+        idle_httpd(t)
+        before = t.cmd('free')
+        out = t.cmd('r0') + t.cmd('r0')
+        _, written1, slots = xip_area(t)
+        report.add('program in APROM', out.count(f'relocs {tags[0]}: ok (0)') == 2 and written1 == written + 1
+                   and crc0 in slots and slots[crc0][1] == 0,
+                   f'two runs, one slot written ({written} -> {written1}); text, data and bss relocations ok')
+        t.cmd('r0 2 &')
+        time.sleep(0.5)
+        _, _, running = xip_area(t)
+        out = t.cmd('r0') + t.cmd('wait', 10)
+        report.add('one text, two runs', out.count(f'relocs {tags[0]}: ok (0)') == 2 and running.get(crc0, (0, 0))[1] == 1,
+                   'a second run while the first sleeps: each its own data')
+
+        # The whole area for one program: everything else gives way.
+        fill = padded(pages, QUIT, b'FILL' + tags[0].encode())
+        statuses.append(ns.call(http_request, 'PUT', '/bin/xfill', fill, None)[0])
+        started = time.monotonic()
+        out = t.cmd('xfill', 30) + t.cmd('echo $?')
+        took = time.monotonic() - started
+        _, _, slots = xip_area(t)
+        report.add('APROM full', out.strip().endswith('0') and list(slots) == [nxe_text_crc(fill)],
+                   f'a {size // 1024} KiB program written in {took:.1f} s; the other slots gave way')
+
+        # Programs running from every page: a new one goes to RAM, and none of
+        # theirs is touched. Three fill the area exactly, starting at its base
+        # (the next slot wraps around after xfill).
+        third = pages // 3
+        parts = [third, third, pages - 2 * third]
+        for i, n in enumerate(parts):
+            data = padded(n, SLEEPER, b'SLEEP' + tags[0].encode() + bytes([48 + i]))
+            sleepers.append(nxe_text_crc(data))
+            statuses.append(ns.call(http_request, 'PUT', f'/bin/xs{i}', data)[0])
+            t.cmd(f'xs{i} &', 30)
+        _, w2, slots = xip_area(t)
+        busy = all(slots.get(c, (0, 0))[1] == 1 for c in sleepers)
+        out = t.cmd('r1') + t.cmd('echo $?')
+        _, w3, after = xip_area(t)
+        crc1 = nxe_text_crc(copies[tags[1]])
+        report.add('no room: text in RAM', busy and f'relocs {tags[1]}: ok (0)' in out and w3 == w2 and crc1 not in after
+                   and all(after.get(c, (0, 0))[1] == 1 for c in sleepers),
+                   f'{len(parts)} running programs fill APROM; r1 ran from RAM, theirs untouched')
+        alive = t.cmd('jobs')
+        for i in range(len(parts)):
+            t.cmd(f'kill %{i + 1}')
+        t.cmd('wait', 10)
+        out = t.cmd('r1')
+        _, w4, after = xip_area(t)
+        report.add('room again', alive.count('running') == len(parts) and f'relocs {tags[1]}: ok (0)' in out
+                   and w4 == w3 + 1 and crc1 in after, 'after they ended, r1 got a slot')
+        idle_httpd(t)
+        report.add('xip memory freed', t.cmd('free') == before, 'heap as before')
+
+        # Kept across a reboot: running r1 again writes nothing.
+        t.send('reboot\r\n')
+        t.wait_closed(10)
+        t.close()
+        serial.wait_for(r'telnetd: listening', 30, mark)
+        t = Telnet(ns, connect_within=30)
+        t.read_until(Telnet.PROMPT, 10)
+        out = t.cmd('r1')
+        _, w5, after = xip_area(t)
+        boot = serial.wait_for(r'xip: APROM 0x[0-9a-f]+-0x20000 \(\d+ KiB\) for programs, \d+ kept', 1, mark)
+        report.add('kept across reboot', f'relocs {tags[1]}: ok (0)' in out and w5 == 0 and crc1 in after,
+                   serial.lines[boot] if boot is not None else 'no xip line in the log')
+        fault = serial.wait_for(r'HardFault|PANIC|panic', 1, mark)
+        report.add('xip without faults', fault is None, serial.lines[fault] if fault is not None else '')
+    finally:
+        for name in ['r0', 'r1', 'r2', 'xfill'] + [f'xs{i}' for i in range(len(sleepers))]:
+            t.cmd(f'rm /bin/{name}')
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+    report.add('xip uploads', all(s in (201, 204) for s in statuses), str(statuses))
+
+
 def m6_tests(ns, serial, report):
     """Loadable programs: SDK-built NXE files uploaded to /bin and run by the shell."""
     sdk = REPO / 'sdk/build'
     programs = {name: (sdk / f'{name}.nxe').read_bytes() for name in ('hello', 'upper', 'primes', 'spawn', 'memtest')}
     statuses = [ns.call(http_request, 'PUT', f'/bin/{name}', data)[0] for name, data in programs.items()]
     bad = bytearray(programs['hello'])
-    bad[40] ^= 0xff                                   # inside the image: the CRC no longer matches
+    bad[40] ^= 0xff                                   # the text, and its CRC: no copy in APROM has it,
+    bad[32] ^= 0x01                                   # and the text no longer matches it
     statuses.append(ns.call(http_request, 'PUT', '/bin/damaged', bytes(bad))[0])
     statuses.append(ns.call(http_request, 'PUT', '/bin/short', programs['hello'][:100])[0])
     statuses.append(ns.call(http_request, 'PUT', '/bin/text', b'echo this is not a program\n')[0])
@@ -919,8 +1080,11 @@ def m6_tests(ns, serial, report):
                    is not None, out.strip().replace('\r\n', ' | '))
         out = t.cmd('/bin/hello') + t.cmd('echo shout please | upper') + t.cmd('hello x | upper | wc')
         report.add('programs in pipes', 'SHOUT PLEASE' in out and re.search(r'\b2 10 4\d\b', out) is not None, out.strip().replace('\r\n', ' | '))
-        out = t.cmd('primes', 10) + t.cmd('primes 100000', 10)
-        report.add('program library', '1229 primes up to 10000, the largest 9973' in out and 'out of memory' in out,
+        # 100000 needs a 6 KiB sieve, which fits now that program text is not
+        # in RAM; 900000 (56 KiB) never does.
+        out = t.cmd('primes', 10) + t.cmd('primes 100000', 10) + t.cmd('primes 900000', 10)
+        report.add('program library', '1229 primes up to 10000, the largest 9973' in out and 'out of memory' in out
+                   and '9592 primes up to 100000, the largest 99991' in out,
                    out.strip().replace('\r\n', ' | '))
         out = t.cmd('primes 20000 &') + t.cmd('wait', 10)
         report.add('program in background', '2262 primes up to 20000' in out, out.strip().replace('\r\n', ' | '))
@@ -967,7 +1131,7 @@ def m6_tests(ns, serial, report):
 
 
 def nnv_tests(ns, serial, report):
-    """/dev/lcd and the NNV player (sdk/examples/play.c, tools/mknnv.py)."""
+    """/dev/lcd and the NNV player (bin/play.c, tools/mknnv.py)."""
     sys.path.insert(0, str(REPO / 'tools'))
     import mknnv
     files = {}
@@ -988,8 +1152,7 @@ def nnv_tests(ns, serial, report):
     # R26: two frames of a second each; the last must stay up its second too.
     blank, full = bytes(mknnv.FRAME), b'\xff' * mknnv.FRAME
     files['two'] = mknnv.encode([full, blank], 1000)
-    statuses = [ns.call(http_request, 'PUT', f'/bin/{name}', (REPO / f'sdk/build/{name}.nxe').read_bytes())[0]
-                for name in ('play', 'audioshare')]
+    statuses = [ns.call(http_request, 'PUT', '/bin/audioshare', (REPO / 'sdk/build/audioshare.nxe').read_bytes())[0]]
     statuses += [ns.call(http_request, 'PUT', f'/home/{n}.nnv', d)[0] for n, d in files.items()]
     # 2 s of raw sound, all 0: the buzzer stays off.
     statuses.append(ns.call(http_request, 'PUT', '/home/quiet.u8', bytes(16000))[0])
@@ -1695,6 +1858,11 @@ def main():
                 report.add('scheduler demo (D)', False, demo.strip())
 
             try:
+                install_programs(ns, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
+                report.add('programs installed', False, repr(exc))
+            try:
                 console_tests(ns, report)
             except (OSError, TimeoutError, ConnectionError) as exc:
                 traceback.print_exc()
@@ -1759,6 +1927,12 @@ def main():
             except (OSError, TimeoutError, ConnectionError) as exc:
                 traceback.print_exc()
                 report.add('audit fixes', False, repr(exc))
+
+            try:
+                xip_tests(ns, serial, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
+                report.add('xip', False, repr(exc))
 
             if args.flash:
                 try:

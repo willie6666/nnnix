@@ -8,7 +8,7 @@ sound for the onboard buzzer. A picture is a video of one frame. The pieces:
 | `tools/mknnv.py` | On the build machine: turns pictures and videos into NNV through ffmpeg, makes test files, checks files |
 | `/dev/lcd` | In the kernel: the display as a 1024-byte frame that a program can write |
 | `/dev/audio` | In the kernel: the buzzer, playing 8-bit samples at 8 kHz (`drivers/audio.c`) |
-| `play` (`user/play.c`) | On the board: a built-in command that shows an NNV file, with its sound if asked; it runs from flash, taking about 2.7 KiB of RAM while it plays (the same file builds as the SDK example `sdk/examples/play.c`) |
+| `play` (`bin/play.c`) | On the board: the program `/bin/play`, which shows an NNV file, with its sound if asked; its code runs from flash (APROM), so it takes about 2.6 KiB of RAM while it plays, its stack and its buffers |
 | `lib/nnv.h` | The format and its decoders, shared by `play` and the host test |
 
 ## Quick start
@@ -172,7 +172,7 @@ may be up to 192 ms slow before the sound runs dry. Files made with the earlier
 
 Why this shape: the board has about 6 KiB of free RAM. A delta is applied in
 place to the one frame buffer, a few bytes at a time as they are read, so
-`play` needs 1 KiB for the frame and 128 bytes for reading, and no second frame.
+`play` needs 1 KiB for the frame and 512 bytes for reading, and no second frame.
 The page layout matches the LCD controller, so a frame goes to the display with
 no conversion.
 

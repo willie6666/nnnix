@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Program entry and the C library, forwarded to the firmware's table. */
 #include "nnnix.h"
+#include "fmt.h"
 
 const struct nn_lib *__nn_lib;
 int main(int argc, char **argv);
@@ -33,7 +34,29 @@ int snprintf(char *buf, size_t n, const char *fmt, ...)
     va_end(ap);
     return r;
 }
+int nn_vsnprintf(char *buf, size_t n, const char *fmt, va_list ap) { return __nn_lib->vsnprintf(buf, n, fmt, ap); }
+int nn_snprintf(char *buf, size_t n, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int r = __nn_lib->vsnprintf(buf, n, fmt, ap);
+    va_end(ap);
+    return r;
+}
 int puts(const char *s) { return printf("%s\n", s); }
+int nn_write_all(int fd, const void *p, size_t n)
+{
+    const char *s = p;
+    for (size_t done = 0; done < n;) {
+        int w = sys_write(fd, s + done, n - done);
+        if (w < 0) return w;
+        if (w == 0) return SYS_EIO;
+        done += (size_t)w;
+    }
+    return (int)n;
+}
+int fputs_fd(const char *s, int fd) { return nn_write_all(fd, s, strlen(s)); }
+int nn_interrupted(void) { return sys_ttyintr() > 0; }
 void *memcpy(void *d, const void *s, size_t n) { return __nn_lib->memcpy(d, s, n); }
 void *memmove(void *d, const void *s, size_t n) { return __nn_lib->memmove(d, s, n); }
 void *memset(void *d, int c, size_t n) { return __nn_lib->memset(d, c, n); }

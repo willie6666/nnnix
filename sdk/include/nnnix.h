@@ -27,6 +27,9 @@ int   strncmp(const char *a, const char *b, size_t n);
 char *strcpy(char *dst, const char *src);
 char *strchr(const char *s, int c);
 const char *errstr(int error);       /* text for a negative SYS_E* result */
+int   nn_write_all(int fd, const void *p, size_t n);   /* all of it, again after short writes: n or an error */
+int   fputs_fd(const char *s, int fd);
+int   nn_interrupted(void);          /* Ctrl-C typed on the terminal since the last check */
 void *malloc(size_t n);              /* heap blocks are freed when the program ends */
 void  free(void *p);
 __attribute__((noreturn)) void exit(int code);

@@ -15,6 +15,7 @@
 #include "../net/telnetd.h"
 #include "console.h"
 #include "exec.h"
+#include "xip.h"
 #include "fwupdate.h"
 #include "../lib/nnlib.h"
 
@@ -85,16 +86,19 @@ static int32_t sys_alloc_k(uint32_t n, uint32_t flags)
 static int32_t sys_free_k(void *p) { kfree(p); return 0; }
 static int32_t sys_grow_k(void *p, uint32_t n) { return kmem_grow(p, n); }
 
-/* Child programs: the argv copy lives in one block owned by the task. A loaded
- * program (image != 0) gets the library table as a third argument. The task
- * holds a reference to the image; so does any child a loaded program spawns,
- * since it runs code from the same image (task_free drops it). */
-struct spawn_block { int (*main)(int, char **); void *image; int argc; char *argv[]; };
+/* Child programs: the argv copy lives in one block owned by the task. The task
+ * holds a reference to the loaded image it runs (image != 0: a program just
+ * loaded); so does any child a loaded program spawns, since it runs code from
+ * the same image and uses the same data (task_free drops it). */
+struct spawn_block { int (*main)(int, char **); int argc; char *argv[]; };
 
+/* Code of a loaded program (its own start, or a function it spawns) runs with
+ * r9 at the program's data, and gets the library table as a third argument. */
 static void spawn_entry(void *arg)
 {
     struct spawn_block *b = arg;
-    if (b->image) task_exit(((int (*)(int, char **, const struct nn_lib *))(void *)b->main)(b->argc, b->argv, &nn_lib));
+    struct loaded_image *image = task_self()->image;
+    if (image) task_exit(arch_call_sb((int (*)(int, char **, const void *))(void *)b->main, b->argc, b->argv, image + 1));
     task_exit(b->main(b->argc, b->argv));
 }
 
@@ -106,7 +110,6 @@ int spawn_child(const struct nn_spawn *req, struct loaded_image *image)
     struct spawn_block *b = kmalloc(size);
     if (!b) return SYS_ENOMEM;
     b->main = req->main;
-    b->image = image;
     b->argc = req->argc;
     char *strings = (char *)&b->argv[req->argc + 1];
     for (int i = 0; i < req->argc; ++i) {

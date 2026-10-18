@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #define _DEFAULT_SOURCE
-#include "../../user/ed.h"
+#include "../../bin/ed.h"
 #include "check.h"
 #include <fcntl.h>
 #include <stdlib.h>

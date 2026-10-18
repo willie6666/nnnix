@@ -690,6 +690,69 @@ on the board, which the next runs kept as "the board's own"; removed.
   and reports the failures, like `nntest`'s Namespace; not run (it refuses to start while eth1 has an address).
 - Result: `make test` 154/154; free RAM with the console shell and one telnet session 6072 B.
 
+### Programs run from APROM (2026-10-18)
+
+Loaded programs used to sit whole in RAM (code, data, bss), and commands that would not fit there
+(`play`, `ed`) were compiled into the firmware instead. Now their code runs in place from the APROM above
+the firmware, and only data, bss and the stack take RAM.
+
+- Position independence (R6, revisited): programs are built with `-fropi -frwpi`. Code and read-only data
+  (text) reach each other PC-relative; data and bss are reached through r9, the static base. Text then
+  needs patching only for words that hold a text address (pointer tables in read-only data), which depend
+  on where the text lies, not on where the data lies: one copy of the text serves every run, also two runs
+  at once. `sdk/nxe.ld` links text at 0 and data at 0x10000000 in its own segment, so lld's SBREL offsets
+  count from the data start. NXE version 2 (`lib/nnlib.h`, `tools/mknxe.py`): header, text, text
+  relocations, data, data relocations (bit 0: the word points into data or bss, rewritten as an offset);
+  `text_crc` names the text, `data_crc` checks the rest; the file must have exactly the size the header
+  gives. Debug information does not link with `-frwpi` (SBREL in `.debug_info`), so programs are built
+  without `-g`.
+- Writing APROM from APROM: the NUC140 refuses it (ISPFF) unless ISPCON.APUEN (bit 3, in the BSP's header,
+  not in the TRM excerpt) is set, and nothing may be fetched from APROM while an erase or a write runs. The
+  ISP trigger and wait (`isp_run`, `arch/nuc140/fmc.c`) are copied onto the stack and run from there with
+  interrupts off: 20 ms for a 512-byte page erase, about 40 us for a word. The wait counts SysTick periods
+  and adds the missed ones to `jiffies`, so the clock does not fall behind. Measured on the board: erase
+  20 ms, words read back as written.
+- Slots (`kernel/xip.c`): the area runs from the firmware's end, rounded up to a page, to 128 KiB (35 KiB
+  with this firmware). A slot is a 32-byte header at a page start, then the text, in whole pages. The
+  header (magic, size, text CRC, a sequence number, a check word written last) is written after the text,
+  so a slot whose writing a reset cut short is no slot; a slot is dropped by clearing its `live` word,
+  before any of its pages is erased. The area is scanned when it is needed (no table in RAM): the kernel
+  keeps only a list of the images in use, through the images themselves. New slots go after the newest one
+  and wrap around, dropping whatever is in the way except a slot a running program uses; if nothing can be
+  made free, the text is read into RAM after the data instead (it runs anywhere). A firmware update that
+  grows overwrites only the slots at the start of the area, which are then below it and ignored.
+- The loader (`kernel/exec.c`), under the slots' lock from the lookup until the image is registered: a
+  slot with the same text CRC and size is used as it is (the text is not read from the file); otherwise
+  pages are erased (other tasks run between pages), the text is read in 64-byte pieces, its relocations
+  added on the way (they are read from their place in the file, a few at a time) and each word read back;
+  only when the CRC over text and relocations matches is the header written. Then the data is read into
+  the RAM block and relocated, bss cleared, and the task starts through `arch_call_sb`, which sets r9 (also
+  for functions a program spawns, which share its data). `/proc/xip` lists the area and its slots. All of it
+  runs on the caller's stack (the shell's): writing a slot first took the shell to 968 of its 1152 B; with
+  relocations read one at a time, the data loader's buffer out of the frame below and `isp_run`'s copy cut
+  to its 48 B, 848 B.
+- Programs instead of built-ins: `play`, `ed` and `wc head tail grep hexdump` moved to `bin/` and are built
+  by `make` as programs (`build/bin/*.nxe`, from `bin/main.c` calling `cmd_NAME` and the SDK's `crt0.c`,
+  which gained `nn_write_all`, `fputs_fd` and `nn_interrupted`). `tools/nnupdate.py --bin build/bin`
+  installs them, `nntest` too, and `help` lists the programs in `/bin` after the built-ins. The firmware
+  went from 102.4 KB to 95.2 KB; `play` is 2780 B of text and 4 B of bss, `ed` 5372 B and 4 B.
+- A stack overflow found on the way: `play -s` as a program died at the close of `/dev/audio`, 996 B deep
+  in its 1 KiB stack. The kernel log's time stamp was formatted with `nn_snprintf` under `kvprintf`'s own
+  `nn_vformat`, 200 B more on whatever stack logs. It is now built by hand: `play -s` peaks at 820 B, fsd
+  at 932 B instead of 1260 B, kd at 600 B instead of 748 B.
+- RAM: `hello` takes 24 B besides its stack (it took its whole 276-byte image); `primes 100000` now finds
+  room for its 6 KiB sieve. The firmware's static RAM grew by 40 B (the slot state), so free RAM with the
+  console shell and one telnet session is 6032 B.
+- Tests: `test_xip` (54 checks on a simulated APROM: slots found again after a reboot, an unfinished slot
+  ignored, the oldest giving way, slots in use never, no room, failing writes, damaged headers). On the
+  board (`xip_tests`): `relocs` (every relocation kind) twice with one slot written, two runs at once, a
+  program filling the whole area (35 KiB written in 2.1 s), three running programs filling it and a fourth
+  going to RAM without touching theirs, a slot after they ended, the heap as before, slots kept across a
+  reboot. The serial adapter would not enumerate on this day, so the sections that need the kernel log
+  were run without it; the full `make test` is still to be repeated.
+- Cost: the first run of a new program holds interrupts off 20 ms per page erased (the sound stutters, a
+  burst of console input could overflow the UART FIFO); later runs write nothing.
+
 ## 8. Source layout
 
 ```
@@ -702,7 +765,8 @@ nnnix/
   net/                socket layer, telnetd  (later: dhcp)
   lib/                string, printf, EABI division, system-call stubs (shared by kernel and users)
   user/               nsh and built-in commands, demo programs
-  sdk/                (M6) programs: crt0, nxe.ld, examples (hello ... play)
+  bin/                the programs for /bin (play, ed, text tools), built like SDK programs
+  sdk/                (M6) programs: crt0, nxe.ld, examples (hello ... relocs)
   tests/host/         unit tests on the build machine
   tools/              flash.py  console.py  nntest.py (on-target tests)  mknxe.py  mknnv.py  nncp.py  nnupdate.py
 ```
@@ -718,7 +782,7 @@ Repository: <https://github.com/willie6666/nnnix>; at least one commit and tag p
 | R3 | The RS-232 transceiver on PB0 and how to isolate it; fallback: software UART RX or another pin | M7 |
 | R4 | RTC 32.768 kHz crystal: present, stable within 0.3 s, RTC counts through resets. Done in M5. Buzzer: PB11, low active, a magnetic 2.4 kHz buzzer; driven as PWM4 for `/dev/audio` (2026-10-17). Keys, EEPROM pins remain | M5/M7 |
 | R5 | littlefs on the Cortex-M0: 19.5 KiB code, about 2.2 KiB RAM with fsd. Done in M4 | M4 |
-| R6 | Position independence for loaded programs: not needed; programs are linked at 0 and relocated at load. Done in M6 | M6 |
+| R6 | Position independence for loaded programs: first not needed (linked at 0, relocated in RAM, M6); since 2026-10-18 `-fropi -frwpi`, so the text runs in place from APROM | M6 |
 | R7 | W5500 interrupts (Sn_IMR/SIMR) with the PB2 GPIO interrupt, measured | M2 |
 
 ## 10. Risks

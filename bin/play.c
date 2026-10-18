@@ -8,18 +8,13 @@
  *   -v  at the end, print the frame count, the time taken and late frames
  * The console text comes back when play ends. Make files with tools/mknnv.py.
  *
- * A built-in command (it runs from flash, so playing takes about 2.3 KiB of
- * RAM: its task's stack and the state below), and also the SDK example
- * sdk/examples/play.c, which builds this file as a loadable program. All state
- * is in one block allocated per run: two players never share it. */
-#ifdef NNNIX_SDK
-#include "nnnix.h"
-#else
-#include "cmds.h"
+ * A program in /bin: its code runs from APROM, so playing takes about 2.3 KiB
+ * of RAM, its task's stack and the state below, all in one block allocated
+ * per run. */
+#include "../user/cmds.h"
 #include "../lib/stdio.h"
 #include "../lib/string.h"
 #include "../lib/sys.h"
-#endif
 #include "../lib/nnv.h"
 
 #define AUDIO_RATE 8000u                 /* what /dev/audio plays */

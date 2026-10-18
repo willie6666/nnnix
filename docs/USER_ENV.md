@@ -94,6 +94,8 @@ sessions. Logins (LCD and telnet) start once `/etc/rc` has finished, or after
 
 ## Text tools
 
+These are programs in `/bin` (see [Programs](#programs)).
+
 | Command | Behaviour |
 | --- | --- |
 | `wc [FILE...]` | Count newline characters, whitespace-separated words and bytes |
@@ -331,13 +333,27 @@ use per stack size, also of tasks that have ended.
 ## Programs
 
 Commands that are not built in are loaded from `/bin/NAME` (or from a path
-that contains `/`, such as `/usb/tool.nxe`). They are NXE files built with the
-SDK on the NanoPi and uploaded over HTTP:
+that contains `/`, such as `/usb/tool.nxe`); `help` lists both. `play`, `ed`
+and the text tools (`wc`, `head`, `tail`, `grep`, `hexdump`) are such programs,
+built with the firmware (`make`) and installed with it:
+
+```
+sudo python3 tools/nnupdate.py --iface eth1 build/nnnix.bin --bin build/bin
+sudo python3 tools/nnupdate.py --iface eth1 --bin build/bin      # the programs only
+```
+
+Other programs are NXE files built with the SDK on the NanoPi and uploaded
+over HTTP:
 
 ```
 make -C sdk
 sudo python3 tools/nncp.py --iface eth1 put sdk/build/hello.nxe /bin/hello
 ```
+
+A program's code runs from the chip's flash: the first run writes it into the
+APROM above the firmware (a few tenths of a second, during which the buzzer's
+sound stutters), later runs and reboots find it there. Only its data, stack and
+allocations take RAM. `cat /proc/xip` shows what the area holds.
 
 They behave like built-in commands in pipelines, with redirection and `&`,
 and Ctrl-C or `kill` stops them; their RAM (code, data, stack, and anything

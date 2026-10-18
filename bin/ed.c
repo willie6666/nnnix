@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* ed: the shell command around the editor core (edcore.c). */
-#include "cmds.h"
+#include "../user/cmds.h"
 #include "ed.h"
 #include "../lib/stdio.h"
 #include "../lib/string.h"

@@ -134,7 +134,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot, watchdog reset | pass |
-| Free RAM floor: heap free while `free` runs with the console shell (and its 512 B scrollback) and one telnet session | 5304 B (test limit 5200 B) |
+| Free RAM floor: heap free while `free` runs with the console shell (and its 512 B scrollback) and one telnet session | 5288 B (test limit 5200 B) |
 | Code size / static RAM including crash records / main stack / heap | 93 KiB / 2.6 KiB / 512 B / 13.0 KiB |
 | APROM for program code / writing a new program / RAM `hello` needs besides its stack | 35 KiB / 20 ms per 512 B page / 24 B |
 

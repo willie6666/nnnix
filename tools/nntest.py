@@ -281,6 +281,11 @@ def console_tests(ns, report):
                and 'list commands' not in text,
                'help output scrolled the 8-line screen')
     console_view_tests(ns, report, type_keys, screen)
+    # A program printing to the LCD: the screen is drawn after the terminal's
+    # calls return, not under them (wget's usage overflowed its stack here).
+    text = type_keys(b'wget\r', 2.0) + type_keys(b'host\r', 1.5)
+    report.add('program on the console', 'usage: wget' in text and 'usage: host NAME' in text
+               and text.rstrip().endswith('nnnix$'), text.strip().split('\n')[-1])
     text = type_keys(b'exit\r', 1.0)
     tasks = ns.call(request, b'K')[0].decode(errors='replace')
     report.add('console logout', 'Press Enter to\nlog in.' in text and ' nsh ' not in tasks,

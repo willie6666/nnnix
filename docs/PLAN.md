@@ -802,6 +802,14 @@ the firmware, and only data, bss and the stack take RAM.
   unsized replies, 404, a redirect loop, a closed port, `https://` refused, heap unchanged.
 - HTTPS is not supported yet (`wget` says so).
 - `make test` 178/178.
+- Typing `wget` on the LCD console reset the board: the usage message overflowed wget's 1 KiB stack
+  (912 B). Printing to the LCD went 176 B deeper than to telnet, because the console drew the screen
+  under the terminal's own calls (`vt_write`, `put`, `newline`, `vt_redraw`, then the page painting).
+  The terminal's callbacks now only mark the pixel columns to draw per page, and the console draws them
+  once `vt_write` has returned (also once per page, however many cells changed). On the LCD: wget's
+  usage 872 -> 576 B, `hello` 704 -> 588 B, the console shell 928 -> 864 B, `ed` 632 B. And wget's steps
+  are no longer inlined into one 192-byte frame. A test now runs programs on the LCD console.
+  `make test` 179/179; free RAM with the console shell and one telnet session 5288 B (16 B of marks).
 
 ## 8. Source layout
 

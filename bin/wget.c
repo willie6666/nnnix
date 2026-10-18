@@ -19,6 +19,8 @@
 #define REDIRECTS 5
 #define CONNECT_MS 10000u
 #define IDLE_MS 30000u
+/* The steps are kept apart (noinline): inlined, all their locals made one
+ * 192-byte frame under everything, the usage message included. */
 
 enum { BODY_CLOSE, BODY_LENGTH, BODY_CHUNKED };
 
@@ -118,7 +120,7 @@ static uint32_t number(const char *s, int base)
     }
 }
 
-static int send_request(struct get *g)
+__attribute__((noinline)) static int send_request(struct get *g)
 {
     char port[8] = "";
     if (g->port != 80) {
@@ -139,7 +141,7 @@ static int send_request(struct get *g)
 }
 
 /* Connect, ask, read the status line and the header. 0, or a negative error. */
-static int request(struct get *g)
+__attribute__((noinline)) static int request(struct get *g)
 {
     uint8_t ip[4];
     if (!g->quiet && dns_parse_ip(g->host, ip)) printf("resolving %s\n", g->host);
@@ -200,7 +202,7 @@ static int fill(struct get *g)
 }
 
 /* The body to g->out: 0, or a negative error (SYS_EIO also for a body cut short). */
-static int body(struct get *g)
+__attribute__((noinline)) static int body(struct get *g)
 {
     int c, chunks = 0;
     uint32_t left = 0;
@@ -252,7 +254,7 @@ static void default_name(const char *path, char *name, size_t size)
     if (!n) strcpy(name, "index.html");
 }
 
-static int run(struct get *g, const char *file)
+__attribute__((noinline)) static int run(struct get *g, const char *file)
 {
     for (int hop = 0;; ++hop) {
         int e = parse_url(g);

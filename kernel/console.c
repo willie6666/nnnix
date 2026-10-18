@@ -132,21 +132,42 @@ static void paint_all(void)
     }
 }
 
+/* Pixel columns waiting to be drawn: [dirty_lo, dirty_hi] of each page, none
+ * when lo > hi. The terminal's callbacks only mark them, and flush() draws
+ * once vt_write has returned: drawing deep under the terminal's own calls
+ * (a newline's repaint) took a program printing to the LCD 176 B deeper into
+ * its stack than one printing to telnet. A page is also drawn once however
+ * many of its cells changed. */
+static uint8_t dirty_lo[8] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff }, dirty_hi[8];
+
+static void mark(int p, int lo, int hi)
+{
+    if (lo < dirty_lo[p]) dirty_lo[p] = (uint8_t)lo;
+    if (hi > dirty_hi[p]) dirty_hi[p] = (uint8_t)hi;
+}
+
+static void flush(void)
+{
+    for (int p = 0; p < 8; ++p) {
+        if (dirty_lo[p] <= dirty_hi[p] && !graphics && !view) paint(p, dirty_lo[p], dirty_hi[p]);
+        dirty_lo[p] = 0xff;
+        dirty_hi[p] = 0;
+    }
+}
+
 /* The terminal's own repaints; scrolled back, the screen stays. */
 static void redraw(void *ctx)
 {
     (void)ctx;
-    if (graphics || view) return;
-    for (int p = 0; p < 8; ++p) paint(p, 0, 127);
+    for (int p = 0; p < 8; ++p) mark(p, 0, 127);
 }
 
 static void draw(void *ctx, int col, int row, char c, int cursor)
 {
     (void)ctx; (void)c; (void)cursor;
     const struct shape *s = &shapes[small];
-    if (graphics || view) return;                    /* scrolled back: the screen stays */
     for (int p = row * s->h / 8; p <= (row * s->h + s->h - 1) / 8; ++p)
-        paint(p, col * s->w, col * s->w + s->w - 1);
+        mark(p, col * s->w, col * s->w + s->w - 1);
 }
 
 /* The console's own keys (kbd.h); others while scrolled back return to the
@@ -163,6 +184,7 @@ static void key(uint8_t k)
         small = k == KBD_TEXT_SMALL;
         view = 0;
         vt_resize(&vt, shapes[small].cols, shapes[small].rows);
+        flush();
         return;
     } else view = 0;
     if (view != was && !graphics) paint_all();
@@ -172,6 +194,7 @@ static void text(const char *s, size_t n)
 {
     mutex_lock(&lcd_lock);
     vt_write(&vt, s, n);
+    flush();
     mutex_unlock(&lcd_lock);
 }
 
@@ -198,6 +221,7 @@ void console_lcd_release(void)
     view = 0;
     lcd_clear();
     vt_redraw(&vt);
+    flush();
     mutex_unlock(&lcd_lock);
 }
 
@@ -224,7 +248,7 @@ static void history(int on)
     mutex_lock(&lcd_lock);
     kfree(hist.buf);
     scrollback_init(&hist, on && hist_size ? kmalloc_high(hist_size) : 0, hist_size);
-    if (view) { view = 0; redraw(0); }
+    if (view) { view = 0; redraw(0); flush(); }
     mutex_unlock(&lcd_lock);
 }
 
@@ -383,5 +407,6 @@ void console_init(void)
     vt.redraw = redraw;
     vt.scrolled = scrolled;
     vt.unscroll = unscroll;
+    flush();
     tty_init(&tty0, &console_ops, 0);
 }

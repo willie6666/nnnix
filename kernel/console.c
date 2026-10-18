@@ -242,14 +242,18 @@ void console_input(const uint8_t *bytes, int n)
     if (queued) sem_give(&input_ready);
 }
 
-/* The scrollback ring, while the console shell runs. */
-static void history(int on)
+/* The scrollback ring, while the console shell runs: a new one, empty, or
+ * none. 0, or -1 when there is no memory for the new one (the old one stays). */
+static int history(int on)
 {
+    char *buf = on && hist_size ? kmalloc_high(hist_size) : 0;
+    if (on && hist_size && !buf) return -1;
     mutex_lock(&lcd_lock);
     kfree(hist.buf);
-    scrollback_init(&hist, on && hist_size ? kmalloc_high(hist_size) : 0, hist_size);
+    scrollback_init(&hist, buf, hist_size);
     if (view) { view = 0; redraw(0); flush(); }
     mutex_unlock(&lcd_lock);
+    return 0;
 }
 
 static volatile uint8_t mode = CONSOLE_ASK;
@@ -335,12 +339,16 @@ int console_text_size(int s)
 
 int console_history(int bytes)
 {
-    if (bytes > 8192) return -1;
+    if (bytes > 8192) return SYS_EINVAL;
     if (bytes >= 0 && (uint32_t)bytes != hist_size) {
+        uint32_t was = hist_size;
         hist_size = (uint32_t)bytes;
-        if (shell_task) history(1);                  /* a new ring, empty */
+        if (shell_task && history(1)) {              /* a new ring, empty */
+            hist_size = was;
+            return SYS_ENOMEM;
+        }
     }
-    return (int)hist_size;
+    return shell_task && !hist.buf ? 0 : (int)hist_size;
 }
 
 
@@ -356,7 +364,7 @@ static void start_shell(void)
     static const char clear[] = "\x1b[2J\x1b[H";
     text(clear, sizeof clear - 1);
     shell_task = task_spawn("nsh", shell, 0, NSH_STACK, 5, TASK_LONG_LIVED);
-    if (shell_task) history(1);
+    if (shell_task && history(1)) kprintf("console: no memory for the %u-byte scrollback\n", hist_size);
     notice_shown = 0;
 }
 

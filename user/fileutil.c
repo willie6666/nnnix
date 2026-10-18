@@ -30,6 +30,7 @@ const char *errstr(int e)
     case SYS_EPIPE: return "broken pipe";
     case SYS_EBUSY: return "busy";
     case SYS_ETIMEDOUT: return "timed out";
+    case SYS_EAGAIN: return "try again";
     case SYS_ESRCH: return "no such process";
     case SYS_ENOEXEC: return "not an executable (NXE) file";
     default: return "error";
@@ -57,12 +58,23 @@ static int is_dir(const char *path)
     return !sys_stat(path, &st) && st.type == NN_TYPE_DIR;
 }
 
-static uint32_t parse_uint(const char *s)
+/* DIGITS[k|K]: 0 and the number, or -1 for anything else or one that does
+ * not fit in 32 bits. */
+static int parse_size(const char *s, uint32_t *v)
 {
-    uint32_t v = 0;
-    while (*s >= '0' && *s <= '9') v = v * 10u + (uint32_t)(*s++ - '0');
-    if (*s == 'k' || *s == 'K') v *= 1024u;
-    return v;
+    const char *start = s;
+    for (*v = 0; *s >= '0' && *s <= '9'; ++s) {
+        uint32_t d = (uint32_t)(*s - '0');
+        if (*v > (0xffffffffu - d) / 10u) return -1;
+        *v = *v * 10u + d;
+    }
+    if (s == start) return -1;
+    if (*s == 'k' || *s == 'K') {
+        if (*v > 0xffffffffu / 1024u) return -1;
+        *v *= 1024u;
+        ++s;
+    }
+    return *s ? -1 : 0;
 }
 
 static int copy_fd(int in, int out)
@@ -293,8 +305,8 @@ static uint8_t pattern(uint32_t i) { return (uint8_t)(((i * 0x9e3779b1u) >> 24) 
 /* mkfile NAME SIZE: write SIZE bytes of the test pattern (also a write benchmark). */
 int cmd_mkfile(int argc, char **argv)
 {
-    if (argc != 3) { printf("usage: mkfile NAME SIZE[k]\n"); return 1; }
-    uint32_t size = parse_uint(argv[2]), t0 = sys_uptime();
+    uint32_t size, t0 = sys_uptime();
+    if (argc != 3 || parse_size(argv[2], &size)) { printf("usage: mkfile NAME SIZE[k]\n"); return 1; }
     int fd = sys_open(argv[1], O_WRONLY | O_CREAT | O_TRUNC);
     if (fd < 0) return fail("mkfile", argv[1], fd);
     uint8_t buf[CHUNK];

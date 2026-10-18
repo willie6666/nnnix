@@ -18,7 +18,9 @@ size_t console_snapshot(char *buf, size_t size);    /* screen text as shown, for
 /* The text size: 0 normal (21x8), 1 small (32x10); Ctrl+- and Ctrl+= on the
  * keyboard. And the scrollback (PageUp/PageDown, Shift+Up/Down): bytes of
  * history kept while the console shell runs. Set when >= 0; return the
- * setting, -1 if invalid. */
+ * setting, or a negative error: invalid, or (the scrollback) no memory for the
+ * new ring, the old one kept. While the shell runs without a ring (there was
+ * no memory when it started), the scrollback's is 0. */
 int console_text_size(int size);
 void console_frame(uint8_t out[1024]);   /* the text's pixels as on the LCD (/dev/lcd layout), for tests */
 int console_history(int bytes);

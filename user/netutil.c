@@ -296,6 +296,7 @@ static int nc_pump(int fd, int proto, int child, int until_child, uint32_t idle_
         if (sys_sockinfo(fd, &i)) return 1;
         if (i.rx) {
             int n = sys_read(fd, buf, sizeof buf);
+            if (n == SYS_EAGAIN) continue;             /* a stranger's datagram, dropped */
             if (n < 0) return 1;
             if (n > 0 && nn_write_all(1, buf, (size_t)n) < 0) return 1;
             if (n == 0 && proto == NN_SOCK_TCP) return 0;
@@ -373,8 +374,12 @@ int cmd_ntpdate(int argc, char **argv)
     (void)nn_interrupted();
     for (int attempt = 0; !e && attempt < 3; ++attempt) {
         uint8_t p[48];
+        /* Our transmit time, which the reply must give back as its originate
+         * time: any number will do, one hard to guess is better. */
+        uint32_t nonce[2] = { sys_uptime() * 2654435761u ^ (uint32_t)fd, sys_time() ^ (uint32_t)attempt << 16 };
         memset(p, 0, sizeof p);
         p[0] = 0x23;                                   /* version 4, client */
+        memcpy(p + 40, nonce, sizeof nonce);
         e = sys_write(fd, p, sizeof p);
         if (e < 0) break;
         e = 0;
@@ -386,7 +391,10 @@ int cmd_ntpdate(int argc, char **argv)
                 sys_sleep(20);
                 continue;
             }
-            if (sys_read(fd, p, sizeof p) != sizeof p || (p[0] & 7u) != 4u || !p[1]) continue;
+            /* From the server (the socket drops others), a server's answer
+             * (mode 4, version 3 or 4, stratum 1-15) to this request. */
+            if (sys_read(fd, p, sizeof p) != sizeof p || (p[0] & 7u) != 4u || (p[0] >> 3 & 7u) < 3u ||
+                (p[0] >> 3 & 7u) > 4u || !p[1] || p[1] > 15u || memcmp(p + 24, nonce, sizeof nonce)) continue;
             uint32_t secs = (uint32_t)p[40] << 24 | (uint32_t)p[41] << 16 | (uint32_t)p[42] << 8 | p[43];
             uint32_t t = secs - NTP_UNIX_OFFSET + (p[44] >= 0x80u ? 1u : 0u);
             int32_t delta = (int32_t)(t - sys_time());

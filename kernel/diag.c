@@ -122,7 +122,8 @@ static void ch376_bench_locked(uint32_t size, uint8_t *data)
     if (s != CH376_OK || c != CH376_OK) { report(" write 0x%02x/0x%02x FAIL\n", s, c); return; }
     s = ch376_open(name);
     if (s != CH376_OK) { report(" reopen 0x%02x FAIL\n", s); return; }
-    uint32_t stored = ch376_file_size(), t2 = jiffies;
+    uint32_t stored, t2 = jiffies;
+    if (ch376_file_size(&stored) != CH376_OK) stored = 0;
     for (uint32_t pos = 0; pos < size && s == CH376_OK; pos += CHUNK) {
         uint32_t m = size - pos < CHUNK ? size - pos : CHUNK, part;
         s = ch376_read(data, m, &part);

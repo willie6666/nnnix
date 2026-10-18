@@ -46,28 +46,29 @@ static int set(const struct setting *s, const char *value)
 {
     if (s->kind == KIND_SERVICE) {
         int on = !strcmp(value, "on") ? 1 : !strcmp(value, "off") ? 0 : -1;
-        if (on < 0) return -1;
+        if (on < 0) return SYS_EINVAL;
         struct nn_netcfg c;
         sys_netcfg(&c, NN_NET_GET);
         c.services = (uint8_t)(on ? c.services | s->key : c.services & ~s->key);
-        return sys_netcfg(&c, NN_NET_SERVICES) ? -1 : 0;
+        return sys_netcfg(&c, NN_NET_SERVICES) ? SYS_EINVAL : 0;
     }
     int v = 0;
     if (s->kind == KIND_CONSOLE) {
         v = -1;
         for (int i = 0; i < 3; ++i) if (!strcmp(value, console_modes[i])) v = i;
-        if (v < 0) return -1;
+        if (v < 0) return SYS_EINVAL;
     } else if (s->kind == KIND_FONT) {
         v = !strcmp(value, "normal") ? 0 : !strcmp(value, "small") ? 1 : -1;
-        if (v < 0) return -1;
+        if (v < 0) return SYS_EINVAL;
     } else {
-        if (!*value) return -1;
+        if (!*value) return SYS_EINVAL;
         for (const char *p = value; *p; ++p) {
-            if (*p < '0' || *p > '9' || v > 99999999) return -1;
+            if (*p < '0' || *p > '9' || v > 99999999) return SYS_EINVAL;
             v = v * 10 + (*p - '0');
         }
     }
-    return sys_sysctl(s->key, v) < 0 ? -1 : 0;
+    int e = sys_sysctl(s->key, v);
+    return e < 0 ? e : 0;
 }
 
 int cmd_sysctl(int argc, char **argv)
@@ -88,7 +89,9 @@ int cmd_sysctl(int argc, char **argv)
         for (unsigned k = 0; k < COUNT; ++k)
             if (strlen(settings[k].name) == n && !strncmp(settings[k].name, argv[i], n)) s = &settings[k];
         if (!s) { printf("sysctl: unknown setting '%s' (sysctl -h lists them)\n", argv[i]); rc = 1; continue; }
-        if (eq && set(s, eq + 1)) { printf("sysctl: invalid value for %s: '%s'\n", s->name, eq + 1); rc = 1; continue; }
+        int e = eq ? set(s, eq + 1) : 0;
+        if (e == SYS_EINVAL) { printf("sysctl: invalid value for %s: '%s'\n", s->name, eq + 1); rc = 1; continue; }
+        if (e) { printf("sysctl: %s: %s\n", s->name, errstr(e)); rc = 1; }
         show(s);
     }
     return rc;

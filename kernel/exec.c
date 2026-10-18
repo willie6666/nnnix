@@ -4,7 +4,9 @@
  * relocations applied on the way; only when APROM has no room does it come to
  * RAM. Data and bss always get RAM, the data read straight into the block.
  * The text and its relocations are checked against text_crc when they are
- * written; a slot found again is taken as it is (it is found by that CRC). */
+ * written; a slot found again is found by that CRC and checked against the
+ * CRC xip took of it. The header and data are checked on every run (data_crc). */
+#include <stddef.h>
 #include "exec.h"
 #include "kmem.h"
 #include "task.h"
@@ -106,11 +108,12 @@ static int load_text(struct file_at *f, const struct nxe_header *h, uint32_t at,
     return ~crc == h->text_crc ? 0 : SYS_ENOEXEC;           /* damaged or truncated upload */
 }
 
-/* Data into sb, relocated, checked against data_crc. Not inlined: its buffer
+/* Data into sb, relocated, checked with the header against data_crc. Not inlined: its buffer
  * would sit in exec_program's frame under load_text's. */
 __attribute__((noinline)) static int load_data(struct file_at *f, const struct nxe_header *h, const uint8_t *text, uint8_t *sb)
 {
-    uint32_t pos = sizeof *h + h->text + 4u * h->text_relocs, crc = ~0u, rel[CHUNK];
+    uint32_t pos = sizeof *h + h->text + 4u * h->text_relocs, rel[CHUNK];
+    uint32_t crc = lfs_crc(~0u, h, offsetof(struct nxe_header, data_crc));
     int e = read_at(f, pos, sb, h->data);
     if (e) return e;
     crc = lfs_crc(crc, sb, h->data);
@@ -160,10 +163,11 @@ int exec_program(const struct nn_exec *req)
     xip_lock();
     const uint8_t *text = text_in_aprom(&f, &h, &e);
     struct loaded_image *block = 0;
+    uint8_t *sb = 0;
     uint32_t ram = h.data + h.bss;
     if (!e && !(block = kmalloc(sizeof *block + ram + (text ? 0 : h.text)))) e = SYS_ENOMEM;
-    uint8_t *sb = (uint8_t *)(block + 1);                  /* 8-byte aligned, like the block */
     if (!e) {
+        sb = (uint8_t *)(block + 1);                       /* 8-byte aligned, like the block */
         *block = (struct loaded_image){ .slot = text ? (uint32_t)(uintptr_t)text - XIP_HEADER : 0 };
         if (!text) e = load_text(&f, &h, (uint32_t)(uintptr_t)(sb + ram), sb + ram);
         if (!text) text = sb + ram;

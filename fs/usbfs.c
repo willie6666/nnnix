@@ -141,7 +141,7 @@ static int activate(struct ufile *u)
     current = u;
     /* Another handle may have changed the file since; its data was written
      * back when it was deactivated, so the directory entry is current. */
-    u->size = ch376_file_size();
+    if (ch376_file_size(&u->size) != CH376_OK) { deactivate(); return SYS_EIO; }
     return 0;
 }
 
@@ -162,9 +162,10 @@ static int u_open(struct mount *m, const char *path, int flags, struct file *f)
             u->dir = 1;
             if (writable) e = SYS_EISDIR;
         } else if (s == CH376_OK) {
-            u->size = ch376_file_size();
+            uint8_t got = ch376_file_size(&u->size);
             ch376_close(0);
-            if ((flags & O_CREAT) && (flags & O_EXCL)) e = SYS_EEXIST;
+            if (got != CH376_OK) e = SYS_EIO;
+            else if ((flags & O_CREAT) && (flags & O_EXCL)) e = SYS_EEXIST;
             else if (flags & O_DIRECTORY) e = SYS_ENOTDIR;
             else if (writable && (flags & O_TRUNC) && u->size) {
                 if (walk(u->path, 0) != CH376_OK || ch376_erase_open() != CH376_OK) e = SYS_EIO;
@@ -282,7 +283,7 @@ static int u_readdir(struct file *f, struct nn_dirent *d)
         }
         listing = 0;
         while (s == CH376_ENTRY_READY) {
-            ch376_read_entry(ent);
+            if (ch376_read_entry(ent) < 0) { e = SYS_EIO; break; }
             int skip = ent[0] == 0xe5 || ent[0] == '.' || (ent[11] & 0x08) || ent[11] == 0x0f;
             if (!skip && index++ == f->pos) {
                 uint32_t k = 0;
@@ -320,7 +321,11 @@ static int u_stat(struct mount *m, const char *path, struct nn_stat *st)
         deactivate();
         uint8_t s = walk(p83, 0);
         if (s == CH376_OPEN_DIR) { st->type = NN_TYPE_DIR; st->size = 0; }
-        else if (s == CH376_OK) { st->type = NN_TYPE_FILE; st->size = ch376_file_size(); ch376_close(0); }
+        else if (s == CH376_OK) {
+            st->type = NN_TYPE_FILE;
+            if (ch376_file_size(&st->size) != CH376_OK) e = SYS_EIO;
+            ch376_close(0);
+        }
         else e = status_error(s);
     }
     ch376_unlock();

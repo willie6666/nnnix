@@ -71,7 +71,7 @@ The system's own programs (`play`, `ed`, `wc`, `head`, `tail`, `grep`,
 ## Limits
 
 - Code (text: code and read-only data): at most 64 KiB, and the APROM above the
-  firmware holds about 35 KiB of programs at a time. Data and bss: at most
+  firmware holds about 31 KiB of programs at a time (what the firmware leaves). Data and bss: at most
   8 KiB, in RAM. Each program also gets a task stack, 1 KiB by default
   (`make STACK=2048`), and a few hundred bytes of kernel bookkeeping. When
   every page of the APROM area belongs to a program that is running, a new
@@ -99,9 +99,13 @@ data or bss). Anything else that would need changing when the program moves
 is refused at build time.
 
 The loader (`kernel/exec.c`) looks for the text in APROM above the firmware
-(`kernel/xip.c`): a slot holding text with the same CRC-32 is used as it is;
+(`kernel/xip.c`): a slot holding text with the same CRC-32 (`text_crc`) is used
+once the text in it still matches the CRC taken when it was written;
 otherwise one is written, its relocations applied on the way and the text
-checked against its CRC. A slot stays across reboots and is written only when
+checked against its CRC. The header and the data are checked against
+`data_crc` on every run (it covers the header up to itself, so a changed entry
+point, size or relocation count is refused too). This is NXE version 3; files
+of version 2 must be rebuilt. A slot stays across reboots and is written only when
 the program is new or changed; the oldest slots make room for new ones, but
 never one a running program uses. Writing costs 20 ms with interrupts off per
 512-byte page erased (the flash allows nothing else meanwhile), about 0.3 s

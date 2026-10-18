@@ -3,8 +3,10 @@
  *
  * connect and listen only start the work; programs poll sockinfo for the state,
  * so they can watch for Ctrl-C meanwhile. Reads wait for data and can be
- * interrupted by a kill. A UDP read returns one datagram and makes its sender
- * the destination of following writes. */
+ * interrupted by a kill. A UDP read returns one datagram. On a listening UDP
+ * socket its sender becomes the destination of following writes; a connected
+ * one keeps its destination and drops datagrams from anyone else (the read
+ * then returns SYS_EAGAIN if nothing else is waiting). */
 #include "net.h"
 #include "../fs/vfs.h"
 #include "../kernel/kmem.h"
@@ -15,7 +17,7 @@
 
 struct sock {
     struct mutex wlock, rlock;       /* a parent and its children may share the socket */
-    uint8_t sn, proto, has_peer;
+    uint8_t sn, proto, has_peer, connected;
     uint16_t left;                   /* UDP: unread bytes of the current datagram */
     uint8_t peer[4];
     uint16_t peer_port;
@@ -54,10 +56,18 @@ static int udp_read(struct sock *s, void *buf, uint32_t n)
         if (w5500_rx_available(s->sn) >= 8) {
             uint8_t h[8];
             w5500_recv(s->sn, h, 8);                   /* sender address, port, length */
-            memcpy(s->peer, h, 4);
-            s->peer_port = (uint16_t)(h[4] << 8 | h[5]);
-            s->has_peer = 1;
-            s->left = (uint16_t)(h[6] << 8 | h[7]);
+            uint16_t port = (uint16_t)(h[4] << 8 | h[5]), len = (uint16_t)(h[6] << 8 | h[7]);
+            if (s->connected && (memcmp(s->peer, h, 4) || s->peer_port != port)) {
+                w5500_skip(s->sn, len);                /* not from the peer */
+                if (w5500_rx_available(s->sn) < 8) return SYS_EAGAIN;
+                continue;
+            }
+            if (!s->connected) {
+                memcpy(s->peer, h, 4);
+                s->peer_port = port;
+                s->has_peer = 1;
+            }
+            s->left = len;
             if (!s->left) return 0;
             break;
         }
@@ -160,7 +170,7 @@ int sock_connect(int fd, const struct nn_sockaddr *a)
     if (!a->port) return SYS_EINVAL;
     memcpy(s->peer, a->ip, 4);
     s->peer_port = a->port;
-    s->has_peer = 1;
+    s->has_peer = s->connected = 1;
     if (s->proto == NN_SOCK_TCP)
         return w5500_tcp_connect(s->sn, a->ip, a->port, ephemeral()) ? SYS_EIO : 0;
     if (w5500_status(s->sn) != W5500_SOCK_UDP && w5500_open(s->sn, W5500_MODE_UDP, ephemeral())) return SYS_EIO;
@@ -173,7 +183,7 @@ int sock_listen(int fd, uint16_t port)
     if (!s) return SYS_EBADF;
     if (!port) return SYS_EINVAL;
     if (s->proto == NN_SOCK_TCP) return w5500_tcp_listen(s->sn, port) ? SYS_EIO : 0;
-    s->has_peer = 0;
+    s->has_peer = s->connected = 0;
     return w5500_open(s->sn, W5500_MODE_UDP, port) ? SYS_EIO : 0;
 }
 

@@ -704,7 +704,7 @@ the firmware, and only data, bss and the stack take RAM.
   count from the data start. NXE version 2 (`lib/nnlib.h`, `tools/mknxe.py`): header, text, text
   relocations, data, data relocations (bit 0: the word points into data or bss, rewritten as an offset);
   `text_crc` names the text, `data_crc` checks the rest; the file must have exactly the size the header
-  gives. Debug information does not link with `-frwpi` (SBREL in `.debug_info`), so programs are built
+  gives. (Version 3, below: `data_crc` covers the header too.) Debug information does not link with `-frwpi` (SBREL in `.debug_info`), so programs are built
   without `-g`.
 - Writing APROM from APROM: the NUC140 refuses it (ISPFF) unless ISPCON.APUEN (bit 3, in the BSP's header,
   not in the TRM excerpt) is set, and nothing may be fetched from APROM while an erase or a write runs. The
@@ -713,7 +713,7 @@ the firmware, and only data, bss and the stack take RAM.
   and adds the missed ones to `jiffies`, so the clock does not fall behind. Measured on the board: erase
   20 ms, words read back as written.
 - Slots (`kernel/xip.c`): the area runs from the firmware's end, rounded up to a page, to 128 KiB (35 KiB
-  with this firmware). A slot is a 32-byte header at a page start, then the text, in whole pages. The
+  with this firmware; 31 KiB after the review fixes below). A slot is a 32-byte header at a page start, then the text, in whole pages. The
   header (magic, size, text CRC, a sequence number, a check word written last) is written after the text,
   so a slot whose writing a reset cut short is no slot; a slot is dropped by clearing its `live` word,
   before any of its pages is erased. The area is scanned when it is needed (no table in RAM): the kernel
@@ -829,6 +829,39 @@ not applied here: that is the user's to turn on.
   be reached, and the W5500 just times out. wget now says so before trying. `nnshare status` without sudo
   took the root-owned server for dead (the signal check got EPERM). With the gateway set, the user's
   HTTP server on this computer and http://example.org/ came through.
+
+### Review fixes R36-R47 (2026-10-18)
+
+A review at `e0f01f6` (`docs/reports/NNNIX_UPDATE_REVIEW_2026-10-18.md`, outside the repository) reported
+twelve problems; all confirmed and fixed.
+
+| ID | Problem | Fix |
+| --- | --- | --- |
+| R36 | `nnshare` trusted a recorded pid: after a crash it could report an unrelated process as the server, and `off` (as root) signal it; two `on` could run at once; the record was not written atomically | the server holds `/run/nnshare.lock` (flock) from before its first change to after its last undo; the record also holds the server's start time and a random token from its command line, and `off` signals through a pidfd only the process all of these match; liveness is the lock (also without root); records are written to a temporary file, synced and renamed. Tried in a network namespace (with its own `/run`): a second `on` and a second server refused, a record pointing at `sleep` reported off and the `sleep` left alone, `off` after a `kill -9` undid everything |
+| R37 | an APROM slot's text was found by the program's CRC but never checked again, and the NXE header (entry, sizes, relocation counts) was in no CRC | slots (`XIP2`) also hold the CRC of the relocated text as written, checked on every use: a damaged slot is dropped (unless in use) and written again, counted as `damaged` in `/proc/xip`; NXE version 3: `data_crc` covers the header up to itself, and data is read on every run. Host test: a cleared bit in a slot; board test: `hello` with only its entry changed is refused although its text is in APROM |
+| R38 | every UDP datagram became the socket's destination, also on a connected socket: a stranger's packet redirected DNS retries; `ntpdate` took any server-mode packet | a connected UDP socket keeps its destination and drops other senders' datagrams (`SYS_EAGAIN` when nothing else waits); a listening one still answers the last sender. `ntpdate` sends a nonce as its transmit time and takes only a reply that returns it (also mode, version 3-4, stratum 1-15). Board tests: a forged DNS answer from another port, two forged NTP answers (another port, another originate time) before the real one |
+| R39 | `wget` took a relative `Location` (`next.html`, `//host/x`, `?q`) for a host name or a path on the old host | `bin/url.c`: RFC 3986 reference resolution for http, `.`/`..` removal, fragments cut; host test with RFC 3986's examples; the 192-byte `location` buffer is gone (the reference is resolved from the header line into the URL) |
+| R40 | lengths parsed leniently (empty, junk suffix, overflow), the last of `Content-Length`/`Transfer-Encoding` won, `compress` counted as chunked, chunk separators unchecked | strict decimal/hex parsing with overflow checks; chunked wins; any other transfer coding, a bad or second different `Content-Length`, a bad chunk size line or separator, or a missing trailer end is refused (exit 1) |
+| R41 | a DHCP option running past the packet ended the DHCP thread (option 53 of length 0: IndexError), dead threads went unnoticed, the DNS relay started a thread per query without limit | options are bounds-checked and a request without a one-byte message type ignored; each request is answered under a try; the threads are checked every second and if one ends sharing stops and everything is undone; at most 16 DNS queries in flight, more dropped and counted |
+| R42 | an SPI1 transfer that timed out returned the receive register as data and the transaction went on | a timeout fails the transaction: chip select up at once, SPI1 reset (IPRSTC2 bit 13) and set up again, the rest of the transaction skipped (reads zeros), `spi_end()` reports it. W5500: data reads and writes report it (nothing received is taken, nothing queued is counted), register reads fail as zeros (a closed socket, no data, no room); CH376: the command's status is `CH376_SPI_ERROR` (usbfs: EIO), data read in a failed transaction is not used. Host test with a stuck GO_BUSY |
+| R43 | the loader computed `block + 1` with `block` null after a failed allocation | computed only once the allocation succeeded |
+| R44 | `mkfile FILE 1M` made 1 byte, `junk` 0, overflow wrapped, and the file was truncated first | the size is parsed strictly (digits, optional `k`, overflow refused) before the file is opened; board test: five bad sizes leave a 32 KiB file as it was |
+| R45 | changing the scrollback size freed the old ring before allocating the new one; a failure left none while `sysctl` showed the size asked for | the new ring is allocated first; a failure keeps the old ring and size and `sysctl` says `out of memory`; a shell started without memory for a ring reports 0. Board test: 8192 bytes beside the shells |
+| R46 | `console.py`'s History kept 20 000 lines but slices and `wait_for` walked every dropped index (200 000 lines: 1.6 MB, 0.65 s for 11 kept lines) | slices start at the oldest kept line, `wait_for` too, and `console.py` prints `[N lines dropped]` when it fell behind: 11 lines, 292 bytes, 0.1 ms |
+| R47 | `mknxe` indexed the ELF without bounds (four bytes `\x7fELF`: IndexError) and allocated whatever span the sections named | header, section table, names, links and symbol indices checked; text over 64 KiB or data and bss over 8 KiB refused before allocating; anything left becomes a clear error. Host test: truncations and corrupted fields of a real program |
+
+Also from the review: the documents still said 35 KiB of APROM for programs, 93 KiB of code, that all
+commands are built in and that there is no DNS resolver. The fixes cost 844 bytes of firmware (the
+checks in xip, spi, the W5500 and CH376 drivers, sockets and `ntpdate`), so the program area is now 31 KiB
+(firmware 99 060 B; static RAM 2812 B). Free RAM with the console shell and one telnet session: 5272 B.
+
+Checked on the board after installing it (with `nnshare` running, so not with `make test`, which refuses
+then): `hello` runs and a copy with only its entry changed is refused; `/proc/xip` with `damaged 0`; relative
+redirects (`small.txt`, `../small.txt`, `./../dir/../small.txt`, `?x=1`) and chunked-over-length; the six
+malformed replies refused with exit status 1; the 100 KB download CRC-checked; `mkfile` with four bad sizes
+leaving its file as it was; 8 KiB of scrollback refused beside the shells with the heap unchanged;
+`ntpdate` setting the clock from the third answer after two forged ones; http://example.org/ through
+`nnshare`. Not run on the board: the forged DNS answer (the relay of `nnshare` holds port 53).
 
 ## 8. Source layout
 

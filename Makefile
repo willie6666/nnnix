@@ -64,7 +64,7 @@ PROG_SRCS_head = bin/textutil.c
 PROG_SRCS_tail = bin/textutil.c
 PROG_SRCS_grep = bin/textutil.c
 PROG_SRCS_hexdump = bin/textutil.c
-PROG_SRCS_wget = bin/wget.c bin/dns.c
+PROG_SRCS_wget = bin/wget.c bin/dns.c bin/url.c
 PROG_SRCS_host = bin/dns.c
 PROG_CFLAGS = --target=arm-none-eabi -mcpu=cortex-m0 -mthumb -Os -ffreestanding -fno-builtin \
               -ffunction-sections -fdata-sections -fropi -frwpi -Wall -Wextra -Werror -std=c11 -Isdk/include -Ilib
@@ -110,7 +110,8 @@ test: build/nnnix.bin programs sdk
 	sudo $(PYTHON) tools/nntest.py --flash build/nnnix.bin
 
 HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty build/host/test_console build/host/test_shparse build/host/test_http \
-             build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs build/host/test_boot build/host/test_nnv build/host/test_xip build/host/test_scrollback
+             build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs build/host/test_boot build/host/test_nnv build/host/test_xip build/host/test_scrollback \
+             build/host/test_url build/host/test_spi
 build/host/test_lib: tests/host/test_lib.c lib/fmt.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin $^ -o $@
@@ -136,6 +137,12 @@ build/host/test_time: tests/host/test_time.c lib/time.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_scrollback: tests/host/test_scrollback.c kernel/scrollback.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_url: tests/host/test_url.c bin/url.c lib/string.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_spi: tests/host/test_spi.c drivers/spi.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_xip: tests/host/test_xip.c kernel/xip.c
@@ -165,8 +172,9 @@ build/host/nnv_%.nnv: tools/mknnv.py
 build/host/test_nnv: tests/host/test_nnv.c lib/nnv.h $(NNV_DEMOS:%=build/host/nnv_%.nnv)
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $< -o $@
-host-test: $(HOST_TESTS)
+host-test: $(HOST_TESTS) build/bin/wget.elf
 	@for t in $(HOST_TESTS); do echo "== $$t"; (cd tests/host && ../../$$t) || exit 1; done
+	@echo "== tests/host/test_mknxe.py"; $(PYTHON) tests/host/test_mknxe.py build/bin/wget.elf
 
 size: build/nnnix.elf
 	$(SIZE) -A $<

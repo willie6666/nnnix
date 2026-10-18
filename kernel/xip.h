@@ -27,7 +27,8 @@ void xip_init(void);                         /* scan the slots; logs the area */
 void xip_lock(void);
 void xip_unlock(void);
 
-/* The text of a slot holding this program, or 0. */
+/* The text of a slot holding this program, or 0. The text is checked against
+ * the CRC taken when it was written; a slot that fails is dropped. */
 const uint8_t *xip_find(uint32_t crc, uint32_t size);
 /* Room for size bytes of text: erases the pages and returns where the text
  * goes, or 0 when no room can be made (every slot in the way is in use, or the
@@ -43,7 +44,7 @@ int xip_commit(uint32_t text, uint32_t size, uint32_t crc);
 void xip_register(struct loaded_image *image);
 void xip_release(struct loaded_image *image);
 
-struct xip_stats { uint32_t base, size, used, writes; };
+struct xip_stats { uint32_t base, size, used, writes, damaged; };
 void xip_stats(struct xip_stats *s);
 /* The n-th slot: 1 and its details, or 0 past the last. */
 int xip_slot(int n, uint32_t *addr, uint32_t *size, uint32_t *crc, int *users);

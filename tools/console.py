@@ -19,7 +19,8 @@ import time
 class History:
     """Lines by absolute index, keeping only the newest `keep` in memory (a long
     soak would otherwise grow without bound). len() counts every line ever
-    added; lines that were dropped read as ''."""
+    added; `base` is the index of the oldest line kept. A dropped line reads as
+    '', and slices leave dropped lines out (they never walk them)."""
 
     def __init__(self, keep):
         self.keep, self.base, self.items = keep, 0, []
@@ -36,7 +37,10 @@ class History:
 
     def __getitem__(self, i):
         if isinstance(i, slice):
-            return [self[k] for k in range(*i.indices(len(self)))]
+            start, stop, step = i.indices(len(self))
+            if step > 0 and start < self.base:
+                start += -(-(self.base - start) // step) * step     # the first kept line on the step
+            return [self.items[k - self.base] for k in range(start, stop, step) if k >= self.base]
         if i < 0:
             i += len(self)
         if not 0 <= i < len(self):
@@ -99,6 +103,7 @@ class Serial:
         index = start
         with self.lock:
             while True:
+                index = max(index, self.lines.base)          # dropped lines cannot match
                 while index < len(self.lines):
                     if regex.search(self.lines[index]):
                         return index
@@ -130,6 +135,9 @@ def main():
         while True:
             serial.wait_for(r'.', .2, shown)
             with serial.lock:
+                if shown < serial.lines.base:
+                    print(f'[{serial.lines.base - shown} lines dropped]', flush=True)
+                    shown = serial.lines.base
                 fresh = serial.lines[shown:]
                 shown = len(serial.lines)
             for line in fresh:

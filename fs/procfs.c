@@ -81,7 +81,8 @@ static void gen_xip(struct gen *g)
 {
     struct xip_stats st;
     xip_stats(&st);
-    say(g, "area 0x%05x %u\nused %u\nwritten %u\naddr size crc users\n", st.base, st.size, st.used, st.writes);
+    say(g, "area 0x%05x %u\nused %u\nwritten %u\ndamaged %u\naddr size crc users\n", st.base, st.size, st.used,
+        st.writes, st.damaged);
     uint32_t addr, size, crc;
     int users;
     for (int i = 0; xip_slot(i, &addr, &size, &crc, &users); ++i) say(g, "0x%05x %u %08x %d\n", addr, size, crc, users);

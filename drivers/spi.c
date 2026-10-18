@@ -1,18 +1,42 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
+/* A transfer that does not finish (GO_BUSY stuck: the controller or its
+ * clock) fails the whole transaction: the chip select goes high at once, the
+ * controller is reset, the rest of the transaction's transfers are skipped
+ * and read zeros, and spi_end() reports it. */
 #include "spi.h"
 #include "../arch/nuc140/regs.h"
+#ifdef NNNIX_HOST
+/* tests/host/test_spi.c: the registers are its variables. */
+volatile uint32_t *host_reg(uint32_t addr);
+#undef REG
+#define REG(a) (*host_reg(a))
+struct mutex { int held; };
+static void mutex_lock(struct mutex *m) { m->held = 1; }
+static void mutex_unlock(struct mutex *m) { m->held = 0; }
+#else
 #include "../kernel/sync.h"
+#endif
 
 #define MODE0 BIT(2)                 /* TX_NEG: drive on falling edge, sample on rising */
+#define GCR_IPRSTC2 REG(0x5000000cu)
+#define SPI1_RST BIT(13)
 static uint32_t timeouts;
 static struct mutex bus;
 static uint8_t divider[2] = { SPI_DEFAULT_DIVIDER, SPI_W5500_DIVIDER };
+static int8_t selected = SPI_NONE;
+static uint8_t failed;               /* a transfer of this transaction timed out */
 
 void spi_init(void)
 {
     SPI_CNTRL(SPI1_BASE) = MODE0 | (8u << 3);
     SPI_DIVIDER(SPI1_BASE) = SPI_DEFAULT_DIVIDER;
     SPI_SSR(SPI1_BASE) = 0;          /* chip selects are plain GPIOs */
+}
+
+static void deselect(void)
+{
+    GPIO_DOUT(PORTC) |= BIT(8);
+    GPIO_DOUT(PORTB) |= BIT(10);
 }
 
 void spi_set_divider(int device, unsigned div) { if (device >= 0 && device < 2) divider[device] = (uint8_t)div; }
@@ -24,20 +48,39 @@ void spi_select(int device)
     if (device != SPI_NONE) {
         mutex_lock(&bus);
         SPI_DIVIDER(SPI1_BASE) = divider[device];
+        failed = 0;
     }
-    GPIO_DOUT(PORTC) |= BIT(8);
-    GPIO_DOUT(PORTB) |= BIT(10);
+    selected = (int8_t)device;
+    deselect();
     if (device == SPI_CH376) GPIO_DOUT(PORTC) &= ~BIT(8);
     if (device == SPI_W5500) GPIO_DOUT(PORTB) &= ~BIT(10);
     if (device == SPI_NONE) mutex_unlock(&bus);
 }
 
+int spi_end(void)
+{
+    int e = failed ? -1 : 0;
+    spi_select(SPI_NONE);
+    return e;
+}
+
 static uint32_t go(uint32_t cntrl)
 {
+    if (failed) return 0;
     SPI_CNTRL(SPI1_BASE) = cntrl;
     SPI_CNTRL(SPI1_BASE) = cntrl | 1u;
-    for (uint32_t n = 0; SPI_CNTRL(SPI1_BASE) & 1u; )
-        if (++n > 100000u) { timeouts++; break; }
+    for (uint32_t n = 0; SPI_CNTRL(SPI1_BASE) & 1u; ) {
+        if (++n > 100000u) {
+            timeouts++;
+            failed = 1;
+            deselect();
+            GCR_IPRSTC2 |= SPI1_RST;                 /* the controller back to its reset state */
+            GCR_IPRSTC2 &= ~SPI1_RST;
+            spi_init();
+            if (selected != SPI_NONE) SPI_DIVIDER(SPI1_BASE) = divider[selected];
+            return 0;
+        }
+    }
     return SPI_RX0(SPI1_BASE);
 }
 

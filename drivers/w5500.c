@@ -36,22 +36,33 @@ static void header(uint16_t address, uint8_t control)
     spi_xfer8((uint8_t)address);
     spi_xfer8(control);
 }
-static void wr(uint16_t address, uint8_t block, const void *p, uint32_t n)
+/* Register and buffer access: 0, or -1 when the SPI transfer failed (spi.h).
+ * A failed read gives zeros, which the chip's registers read as a closed
+ * socket with nothing received and no room to send: callers that only look
+ * at values fail safe, and the data paths below check. */
+static int wr(uint16_t address, uint8_t block, const void *p, uint32_t n)
 {
     header(address, (uint8_t)((block << 3) | 4u));
     spi_write(p, n);
-    spi_select(SPI_NONE);
+    return spi_end();
 }
-static void rd(uint16_t address, uint8_t block, void *p, uint32_t n)
+static int rd(uint16_t address, uint8_t block, void *p, uint32_t n)
 {
     header(address, (uint8_t)(block << 3));
     spi_read(p, n);
-    spi_select(SPI_NONE);
+    return spi_end();
 }
 static uint8_t r8(uint16_t a, uint8_t b) { uint8_t v; rd(a, b, &v, 1); return v; }
-static void w8(uint16_t a, uint8_t b, uint8_t v) { wr(a, b, &v, 1); }
+static int w8(uint16_t a, uint8_t b, uint8_t v) { return wr(a, b, &v, 1); }
 static uint16_t r16(uint16_t a, uint8_t b) { uint8_t v[2]; rd(a, b, v, 2); return (uint16_t)((v[0] << 8) | v[1]); }
-static void w16(uint16_t a, uint8_t b, uint16_t v) { uint8_t x[2] = { (uint8_t)(v >> 8), (uint8_t)v }; wr(a, b, x, 2); }
+static int r16_checked(uint16_t a, uint8_t b, uint16_t *v)
+{
+    uint8_t x[2];
+    int e = rd(a, b, x, 2);
+    *v = (uint16_t)((x[0] << 8) | x[1]);
+    return e;
+}
+static int w16(uint16_t a, uint8_t b, uint16_t v) { uint8_t x[2] = { (uint8_t)(v >> 8), (uint8_t)v }; return wr(a, b, x, 2); }
 static uint16_t r16_stable(uint16_t a, uint8_t b)
 {
     /* FSR/RSR may change between the two byte reads. */
@@ -59,11 +70,12 @@ static uint16_t r16_stable(uint16_t a, uint8_t b)
     while ((y = r16(a, b)) != x) x = y;
     return x;
 }
-static void command(int sn, uint8_t cmd)
+static int command(int sn, uint8_t cmd)
 {
-    w8(Sn_CR, SREG(sn), cmd);
+    if (w8(Sn_CR, SREG(sn), cmd)) return -1;
     uint32_t start = jiffies;
     while (r8(Sn_CR, SREG(sn)) && jiffies - start < 100u) { }
+    return 0;
 }
 
 uint32_t w5500_missed_send_ok(void) { return missed_send_ok; }
@@ -201,24 +213,23 @@ void w5500_peer(int sn, uint8_t ip[4], uint16_t *port)
 uint16_t w5500_rx_available(int sn) { return r16_stable(Sn_RX_RSR, SREG(sn)); }
 uint16_t w5500_tx_free(int sn) { return r16_stable(Sn_TX_FSR, SREG(sn)); }
 
+/* A failed transfer takes nothing: the data stays for the next call. */
 uint16_t w5500_recv(int sn, void *buf, uint16_t n)
 {
-    uint16_t avail = w5500_rx_available(sn);
+    uint16_t avail = w5500_rx_available(sn), ptr;
     if (n > avail) n = avail;
-    if (!n) return 0;
-    uint16_t ptr = r16(Sn_RX_RD, SREG(sn));
-    rd(ptr, SRX(sn), buf, n);                       /* chip wraps the offset itself */
-    w16(Sn_RX_RD, SREG(sn), (uint16_t)(ptr + n));
+    if (!n || r16_checked(Sn_RX_RD, SREG(sn), &ptr)) return 0;
+    if (rd(ptr, SRX(sn), buf, n) ||                 /* chip wraps the offset itself */
+        w16(Sn_RX_RD, SREG(sn), (uint16_t)(ptr + n))) return 0;
     command(sn, CR_RECV);
     return n;
 }
 
 void w5500_skip(int sn, uint16_t n)
 {
-    uint16_t avail = w5500_rx_available(sn);
+    uint16_t avail = w5500_rx_available(sn), ptr;
     if (n > avail) n = avail;
-    if (!n) return;
-    w16(Sn_RX_RD, SREG(sn), (uint16_t)(r16(Sn_RX_RD, SREG(sn)) + n));
+    if (!n || r16_checked(Sn_RX_RD, SREG(sn), &ptr) || w16(Sn_RX_RD, SREG(sn), (uint16_t)(ptr + n))) return;
     command(sn, CR_RECV);
 }
 
@@ -227,10 +238,10 @@ int w5500_write(int sn, const void *buf, uint16_t n)
     /* Sn_TX_WR and Sn_TX_FSR read back their values as of the last SEND (measured),
      * so data queued since then is tracked here; otherwise each write overwrites
      * the previous one at the same offset. */
-    if ((uint32_t)n + queued[sn] > w5500_tx_free(sn)) return -1;
-    uint16_t ptr = (uint16_t)(r16(Sn_TX_WR, SREG(sn)) + queued[sn]);
-    wr(ptr, STX(sn), buf, n);
-    w16(Sn_TX_WR, SREG(sn), (uint16_t)(ptr + n));
+    uint16_t ptr;
+    if ((uint32_t)n + queued[sn] > w5500_tx_free(sn) || r16_checked(Sn_TX_WR, SREG(sn), &ptr)) return -1;
+    ptr = (uint16_t)(ptr + queued[sn]);
+    if (wr(ptr, STX(sn), buf, n) || w16(Sn_TX_WR, SREG(sn), (uint16_t)(ptr + n))) return -1;
     queued[sn] = (uint16_t)(queued[sn] + n);
     return 0;
 }
@@ -287,8 +298,7 @@ int w5500_push(int sn)
 {
     /* Only one SEND may be in flight: a SEND issued before the previous SEND_OK
      * is ignored, which loses the tail of a stream. */
-    if (wait_send_ok(sn, 5000)) return -1;
-    command(sn, CR_SEND);
+    if (wait_send_ok(sn, 5000) || command(sn, CR_SEND)) return -1;
     send_pending[sn] = 1;
     queued[sn] = 0;
     return 0;

@@ -5,7 +5,9 @@
  *
  * A slot is a 32-byte header at a page start, then the text, in whole pages.
  * The header is written last, its check word last of all, so a slot whose
- * writing was cut short (a reset, power lost) is not one. A slot is dropped by
+ * writing was cut short (a reset, power lost) is not one. The header also holds
+ * the CRC of the text as written (relocated), checked each time the slot is
+ * found: a slot whose text has changed is dropped and written again. A slot is dropped by
  * clearing its live word (a write that only clears bits needs no erase)
  * before any of its pages is erased. Erasing a page holds interrupts off for
  * 20 ms (arch/nuc140/fmc.c); other tasks run between pages. */
@@ -24,6 +26,7 @@ extern uint32_t host_flash_end;
 int fmc_erase(uint32_t page);
 int fmc_write(uint32_t addr, uint32_t word);
 #define kprintf(...) ((void)0)
+uint32_t lfs_crc(uint32_t crc, const void *buffer, size_t size);
 #define task_yield() ((void)0)
 #define irq_save() 0u
 #define irq_restore(s) ((void)(s))
@@ -34,6 +37,7 @@ void xip_unlock(void) { }
 #include "sync.h"
 #include "task.h"
 #include "../arch/nuc140/arch.h"
+#include "../fs/lfs_port.h"
 extern const uint8_t __flash_end[];          /* arch/nuc140/link.ld */
 #define AP(a) ((const uint8_t *)(uintptr_t)(a))
 #define FLASH_END ((uint32_t)(uintptr_t)__flash_end)
@@ -42,21 +46,23 @@ void xip_lock(void) { mutex_lock(&lock); }
 void xip_unlock(void) { mutex_unlock(&lock); }
 #endif
 
-#define XIP_MAGIC 0x31504958u                /* "XIP1" */
+#define XIP_MAGIC 0x32504958u                /* "XIP2" */
 #define AP_END    0x20000u                   /* 128 KiB of APROM */
 #define HEADER    XIP_HEADER
 
-struct slot_header { uint32_t magic, size, crc, seq, check, live, reserved[2]; };
+/* crc: the program's text_crc (its name); sum: the CRC-32 of the text in the slot. */
+struct slot_header { uint32_t magic, size, crc, seq, sum, check, live, reserved; };
 _Static_assert(sizeof(struct slot_header) == HEADER, "slot header size");
 
 static uint32_t base;                        /* the area's first page */
 static uint32_t next_seq, next_at;           /* the next slot's number, and where it goes first */
 static uint32_t room_at, room_end;           /* pages erased for the slot being written */
-static uint32_t slots_written;
+static uint32_t slots_written, damaged;
 static struct loaded_image *images;          /* every image a task uses or is about to */
 
 static const struct slot_header *header(uint32_t a) { return (const struct slot_header *)(const void *)AP(a); }
-static uint32_t check_of(const struct slot_header *h) { return ~(h->magic ^ h->size ^ h->crc ^ h->seq); }
+static uint32_t check_of(const struct slot_header *h) { return ~(h->magic ^ h->size ^ h->crc ^ h->seq ^ h->sum); }
+static uint32_t sum_of(uint32_t text, uint32_t size) { return ~lfs_crc(~0u, AP(text), size); }
 static uint32_t span(uint32_t size) { return (HEADER + size + FMC_PAGE - 1u) / FMC_PAGE * FMC_PAGE; }
 
 /* The slot at a, or 0 when that page does not start one: its bytes. */
@@ -91,7 +97,7 @@ static int users(uint32_t slot)
 void xip_init(void)
 {
     base = (FLASH_END + FMC_PAGE - 1u) / FMC_PAGE * FMC_PAGE;
-    next_seq = slots_written = 0;
+    next_seq = slots_written = damaged = 0;
     next_at = base;
     uint32_t count = 0, newest = 0;
     for (uint32_t a = base, s; (s = next_slot(&a));) {
@@ -103,8 +109,12 @@ void xip_init(void)
 
 const uint8_t *xip_find(uint32_t crc, uint32_t size)
 {
-    for (uint32_t a = base, s; (s = next_slot(&a));)
-        if (header(s)->crc == crc && header(s)->size == size) return AP(s + HEADER);
+    for (uint32_t a = base, s; (s = next_slot(&a));) {
+        if (header(s)->crc != crc || header(s)->size != size) continue;
+        if (sum_of(s + HEADER, size) == header(s)->sum) return AP(s + HEADER);
+        if (!users(s)) fmc_write(s + offsetof(struct slot_header, live), 0);   /* damaged: drop it */
+        ++damaged;
+    }
     return 0;
 }
 
@@ -155,7 +165,7 @@ int xip_commit(uint32_t text, uint32_t size, uint32_t crc)
 {
     uint32_t s = text - HEADER;
     if (s != room_at || span(size) != room_end - room_at) return -1;
-    struct slot_header h = { XIP_MAGIC, size, crc, next_seq, 0, ~0u, { ~0u, ~0u } };
+    struct slot_header h = { XIP_MAGIC, size, crc, next_seq, sum_of(text, size), 0, ~0u, ~0u };
     h.check = check_of(&h);
     room_at = room_end = 0;
     const uint32_t *w = (const uint32_t *)&h;
@@ -188,7 +198,8 @@ void xip_release(struct loaded_image *image)
 
 void xip_stats(struct xip_stats *st)
 {
-    *st = (struct xip_stats){ .base = base, .size = base < AP_END ? AP_END - base : 0, .writes = slots_written };
+    *st = (struct xip_stats){ .base = base, .size = base < AP_END ? AP_END - base : 0, .writes = slots_written,
+                              .damaged = damaged };
     for (uint32_t a = base, s; (s = next_slot(&a));) st->used += a - s;
 }
 

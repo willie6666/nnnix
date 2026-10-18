@@ -213,7 +213,7 @@ static int32_t sys_sysctl_k(int32_t key, int32_t value)
         r = wdt_seconds();
         break;
     }
-    return r < 0 ? SYS_EINVAL : r;
+    return r == SYS_ENOMEM ? r : r < 0 ? SYS_EINVAL : r;
 }
 
 static int32_t sys_mkfs_k(const char *path) { return vfs_mkfs(path); }

@@ -175,6 +175,7 @@ struct nn_netcfg {
 #define SYS_ECHILD (-10)
 #define SYS_EPIPE  (-32)
 #define SYS_EBUSY  (-16)
+#define SYS_EAGAIN (-11)                   /* a connected UDP socket dropped a stranger's datagram */
 #define SYS_ETIMEDOUT (-110)
 
 #define NN_SVC_CLOBBERS "r1", "r2", "r3", "r12", "lr", "cc", "memory"

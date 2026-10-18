@@ -79,7 +79,7 @@ uint8_t ch376_close(int update_size)
     cur = -1;
     return CH376_OK;
 }
-uint32_t ch376_file_size(void) { return live; }
+uint8_t ch376_file_size(uint32_t *size) { *size = live; return CH376_OK; }
 uint8_t ch376_byte_locate(uint32_t offset) { pos = offset > live ? live : offset; return CH376_OK; }
 uint8_t ch376_write(const void *buf, uint32_t len)
 {

@@ -108,6 +108,7 @@ int dns_resolve(const char *name, uint8_t ip[4])
                 continue;
             }
             int n = sys_read(fd, m, MSG);
+            if (n == SYS_EAGAIN) continue;             /* not from the server: dropped */
             if (n < 0) { e = n; goto out; }
             if ((e = answer(m, n, id, ip)) <= 0) goto out;
             e = SYS_ETIMEDOUT;                     /* someone else's: keep waiting */

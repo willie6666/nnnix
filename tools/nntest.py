@@ -31,6 +31,7 @@ sys.dont_write_bytecode = True                  # runs under sudo; keep the tree
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from console import Serial                                    # noqa: E402
 import flash as flasher                                       # noqa: E402
+import nnshare                                                # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 TARGET = ('198.18.0.2', 5000)
@@ -383,6 +384,9 @@ def fs_tests(ns, serial, report):
     rate = re.search(r'\((\d+) B/s\)', out)
     got = crc_of(t.cmd('sum /home/big.bin', 30))
     report.add('flash 32 KiB file', got == expected, f'write {int(rate[1]) // 1024 if rate else "?"} KiB/s, crc {got[0]:08x}' if got[0] else out)
+    out = ''.join(t.cmd(f'mkfile /home/big.bin {bad}') for bad in ('1M', 'junk', '4294967296', '4194304k', ''))
+    report.add('mkfile bad sizes', out.count('usage: mkfile') == 5 and crc_of(t.cmd('sum /home/big.bin', 30)) == expected,
+               'refused before the file is opened: it keeps its 32 KiB')
 
     t.cmd('cp /home/big.bin /usb/big.bin', 30)
     got = crc_of(t.cmd('sum /usb/big.bin', 30))
@@ -808,6 +812,10 @@ def settings_tests(ns, report):
     time.sleep(0.5)
     with_shell = heap_free(t)
     on_screen = screen()
+    # 8 KiB of scrollback does not fit beside the shells: the 512-byte ring stays.
+    out = t.cmd('sysctl console_history=8192') + t.cmd('sysctl console_history')
+    report.add('scrollback no memory', 'console_history: out of memory' in out and 'console_history=512' in out
+               and heap_free(t) == with_shell, out.strip().replace('\r\n', ' | '))
     t.cmd('sysctl console=off')
     time.sleep(0.6)
     without = heap_free(t)
@@ -1000,12 +1008,19 @@ def install_programs(ns, report):
 NXE = struct.Struct('<IHHIIIIHHIII')
 
 
-def nxe(text, data=b'', bss=0, stack=0, trel=(), drel=()):
+def nxe_seal(f, data_part):
+    """The header for fields f, data_crc (f[11]) taken over the rest of it and data_part."""
+    f = list(f)
+    f[11] = zlib.crc32(NXE.pack(*f)[:NXE.size - 4] + data_part)
+    return NXE.pack(*f)
+
+
+def nxe(text, data=b'', bss=0, stack=0, trel=(), drel=(), entry=1):
     """An NXE file (lib/nnlib.h) from its parts; the entry is the start of text."""
     t = b''.join(struct.pack('<I', r) for r in trel)
     d = b''.join(struct.pack('<I', r) for r in drel)
-    return (NXE.pack(0x3145584e, 2, 1, len(text), len(data), bss, 1, len(trel), len(drel), stack,
-                     zlib.crc32(text + t), zlib.crc32(data + d)) + text + t + data + d)
+    f = (0x3145584e, 3, 1, len(text), len(data), bss, entry, len(trel), len(drel), stack, zlib.crc32(text + t), 0)
+    return nxe_seal(f, data + d) + text + t + data + d
 
 
 def nxe_text_crc(data):
@@ -1020,7 +1035,7 @@ def retag(data, tag):
     at = out.index(b'TAG:00000000', text, trel)
     out[at + 4:at + 12] = tag.encode()
     f[10] = zlib.crc32(bytes(out[text:trel + 4 * f[7]]))
-    out[:NXE.size] = NXE.pack(*f)
+    out[:NXE.size] = nxe_seal(f, bytes(out[trel + 4 * f[7]:]))
     return bytes(out)
 
 
@@ -1151,6 +1166,9 @@ def m6_tests(ns, serial, report):
     bad[40] ^= 0xff                                   # the text, and its CRC: no copy in APROM has it,
     bad[32] ^= 0x01                                   # and the text no longer matches it
     statuses.append(ns.call(http_request, 'PUT', '/bin/damaged', bytes(bad))[0])
+    moved = bytearray(programs['hello'])
+    moved[20] ^= 0x02                                 # the entry only: the text is hello's, in APROM already
+    statuses.append(ns.call(http_request, 'PUT', '/bin/badentry', bytes(moved))[0])
     statuses.append(ns.call(http_request, 'PUT', '/bin/short', programs['hello'][:100])[0])
     statuses.append(ns.call(http_request, 'PUT', '/bin/text', b'echo this is not a program\n')[0])
     t = Telnet(ns)
@@ -1182,8 +1200,8 @@ def m6_tests(ns, serial, report):
         t.send('\x03')
         t.read_until(Telnet.PROMPT, 5)
         report.add('ctrl-c program', time.monotonic() - started < 1.0, 'upper echoed a line, ^C ended it')
-        out = t.cmd('damaged') + t.cmd('short') + t.cmd('text') + t.cmd('nosuch')
-        report.add('bad programs', out.count('not an executable') == 3 and 'command not found' in out,
+        out = t.cmd('damaged') + t.cmd('badentry') + t.cmd('short') + t.cmd('text') + t.cmd('nosuch')
+        report.add('bad programs', out.count('not an executable') == 4 and 'command not found' in out,
                    out.strip().replace('\r\n', ' | '))
         # A worker spawned by a loaded program keeps the program's image: the
         # program returns at once, primes then allocates while the worker computes.
@@ -1211,7 +1229,7 @@ def m6_tests(ns, serial, report):
         after = t.cmd('free')
         report.add('program memory freed', before == after, after.strip().replace('\r\n', ' | '))
     finally:
-        for name in ('damaged', 'short', 'text'):
+        for name in ('damaged', 'badentry', 'short', 'text'):
             t.cmd(f'rm /bin/{name}')
         t.send('exit\r\n'); t.wait_closed(); t.close()
 
@@ -1557,21 +1575,31 @@ NTP_TIME = 1893553445                 # 2030-01-02 03:04:05 UTC
 
 
 def ntp_server(stop, served):
-    """Answers SNTP requests with NTP_TIME."""
+    """Answers SNTP requests with NTP_TIME, after two forged answers a year
+    later: one from another port, one not naming the request."""
     u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     u.bind((PEER.split('/')[0], 123))
     u.settimeout(0.2)
-    with u:
+    other = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    other.bind((PEER.split('/')[0], 0))
+    with u, other:
         while not stop.is_set():
             try:
                 d, a = u.recvfrom(100)
             except socket.timeout:
                 continue
-            r = bytearray(48)
-            r[0], r[1] = 0x24, 2                       # version 4, server, stratum 2
-            struct.pack_into('>II', r, 40, NTP_TIME + 2208988800, 0)
-            r[24:32] = d[40:48]
-            u.sendto(bytes(r), a)
+
+            def answer(when, originate):
+                r = bytearray(48)
+                r[0], r[1] = 0x24, 2                   # version 4, server, stratum 2
+                struct.pack_into('>II', r, 40, when + 2208988800, 0)
+                r[24:32] = originate
+                return bytes(r)
+            later = NTP_TIME + 365 * 86400
+            other.sendto(answer(later, d[40:48]), a)
+            u.sendto(answer(later, bytes(8)), a)
+            time.sleep(0.1)
+            u.sendto(answer(NTP_TIME, d[40:48]), a)
             served.append(a)
 
 
@@ -1579,7 +1607,8 @@ WGET_BIG = bytes((i * 7 + i // 256) & 0xff for i in range(100000))
 
 
 def web_server(stop):
-    """HTTP on the test peer, port 8000: plain, chunked, redirects, no length, 404."""
+    """HTTP on the test peer, port 8000: plain, chunked, redirects (absolute and
+    relative), no length, malformed lengths and chunks, 404."""
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = 'HTTP/1.1'
 
@@ -1591,9 +1620,30 @@ def web_server(stop):
             self.end_headers()
             self.wfile.write(body)
 
+        def raw(self, head, body):
+            """A reply written as it is (also the malformed ones), then the close."""
+            self.wfile.write(b'HTTP/1.1 200 OK\r\n' + head + b'Connection: close\r\n\r\n' + body)
+            self.close_connection = True
+
         def do_GET(self):
             p = self.path
-            if p == '/small.txt':
+            relative = {'/rel': 'small.txt', '/dir/up': '../small.txt', '/dir/dots': './../dir/../small.txt',
+                        '/q': '?x=1', '/scheme': '//web.test:8000/small.txt'}
+            broken = {'/badlen': b'Content-Length: 12abc\r\n', '/twolen': b'Content-Length: 5\r\nContent-Length: 6\r\n',
+                      '/gzip': b'Transfer-Encoding: gzip, chunked\r\n', '/hugelen': b'Content-Length: 99999999999\r\n'}
+            if p in relative:
+                self.reply(302, b'', [('Location', relative[p])])
+            elif p == '/q?x=1':
+                self.reply(200, b'query kept\n')
+            elif p in broken:
+                self.raw(broken[p], b'hello')
+            elif p == '/badchunk':
+                self.raw(b'Transfer-Encoding: chunked\r\n', b'5\r\nhello\r\nzz\r\nmore\r\n0\r\n\r\n')
+            elif p == '/nosep':
+                self.raw(b'Transfer-Encoding: chunked\r\n', b'5\r\nhelloXX6\r\n world\r\n0\r\n\r\n')
+            elif p == '/chunklen':
+                self.raw(b'Transfer-Encoding: chunked\r\nContent-Length: 3\r\n', b'6\r\nchunks\r\n4\r\n win\r\n0\r\n\r\n')
+            elif p == '/small.txt':
                 self.reply(200, b'hello from the peer\n')
             elif p == '/big.bin':
                 self.reply(200, WGET_BIG)
@@ -1633,12 +1683,15 @@ def web_server(stop):
 
 
 def dns_server(stop, asked):
-    """A names for web.test, alias.test (a CNAME to web.test); NXDOMAIN otherwise."""
+    """A names for web.test, alias.test (a CNAME to web.test), forged.test (after
+    a forged answer from another port); NXDOMAIN otherwise."""
     u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     u.bind((PEER.split('/')[0], 53))
     u.settimeout(0.2)
+    other = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    other.bind((PEER.split('/')[0], 0))
     peer = bytes(int(x) for x in PEER.split('/')[0].split('.'))
-    with u:
+    with u, other:
         while not stop.is_set():
             try:
                 q, a = u.recvfrom(512)
@@ -1652,7 +1705,11 @@ def dns_server(stop, asked):
             asked.append(name)
             answers, rcode = b'', 3
             a_record = struct.pack('>HHIH', 1, 1, 60, 4) + peer
-            if name == 'web.test':
+            if name == 'forged.test':
+                head = struct.pack('>HHHHHH', q[0] << 8 | q[1], 0x8180, 1, 1, 0, 0) + question
+                other.sendto(head + b'\xc0\x0c' + struct.pack('>HHIH', 1, 1, 60, 4) + bytes((10, 9, 9, 9)), a)
+                time.sleep(0.1)
+            if name in ('web.test', 'forged.test'):
                 answers, rcode, count = b'\xc0\x0c' + a_record, 0, 1
             elif name == 'alias.test':
                 target = b'\x03web\x04test\x00'
@@ -1679,9 +1736,11 @@ def wget_tests(ns, serial, report):
         before = t.cmd('free')
         none = t.cmd('host web.test')
         t.cmd('ifconfig eth0 198.18.0.2/30 dns 198.18.0.1')
-        out = t.cmd('host web.test', 10) + t.cmd('host alias.test', 10) + t.cmd('host nosuch.test', 10)
+        out = (t.cmd('host web.test', 10) + t.cmd('host alias.test', 10) + t.cmd('host nosuch.test', 10)
+               + t.cmd('host forged.test', 10))
         report.add('host', 'no DNS server' in none and 'web.test has address 198.18.0.1' in out
-                   and 'alias.test has address 198.18.0.1' in out and 'nosuch.test: not found' in out,
+                   and 'alias.test has address 198.18.0.1' in out and 'nosuch.test: not found' in out
+                   and 'forged.test has address 198.18.0.1' in out,
                    out.strip().replace('\r\n', ' | '))
         out = t.cmd('wget -O /home/w.txt http://web.test:8000/small.txt', 20) + t.cmd('cat /home/w.txt')
         report.add('wget', 'HTTP/1.1 200 OK' in out and 'saved /home/w.txt: 20 bytes' in out
@@ -1694,6 +1753,15 @@ def wget_tests(ns, serial, report):
                + t.cmd('wget -O - http://web.test:8000/chunked | wc', 20) + t.cmd('wget -O - http://198.18.0.1:8000/noclen', 20))
         report.add('wget replies', out.count('hello from the peer') == 2 and re.search(r'\b2 3 311\b', out) is not None
                    and 'no length, ends at close' in out, out.strip().replace('\r\n', ' | '))
+        out = ''.join(t.cmd(f'wget -O - http://web.test:8000/{p}', 20) for p in ('rel', 'dir/up', 'dir/./dots', 'q', 'scheme'))
+        out += t.cmd('wget -O - http://web.test:8000/chunklen', 20)
+        report.add('wget relative redirects', out.count('hello from the peer') == 4 and 'query kept' in out
+                   and 'chunks win' in out, out.strip().replace('\r\n', ' | '))
+        out = ''.join(t.cmd(f'wget -O - http://web.test:8000/{p}', 20) + t.cmd('echo $?')
+                      for p in ('badlen', 'twolen', 'gzip', 'hugelen', 'badchunk', 'nosep'))
+        report.add('wget malformed replies', out.count('bad Content-Length') == 2 and 'two different Content-Lengths' in out
+                   and 'a Transfer-Encoding other than chunked' in out and out.count('a malformed chunked body') == 2
+                   and out.count('\r\n1\r\n') == 6, out.strip().replace('\r\n', ' | '))
         out = (t.cmd('wget -O - http://web.test:8000/missing', 20) + t.cmd('echo $?') + t.cmd('wget -q http://web.test:8000/loop', 30)
                + t.cmd('wget http://nosuch.test/', 20) + t.cmd('wget http://198.18.0.1:8001/', 30)
                + t.cmd('wget https://web.test/') + t.cmd('wget') + t.cmd('wget http://192.18.0.1/', 10))
@@ -1729,16 +1797,10 @@ def dhcp_server(stop, iface, log, lease=120):
                 d, _ = u.recvfrom(1500)
             except socket.timeout:
                 continue
-            if len(d) < 240 or d[0] != 1 or d[236:240] != b'\x63\x82\x53\x63':
+            opts = nnshare.dhcp_options(d)
+            if opts is None or len(opts.get(53, b'')) != 1:
                 continue
-            opts, i = {}, 240
-            while i < len(d) and d[i] != 255:
-                if d[i] == 0:
-                    i += 1
-                    continue
-                opts[d[i]] = d[i + 2:i + 2 + d[i + 1]]
-                i += 2 + d[i + 1]
-            kind = opts.get(53, b'\0')[0]
+            kind = opts[53][0]
             log.append((kind, len(d), bool(d[10] & 0x80), opts))
             reply = {1: 2, 3: 5}.get(kind)                    # DISCOVER -> OFFER, REQUEST -> ACK
             if not reply:

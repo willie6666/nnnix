@@ -83,7 +83,8 @@ pid name prio state stack_used stack_size cpu_ms
 - `ed` line editor; `date` with the on-chip RTC on the 32.768 kHz crystal, `/etc/tz`, `ntpdate`
 - Loadable programs (`sdk/`, [sdk/README.md](sdk/README.md)): NXE files built position-independent
   (`-fropi -frwpi`: code PC-relative, data through r9). The loader keeps their code in the APROM above the
-  firmware (about 35 KiB, `kernel/xip.c`), written once and found again by its CRC after a reboot, oldest
+  firmware (about 31 KiB, `kernel/xip.c`), written once and found again by its CRC after a reboot, checked
+  against the CRC of what was written each time it is used, oldest
   first giving way to new ones but never while running; with no room left the code goes to RAM. Data and bss
   get RAM per run; the C library is the firmware's own (a function table), so `hello` needs 24 bytes of RAM
   besides its stack
@@ -117,7 +118,7 @@ pid name prio state stack_used stack_size cpu_ms
 | Settings: console on/ask/off (2144 B freed when the console logs out), idle logout, telnet session limit | pass |
 | Firmware update through the bootloader, an installation interrupted by a reset, the power-on path | pass |
 | Programs: `/bin/hello` with arguments and exit status, in pipelines and the background, Ctrl-C, from USB, damaged files refused, RAM reclaimed | pass |
-| `host` and `wget` against a DNS and an HTTP server on the test peer: CNAMEs, unknown names, 100 KB CRC-checked, redirects, chunked and unsized replies, 404, a redirect loop, a refused port | pass |
+| `host` and `wget` against a DNS and an HTTP server on the test peer: CNAMEs, unknown names, a forged DNS answer from another port, 100 KB CRC-checked, absolute and relative redirects, chunked and unsized replies, malformed lengths and chunks, 404, a redirect loop, a refused port | pass |
 | LCD console: pixels as the fonts give them in both sizes, the scrollback a screen and a line at a time, a key returning to the terminal, `sysctl console_font`/`console_history`; `tail` from a pipe | pass |
 | Programs in APROM: written once and reused, two runs of one program at once, every relocation kind, a program filling the whole area, a new program going to RAM while running programs fill it, kept across a reboot | pass |
 | LCD player: a 60-frame video at its frame rate, one `/dev/lcd` writer at a time, picture until Enter, Ctrl-C, damaged files refused, RAM reclaimed | pass |
@@ -134,11 +135,11 @@ pid name prio state stack_used stack_size cpu_ms
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot, watchdog reset | pass |
-| Free RAM floor: heap free while `free` runs with the console shell (and its 512 B scrollback) and one telnet session | 5288 B (test limit 5200 B) |
-| Code size / static RAM including crash records / main stack / heap | 93 KiB / 2.6 KiB / 512 B / 13.0 KiB |
-| APROM for program code / writing a new program / RAM `hello` needs besides its stack | 35 KiB / 20 ms per 512 B page / 24 B |
+| Free RAM floor: heap free while `free` runs with the console shell (and its 512 B scrollback) and one telnet session | 5272 B (test limit 5200 B) |
+| Code size / static RAM including crash records / main stack / heap | 96.7 KiB / 2.7 KiB / 512 B / 13.0 KiB |
+| APROM for program code / writing a new program / RAM `hello` needs besides its stack | 31 KiB / 20 ms per 512 B page / 24 B |
 
-Host tests: 7403 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder, the APROM slots on a simulated flash and the console's scrollback), plus 80 243
+Host tests: 7574 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder, the APROM slots on a simulated flash, the console's scrollback, URL resolution against RFC 3986's examples, SPI1 with a stuck controller and `mknxe` on damaged ELF files), plus 80 243
 date conversions compared with the host C library.
 
 ## Hardware

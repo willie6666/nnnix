@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* kernel/xip.c on a simulated APROM: slots are written, found again after a
- * "reboot" (xip_init), give way oldest first, never while in use, and a slot
- * whose writing was not finished is not one. */
+ * "reboot" (xip_init), give way oldest first, never while in use, a slot
+ * whose writing was not finished is not one, and one whose text changed is
+ * dropped. */
 #include <stdint.h>
 #include <string.h>
 #include "../../kernel/xip.h"
@@ -35,6 +36,16 @@ int fmc_write(uint32_t addr, uint32_t word)
 }
 
 void kfree(void *p) { (void)p; }
+
+uint32_t lfs_crc(uint32_t crc, const void *buffer, size_t size)   /* fs/lfs_port.c's, bit by bit */
+{
+    const uint8_t *p = buffer;
+    for (size_t i = 0; i < size; ++i) {
+        crc ^= p[i];
+        for (int b = 0; b < 8; ++b) crc = crc >> 1 ^ (0xedb88320u & -(crc & 1u));
+    }
+    return crc;
+}
 
 static uint32_t off(const uint8_t *p) { return p ? (uint32_t)(p - host_aprom) : 0; }
 
@@ -171,5 +182,29 @@ int main(void)
     host_aprom[k - XIP_HEADER + 8] ^= 1;         /* crc */
     CHECK(!xip_find(0x5555, 100));
     CHECK(!xip_find(0x5554, 100));
+
+    /* A changed bit in the text: found by its name, but its CRC fails. It is
+     * dropped (and stays dropped), unless it is in use. */
+    uint32_t m = install(1000, 0x6666, 50);
+    CHECK(m && xip_find(0x6666, 1000));
+    struct loaded_image im = { .slot = m - XIP_HEADER };
+    xip_register(&im);
+    host_aprom[m + 600] &= 0xf7;                 /* a bit cleared, as a stray write would */
+    CHECK(!xip_find(0x6666, 1000));
+    xip_stats(&st);
+    CHECK_EQ_INT(st.damaged, 1);
+    CHECK(!xip_find(0x6666, 1000));
+    found = 0;
+    for (int i = 0; xip_slot(i, &addr, &size, &crc, &users); ++i) found += crc == 0x6666;
+    CHECK_EQ_INT(found, 1);                      /* still there for the program running from it */
+    xip_release(&im);
+    CHECK(!xip_find(0x6666, 1000));
+    found = 0;
+    for (int i = 0; xip_slot(i, &addr, &size, &crc, &users); ++i) found += crc == 0x6666;
+    CHECK_EQ_INT(found, 0);
+    xip_init();
+    CHECK(!xip_find(0x6666, 1000));
+    CHECK_EQ_INT(install(1000, 0x6666, 50) != 0, 1);   /* written again */
+    CHECK(xip_find(0x6666, 1000));
     return check_summary("test_xip");
 }

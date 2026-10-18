@@ -48,9 +48,11 @@ struct nn_lib {
  * of pointers to strings or functions); the loader adds where text is. Data
  * relocations: offsets of words in data, bit 0 set when the word holds an
  * offset into data or bss (the loader adds where data is), clear when it holds
- * a text address. */
+ * a text address. data_crc covers the rest of the header too (the loader
+ * reads data on every run, text only when no APROM slot has it), so the entry,
+ * sizes and relocation counts are checked each time. */
 #define NXE_MAGIC   0x3145584eu      /* "NXE1" */
-#define NXE_VERSION 2u
+#define NXE_VERSION 3u
 #define NXE_RELOC_DATA 1u            /* in a data relocation: the word points into data or bss */
 struct nxe_header {
     uint32_t magic;
@@ -60,7 +62,7 @@ struct nxe_header {
     uint16_t text_relocs, data_relocs;
     uint32_t stack;                  /* task stack bytes; 0 for the default */
     uint32_t text_crc;               /* CRC-32 (zlib) of text and its relocations: names the APROM copy */
-    uint32_t data_crc;               /* CRC-32 of data and its relocations */
+    uint32_t data_crc;               /* CRC-32 of the header before it, data and its relocations */
 };
 
 #endif

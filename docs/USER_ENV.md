@@ -1,7 +1,9 @@
 # User environment: shell, editor, clock and network (M5)
 
-The LCD/keyboard and telnet consoles use the same `nsh`. Commands remain built
-into the firmware; scripts are text files on littlefs or the USB drive.
+The LCD/keyboard and telnet consoles use the same `nsh`. Most commands are
+built into the firmware; the larger ones (`play`, `ed`, `wc`, `head`, `tail`,
+`grep`, `hexdump`, `wget`, `host`) are programs in `/bin` (see "Loadable
+programs"). Scripts are text files on littlefs or the USB drive.
 
 ## Quoting and variables
 
@@ -213,8 +215,10 @@ through resets and firmware updates but not through power loss: the chip has no
 backup supply, so after power-up the clock starts from its reset value (2005)
 until `date -s` or `ntpdate` sets it. If the crystal does not start within 5 s,
 the kernel log says so and the time is kept with the system timer instead.
-`ntpdate` takes an IP address (there is no DNS resolver yet), tries three times
-with a 2 s timeout, and steps the clock; it does not slew it.
+`ntpdate` takes an IP address (`host NAME` looks one up), tries three times
+with a 2 s timeout, and steps the clock; it does not slew it. It takes only an
+answer from that server's port 123 that gives back the request's transmit time
+(a server's reply, NTP version 3 or 4, stratum 1-15).
 
 ## Network
 
@@ -271,8 +275,11 @@ echo hello | nc 198.18.0.1 7000
 nc -l 7000 > /home/upload.bin
 ```
 
-A UDP read returns one datagram and makes its sender the destination of the
-next write, so `nc -u -l PORT` answers whoever spoke last. W5500 sockets do not
+A UDP read returns one datagram. On a listening socket its sender becomes the
+destination of the next write, so `nc -u -l PORT` answers whoever spoke last. A
+connected socket (`nc -u HOST PORT`, and the DNS and NTP clients) keeps its
+destination and drops datagrams from anyone else; such a read returns
+`SYS_EAGAIN` when nothing else is waiting. W5500 sockets do not
 answer a SYN when no socket listens: a stopped service or closed port looks
 like a timeout, not a refusal, from the other side.
 
@@ -304,6 +311,13 @@ by up to an hour and then the board removes its address, so the fixed setting
 is the better one; it can go in `/etc/rc`. `make test` refuses to run while
 sharing is on: both would serve DHCP and DNS on the test network.
 
+Only one `nnshare` runs at a time (it holds `/run/nnshare.lock` from its first
+change to its last undo). `off` signals the server only when the pid, the start
+time and the token recorded in `/run/nnshare.json` all match it, so a stale
+record never stops another process; when the server is gone, `off` undoes what
+it recorded. If the DHCP server or the DNS relay fails, sharing stops and
+everything is undone (the log says why, `status` shows it).
+
 `host` and `wget` (programs in `/bin`) ask the DNS server of the network
 settings (`ifconfig ... dns IP`, or the one DHCP gave) for an A record, over
 UDP, three tries of 2 s; a CNAME in the answer is followed. A dotted address
@@ -317,10 +331,16 @@ wget -S -q -O /dev/null http://host/             only the reply's header lines
 ```
 
 It asks with HTTP/1.0 and `Connection: close`, so the body ends at
-`Content-Length` or when the server closes; a chunked body is decoded too. Up to
-five redirects are followed (absolute or same-server). The exit status is 0 for
-a 2xx reply saved whole, 1 otherwise (`wget: the server answered 404`, a body cut
-short, no such host, an address off the local network while no gateway is set). It takes about 2 KiB of RAM while it runs (its stack, a
+`Content-Length` or when the server closes; a chunked body is decoded too
+(chunked wins over a `Content-Length`). A reply whose length is not a plain
+number, is given twice differently, or uses a transfer coding other than
+`chunked` is refused, and so is a chunked body whose sizes or separators are
+malformed. Up to five redirects are followed; a relative `Location` (`/path`,
+`page.html`, `../up`, `?query`, `//host/path`) is resolved against the current
+URL, and `.`/`..` segments are taken out of every URL's path (a fragment, `#...`,
+is never sent). The exit status is 0 for a 2xx reply saved whole, 1 otherwise
+(`wget: the server answered 404`, a body cut short or malformed, no such host,
+an address off the local network while no gateway is set). It takes about 2 KiB of RAM while it runs (its stack, a
 256-byte receive buffer, the URLs and header lines); a file arrives at about
 55 KiB/s when it goes to the flash file system. `https://` is not supported.
 
@@ -374,7 +394,7 @@ free                       heap, and how much of it is task stacks
 | `telnetd`, `httpd` | `on`, `off` | the same as `service ... start/stop`; idle servers cost no RAM, only their sessions do |
 | `watchdog` | `0`, `2`, `7`, `26` | seconds without the kernel daemon before the chip resets (default 26; 0 turns it off) |
 | `console_font` | `normal`, `small` | the LCD's text: 21x8 with the 5x7 font, or 32x10 with a 3x5 one (also Ctrl+- and Ctrl+= on the keyboard). No RAM effect |
-| `console_history` | bytes, `0`-`8192` | the LCD's scrollback, allocated while the console shell runs (default 512, about 30 lines); `0` keeps none |
+| `console_history` | bytes, `0`-`8192` | the LCD's scrollback, allocated while the console shell runs (default 512, about 30 lines); `0` keeps none. A size that does not fit in RAM is refused (`out of memory`) and the old scrollback kept |
 
 Settings last until the next reset; put them in `/etc/rc` to apply them at boot,
 for example:
@@ -426,7 +446,12 @@ sudo python3 tools/nncp.py --iface eth1 put sdk/build/hello.nxe /bin/hello
 A program's code runs from the chip's flash: the first run writes it into the
 APROM above the firmware (a few tenths of a second, during which the buzzer's
 sound stutters), later runs and reboots find it there. Only its data, stack and
-allocations take RAM. `cat /proc/xip` shows what the area holds.
+allocations take RAM. `cat /proc/xip` shows what the area holds. Each run
+checks the code found there against the CRC taken when it was written (a copy
+that changed is dropped and written again: `damaged` in `/proc/xip`), and the
+file's header and data against its own CRC, so a damaged or altered file is
+refused (`not an executable`). Programs built before NXE version 3 must be
+rebuilt.
 
 They behave like built-in commands in pipelines, with redirection and `&`,
 and Ctrl-C or `kill` stops them; their RAM (code, data, stack, and anything

@@ -17,9 +17,13 @@ void spi_init(void);
 /* Each device keeps its own clock; it is applied when the device is selected. */
 void spi_set_divider(int device, unsigned divider);
 unsigned spi_divider(int device);
-/* Selecting a device takes the bus lock; spi_select(SPI_NONE) releases it.
- * Keep each select/deselect pair inside one task. */
+/* Selecting a device takes the bus lock and starts a transaction;
+ * spi_select(SPI_NONE) or spi_end() ends it and releases the lock. Keep each
+ * pair inside one task. A transfer that times out fails the transaction: the
+ * device is deselected, the controller reset, and the transaction's later
+ * transfers skipped (reads give zeros). */
 void spi_select(int device);
+int spi_end(void);                           /* spi_select(SPI_NONE): 0, or -1 when the transaction failed */
 uint8_t spi_xfer8(uint8_t byte);
 void spi_write(const void *buf, size_t n);   /* 32-bit bursts: W5500 only */
 void spi_read(void *buf, size_t n);          /* 32-bit bursts: W5500 only */

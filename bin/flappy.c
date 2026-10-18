@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* flappy: A or up flaps; fly through the gaps between the pipes. Keys:
+/* flappy: Space (or Enter, keypad 5) or up flaps; fly through the gaps between the pipes. Keys:
  * bin/game.h. */
 #include "game.h"
 #include "../lib/fmt.h"
@@ -74,7 +74,7 @@ static unsigned play(void)
     for (uint32_t now = sys_uptime(), t = 0;; ++t) {
         game_clear();
         game_big(-1, 8, "FLAPPY");
-        game_text(-1, 40, "A OR UP: FLY");
+        game_text(-1, 40, "SPACE OR UP: FLY");
         game_fill(0, GROUND, GAME_W, 1, 1);
         draw_bird(28 + (int)(t / 8u % 2u));
         game_show_until(now += FRAME_MS);

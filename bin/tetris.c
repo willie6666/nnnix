@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* tetris: left and right move (held: they repeat), up or A turns, down drops
+/* tetris: left and right move (held: they repeat), up or Space turns, down drops
  * faster. Full rows go; every 10 rows the level, and the speed, goes up.
  * Keys: bin/game.h. */
 #include "game.h"
@@ -84,9 +84,10 @@ static void draw(const struct piece *p, int next, unsigned score, unsigned lines
     game_text(90, 2, "NEXT");
     struct piece n = { next, 0, 0, 0 };
     draw_piece(&n, 90, 10, 4);
-    game_text(84, 34, "UP TURN");
-    game_text(84, 41, "DN DROP");
-    game_text(84, 52, "Q QUIT");
+    game_text(84, 30, "TURN: UP");
+    game_text(84, 36, "OR SPACE");
+    game_text(84, 44, "DROP: DOWN");
+    game_text(84, 52, "QUIT: Q");
 }
 
 /* Lock p into the board; the rows it filled go. How many. */

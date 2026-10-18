@@ -46,6 +46,12 @@ check(rc == 0 and 'snake: best ' in out, f'snake ends: {out!r}')
 check(dark(shots[500], 0, 8, 128, 64) >= 3 * 16, 'snake draws the snake and the food')
 check(dark(shots[6000], 24, 14, 104, 50) > 100, 'snake: the wall ends it')
 
+# After a game over any key plays again, the letter a too (it is left in play).
+rc, out, shots = run('snake', '3500:shot', '4000:a', '4500:shot', '5000:q')
+check(rc == 0 and 'snake: best 0' in out, f'snake again: {out!r}')
+check(dark(shots[3500], 22, 10, 106, 11) == 84 and dark(shots[4500], 22, 10, 106, 11) < 40,
+      'snake: a key after the game over plays again')               # the box's top edge, then not
+
 # Flappy: the first flap starts it; without more it falls to the ground.
 rc, out, shots = run('flappy', '300:shot', '1000:space', '1100:shot', '4000:shot', '4500:pad1')
 check(rc == 0 and 'flappy: best 0' in out, f'flappy ends: {out!r}')

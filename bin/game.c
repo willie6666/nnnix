@@ -14,6 +14,7 @@ extern const struct nn_lib *__nn_lib;    /* sdk/crt0.c: the fonts are the firmwa
 static uint8_t fb[GAME_W * GAME_H / 8];
 static int in = -1, lcd = -1;
 static unsigned held, pressed;
+static int any;                       /* some key or keypad key was pressed (game_over) */
 static uint32_t seed;
 
 int game_open(const char *name)
@@ -59,6 +60,7 @@ void game_poll(void)
     while ((n = sys_read(in, ev, sizeof ev)) > 0)
         for (int i = 0; i < n / (int)sizeof ev[0]; ++i) {
             unsigned a = action(&ev[i]);
+            if (ev[i].value && ev[i].type != NN_INPUT_MOUSE) any = 1;
             if (ev[i].value) { held |= a; pressed |= a; }
             else held &= ~a;
         }
@@ -156,20 +158,22 @@ int game_over(unsigned score, unsigned *best)
 {
     char line[24];
     if (score > *best) *best = score;
-    game_fill(24, 14, 80, 36, 0);
-    game_box(24, 14, 80, 36);
-    game_big(-1, 18, "GAME OVER");
+    game_fill(22, 10, 84, 44, 0);
+    game_box(22, 10, 84, 44);
+    game_big(-1, 14, "GAME OVER");
     nn_snprintf(line, sizeof line, "SCORE %u", score);
-    game_text(-1, 29, line);
+    game_text(-1, 25, line);
     nn_snprintf(line, sizeof line, "BEST %u", *best);
-    game_text(-1, 36, line);
-    game_text(-1, 43, "A: AGAIN  Q: QUIT");
+    game_text(-1, 32, line);
+    game_text(-1, 40, "ANY KEY: AGAIN");
+    game_text(-1, 46, "ESC OR Q: QUIT");
     game_show_until(sys_uptime() + 400u);            /* a moment before a key counts */
     game_pressed();
+    any = 0;
     for (;;) {
         unsigned p = game_pressed();
         if (p & GAME_QUIT) return 0;
-        if (p & GAME_A) return 1;
+        if (any) return 1;
         sys_sleep(20);
     }
 }

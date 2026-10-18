@@ -8,8 +8,9 @@
  * actions, a random number, and the time.
  *
  * Keys: arrows or WASD and the keypad's 2 4 6 8 are the directions; Space,
- * Enter and keypad 5 are A; Esc, q and keypad 1 end the game (the board's
- * SW_INT button always does). */
+ * Enter and keypad 5 are the action key (GAME_A: not the letter A, which is
+ * left); Esc, q and keypad 1 end the game (the board's SW_INT button always
+ * does). */
 #define GAME_W 128
 #define GAME_H 64
 enum { GAME_LEFT = 1, GAME_RIGHT = 2, GAME_UP = 4, GAME_DOWN = 8, GAME_A = 16, GAME_QUIT = 32 };
@@ -40,7 +41,7 @@ int  game_number(int x, int y, unsigned n);              /* small digits */
 
 uint32_t game_rand(void);
 /* Game over: shows the score and the best of this run over the picture, and
- * waits for A (1: play again) or quit (0). */
+ * waits for quit (0) or any other key (1: play again). */
 int  game_over(unsigned score, unsigned *best);
 
 #endif

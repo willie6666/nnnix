@@ -991,6 +991,43 @@ firmware's fonts, handed to programs in `nn_lib` version 2 (`font3x5`, `font5x7`
   levels, pointer, a live stream that decodes, and `nninput.py`'s keys, mouse, keypad zoom and release on
   a stand-in session.
 
+### Review fixes R48-R66 (2026-10-19)
+
+A full review at `8c86a13` (`docs/reports/NNNIX_FULL_REVIEW_2026-10-19.md`, outside the repository)
+reported nineteen problems; all confirmed and fixed.
+
+| ID | Problem | Fix |
+| --- | --- | --- |
+| R48 | two shells resizing the scrollback at once: one could install its buffer with the other's size, and console output then wrote past it | `history()` reads the size once and gives the ring the size its buffer was allocated for; a resize that a later one overtook installs nothing (checked under the LCD lock); a failed one restores the old size only if no other came since. Board test: two sessions resizing twelve times each while the console shell prints |
+| R65 | `cp DIR FILE` (also `mv` across file systems) emptied FILE before failing on the directory | the source is `stat`ed first: a directory (`EISDIR`) or a device ("not a plain file") is refused before the destination is opened. Board test: the file keeps its text |
+| R64 | both INT lines low was taken for "power off", but they are active-low interrupts: two pending ones looked the same, and the modules were dropped and their pins released | while the modules count as powered, "off" also needs neither of them to answer (W5500 `VERSIONR`, CH376S `CHECK_EXIST`; one busy with a file counts as answering) |
+| R49 | `nnshare run --dry-run` applied the changes and served | `--dry-run` previews for `on` and `run` alike before anything else, and the server refuses it. Host test with every command replaced |
+| R50 | a failed W5500 transfer while taking a UDP header (or the data, or a skip) returned 0, so the header's bytes could come back as data | `w5500_recv`/`w5500_skip` return -1 when a transfer or the `RECV` command fails (`command()` reports a command the chip did not take within 100 ms); a UDP read then reopens the socket on its port (the read pointer is unknown) and fails with `EIO`; TCP reads, `net_recv`, DHCP and diag pass the failure on. Host test `test_socket` with failures injected at each step |
+| R51 | a full `/dev/input` queue dropped releases for good: the reader kept a key or button held | the queue keeps what its reader has been told (keys, buttons, keypad); after a drop it takes nothing new until it has queued the difference to the real state, releases first, as room allows. Host test: overflow while keys go up and others down, and a difference bigger than the room |
+| R52 | an ErrorRollOver report (too many keys) became the last report, so the releases after it were never seen | such a report is ignored altogether, for programs and for the console |
+| R53 | one report can need 20 key events (8 modifiers, 6 keys up, 6 down); the buffer held 16 | 20 (`INPUT_KEY_EVENTS`) |
+| R66 | a mouse unplugged with a button down left it down for the reader | the removal also sends the buttons up |
+| R54 | `remote` ended with status 0 when the stream was cut inside a record, and ignored failed sends and LCD writes | it ends with 1 and says so ("the stream was cut short"); a send that fails while the connection is still up, and a frame the LCD did not take, are failures too. Board test with a raw frame cut after one byte |
+| R55 | an undo that failed still deleted `nnshare`'s record | the record stays, marked with what failed; `status` shows it, `off` retries, `on` refuses to start over it; an undo of what is already undone counts as done |
+| R59 | DNS sent one query instead of three: the first timeout ended the loop | only a timeout leads to the next try (2 s each); a lost datagram (`EIO`) does not end the wait. Host test `test_dns` with a scripted server |
+| R60 | `wget` said `saved` when the file's close failed | the close's error is the command's result. Host test `test_wget` |
+| R61 | after the CH376S lost its power, usbfs still believed in its mount and every open failed | `modules.ch376` is 0 while the chip does not answer and else a number that is new each time it comes back (1-63, kept in spare bits of `struct modules_state`); usbfs mounts again when it changes, and files opened under the old mount fail (a dirty one's close says `EIO`) |
+| R62 | a listing that timed out looked like the end of the directory (and `rmdir` took it for an empty one) | only "no more entries" ends a listing; other states, and a directory that cannot be entered, are errors; `rmdir` passes them on |
+| R63 | `lseek` on `/usb` summed in `int32_t` before checking (undefined overflow), and took any whence | `vfs_seek_pos()` for every file system: SEEK_SET/CUR/END only, summed in 64 bits, 0..INT32_MAX; rootfs computes the position with it and seeks to it |
+| R56 | two keys for one game action (Left and a): letting one go ended the action while the other was held | `bin/game.c` keeps each key down separately and makes the actions from all of them |
+| R57 | snake's food search looped forever on a full board | 64 random tries, then the next empty cell; none left ends the game |
+| R58 | tetris' soft drop moved every 20 ms pass, not every 40 ms | down held moves a step at once and then follows the deadline. Host test: 400 ms down gives 10-11 points (was 19) |
+
+Cost: 1768 bytes of firmware (104 640 B of text); static RAM unchanged (2880 B), so free RAM with the
+console shell and one telnet session stays 5208 B. A first version with a mutex for R48, separate
+generation counters and a static for the mouse's buttons took 24 B more and broke the 5200 B floor of
+`telnet_tests`; the buttons now live in the claim (heap, only while `/dev/input` is held).
+
+Also: the host tests can now include kernel code that uses `irq_save` (`arch.h` gives no-op versions under
+`NNNIX_HOST`); `settings_tests` waits for the diag worker that served a screen request to be reaped (about
+50 ms) before comparing the heap. Checked on the board with `nnshare` running (so not `make test`): the
+telnet, settings, input, file system, shell, job, NNV, audit, XIP and M6 sections.
+
 ## 8. Source layout
 
 ```

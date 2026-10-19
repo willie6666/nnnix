@@ -84,8 +84,10 @@ per frame the header gives; sound records are skipped) and sends each input
 event (8 bytes, `struct nn_input_event` in `lib/sys.h`) as it comes. The
 board's SW_INT button ends it (Ctrl-C too, from a telnet session); so does the
 computer closing the connection. Either way the pipeline on the computer ends
-too, letting go of any key still held. `-v` prints the frames, the bytes and
-the events at the end. It is one task: it reads the socket and polls
+too, letting go of any key still held. The exit status is 0 when the stream
+ended between records, 1 when it was cut short inside one, damaged, or the
+input or the display failed, and 130 for SW_INT or Ctrl-C. `-v` prints the
+frames, the bytes and the events at the end. It is one task: it reads the socket and polls
 `/dev/input` in the same loop and decodes the stream a piece at a time into its
 one frame, so it takes about 1.2 KiB of RAM besides its stack, less than
 `nc -l 1234 | play` (two tasks and a pipe). That also works, to only watch:

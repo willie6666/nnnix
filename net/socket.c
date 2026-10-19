@@ -40,7 +40,8 @@ static int tcp_read(struct sock *s, void *buf, uint32_t n)
 {
     if (n > 0xffffu) n = 0xffffu;
     for (;;) {
-        uint16_t got = w5500_recv(s->sn, buf, (uint16_t)n);
+        int got = w5500_recv(s->sn, buf, (uint16_t)n);
+        if (got < 0) return SYS_EIO;
         if (got) return got;
         uint8_t sr = w5500_status(s->sn);
         if (sr != W5500_SOCK_ESTABLISHED && sr != W5500_SOCK_SYNSENT && sr != W5500_SOCK_LISTEN &&
@@ -50,15 +51,25 @@ static int tcp_read(struct sock *s, void *buf, uint32_t n)
     }
 }
 
+/* After a failed transfer the chip's read pointer is unknown, so the next
+ * bytes could be anything (a header taken for data, review R50): the socket
+ * starts again on its port, dropping what it had received, and the read fails. */
+static int udp_resync(struct sock *s)
+{
+    s->left = 0;
+    (void)w5500_open(s->sn, W5500_MODE_UDP, w5500_port(s->sn));
+    return SYS_EIO;
+}
+
 static int udp_read(struct sock *s, void *buf, uint32_t n)
 {
     while (!s->left) {
         if (w5500_rx_available(s->sn) >= 8) {
             uint8_t h[8];
-            w5500_recv(s->sn, h, 8);                   /* sender address, port, length */
+            if (w5500_recv(s->sn, h, 8) != 8) return udp_resync(s);   /* sender address, port, length */
             uint16_t port = (uint16_t)(h[4] << 8 | h[5]), len = (uint16_t)(h[6] << 8 | h[7]);
             if (s->connected && (memcmp(s->peer, h, 4) || s->peer_port != port)) {
-                w5500_skip(s->sn, len);                /* not from the peer */
+                if (w5500_skip(s->sn, len)) return udp_resync(s);   /* not from the peer */
                 if (w5500_rx_available(s->sn) < 8) return SYS_EAGAIN;
                 continue;
             }
@@ -76,9 +87,11 @@ static int udp_read(struct sock *s, void *buf, uint32_t n)
         w5500_wait(s->sn, 100);
     }
     uint16_t k = n < s->left ? (uint16_t)n : s->left;
-    uint16_t got = w5500_recv(s->sn, buf, k);
+    int got = w5500_recv(s->sn, buf, k);
+    if (got != k) return udp_resync(s);            /* the datagram is all there: less is a failure */
     s->left = (uint16_t)(s->left - got);
-    if (s->left) { w5500_skip(s->sn, s->left); s->left = 0; }
+    if (s->left && w5500_skip(s->sn, s->left)) return udp_resync(s);
+    s->left = 0;
     return got;
 }
 

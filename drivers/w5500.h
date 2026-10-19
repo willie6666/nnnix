@@ -44,8 +44,10 @@ uint8_t  w5500_status(int sn);
 int      w5500_can_send(int sn);                   /* ESTABLISHED or peer half-closed (CLOSE_WAIT) */
 void     w5500_peer(int sn, uint8_t ip[4], uint16_t *port);
 uint16_t w5500_rx_available(int sn);
-uint16_t w5500_recv(int sn, void *buf, uint16_t n); /* copies up to n available bytes */
-void     w5500_skip(int sn, uint16_t n);           /* drops up to n received bytes */
+/* Up to n available bytes: how many, 0 when none waits, -1 when an SPI
+ * transfer failed (what the chip has consumed is then unknown). */
+int      w5500_recv(int sn, void *buf, uint16_t n);
+int      w5500_skip(int sn, uint16_t n);           /* drops up to n received bytes: 0, or -1 as above */
 uint16_t w5500_tx_free(int sn);                    /* as of the last SEND */
 uint16_t w5500_tx_room(int sn);                    /* free minus data queued since */
 int      w5500_write(int sn, const void *buf, uint16_t n); /* queue; n <= tx_room, no SEND */

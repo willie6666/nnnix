@@ -194,11 +194,19 @@ static int copy_file(const char *cmd, const char *src, const char *dst)
     if (!to) return fail(cmd, dst, SYS_ENAMETOOLONG);
     /* Opening the destination truncates it: it must not be the source. */
     if (same_file(src, to)) { printf("%s: %s and %s are the same file\n", cmd, src, to); return 1; }
+    /* Only a plain file is copied, and that is known before the destination
+     * is touched: directories open too (for readdir), and the error would
+     * come only after the truncation (review R65). */
+    struct nn_stat st;
+    int e = sys_stat(src, &st);
+    if (e) return fail(cmd, src, e);
+    if (st.type == NN_TYPE_DIR) return fail(cmd, src, SYS_EISDIR);
+    if (st.type != NN_TYPE_FILE) { printf("%s: %s: not a plain file\n", cmd, src); return 1; }
     int in = sys_open(src, O_RDONLY);
     if (in < 0) return fail(cmd, src, in);
     int out = sys_open(to, O_WRONLY | O_CREAT | O_TRUNC);
     if (out < 0) { sys_close(in); return fail(cmd, to, out); }
-    int e = copy_fd(in, out);
+    e = copy_fd(in, out);
     sys_close(in);
     int c = sys_close(out);
     if (e < 0) return fail(cmd, src, e);

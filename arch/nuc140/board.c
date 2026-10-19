@@ -37,7 +37,9 @@ void board_init(void)
 
 int board_modules_powered(void)
 {
-    /* Both INT lines read low while MB-102 is off (measured); either high means power. */
+    /* Both INT lines read low while MB-102 is off (measured); either high means
+     * power. Both low can also be two pending interrupts (active low): the
+     * caller (kernel/modules.c) asks the modules before it believes it. */
     uint32_t pins = GPIO_PIN(PORTB);
     return ((pins >> 14) & 1u) || ((pins >> 2) & 1u);
 }

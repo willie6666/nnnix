@@ -302,7 +302,7 @@ cable goes to (the USB Ethernet adapter, `eth1` by default):
 sudo python3 tools/nnshare.py on       # start (in the background)
 sudo python3 tools/nnshare.py status
 sudo python3 tools/nnshare.py off      # stop and undo everything
-sudo python3 tools/nnshare.py on --dry-run    # only show what it would change
+sudo python3 tools/nnshare.py on --dry-run    # only show what it would change (run --dry-run too)
 ```
 
 It gives the adapter 198.18.0.1/30 (unless it has it), turns IPv4 forwarding
@@ -326,7 +326,9 @@ change to its last undo). `off` signals the server only when the pid, the start
 time and the token recorded in `/run/nnshare.json` all match it, so a stale
 record never stops another process; when the server is gone, `off` undoes what
 it recorded. If the DHCP server or the DNS relay fails, sharing stops and
-everything is undone (the log says why, `status` shows it).
+everything is undone (the log says why, `status` shows it). If a step of the
+undo fails, the record stays with what failed: `status` shows it, `off` tries
+again, and `on` refuses to start until it has.
 
 `host` and `wget` (programs in `/bin`) ask the DNS server of the network
 settings (`ifconfig ... dns IP`, or the one DHCP gave) for an A record, over
@@ -430,6 +432,12 @@ use per stack size, also of tasks that have ended.
   report it too, and `mv` then keeps the source.
 - `cp` refuses to copy a file onto itself, also under another name (`./x`,
   `../dir/x`, or a different case on `/usb`); `mv` onto itself does nothing.
+  It copies plain files only: a directory or a device as the source is
+  refused before the destination is opened, so an existing destination stays
+  as it was.
+- When the USB module loses its power or stops answering, files open on
+  `/usb` fail from then on (their data since the last close may be lost);
+  the next use mounts the drive again.
 - At boot a blank flash is formatted. If the flash holds something that does
   not mount (damage, another format), it is left alone and `/` is unavailable;
   `mkfs /` then formats it. `mkfs` refuses while `/` is mounted.

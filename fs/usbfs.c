@@ -15,6 +15,7 @@
 struct ufile {
     char path[NN_PATH_MAX];          /* 8.3 upper case, absolute within the drive */
     uint32_t size;
+    uint8_t gen;                     /* mount_gen when opened */
     uint8_t dir, dirty;
     int8_t error;                    /* a write-back that failed while switching files, for close */
 };
@@ -22,6 +23,8 @@ struct ufile {
 static struct ufile *current;        /* file the chip has open */
 static struct ufile *listing;        /* directory the chip is listing (u_readdir) */
 static uint32_t listing_pos, listing_mark;
+/* 0, or modules.ch376 when the drive was mounted (review R61): files opened
+ * under another mount fail rather than reach whatever is mounted now. */
 static uint8_t mounted;
 
 static int valid_char(char c)
@@ -122,18 +125,26 @@ int usbfs_release(void)
 
 static int ensure(void)
 {
-    if (!modules.ch376) return SYS_ENODEV;
+    uint8_t gen = modules.ch376;
+    if (mounted && gen != mounted) {                  /* the chip lost its mount and its open file */
+        if (current && current->dirty) current->error = SYS_EIO;
+        current = 0;
+        listing = 0;
+        mounted = 0;
+    }
+    if (!gen) return SYS_ENODEV;
     if (mounted) return 0;
     current = 0;
     int e = ch376_mount();
     if (e) { kprintf("usbfs: mount failed (stage %d)\n", e); return SYS_ENODEV; }
-    mounted = 1;
+    mounted = gen;
     kprintf("usbfs: drive mounted\n");
     return 0;
 }
 
 static int activate(struct ufile *u)
 {
+    if (u->gen != mounted) return SYS_EIO;            /* opened before the chip lost its state */
     if (current == u) return 0;
     deactivate();
     uint8_t s = walk(u->path, 0);
@@ -185,6 +196,7 @@ static int u_open(struct mount *m, const char *path, int flags, struct file *f)
     }
     ch376_unlock();
     if (e) { kfree(u); return e; }
+    u->gen = mounted;
     f->priv = u;
     f->pos = (flags & O_APPEND) ? u->size : 0;
     return 0;
@@ -241,6 +253,7 @@ static int u_write(struct file *f, const void *buf, uint32_t n)
 static int u_lseek(struct file *f, int32_t off, int whence)
 {
     struct ufile *u = f->priv;
+    if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) return SYS_EINVAL;
     if (whence == SEEK_END && !u->dir) {               /* the current size, as read and write see it */
         ch376_lock();
         int e = ensure();
@@ -248,9 +261,8 @@ static int u_lseek(struct file *f, int32_t off, int whence)
         ch376_unlock();
         if (e) return e;
     }
-    int32_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? (int32_t)f->pos : (int32_t)u->size;
-    int32_t pos = base + off;
-    if (pos < 0) return SYS_EINVAL;
+    int32_t pos = vfs_seek_pos(f->pos, u->size, off, whence);
+    if (pos < 0) return pos;
     f->pos = (uint32_t)pos > u->size ? u->size : (uint32_t)pos;   /* no holes on FAT through the CH376 */
     return (int)f->pos;
 }
@@ -270,8 +282,9 @@ static int u_readdir(struct file *f, struct nn_dirent *d)
     if (!u->dir) return SYS_ENOTDIR;
     ch376_lock();
     int e = ensure(), found = 0;
+    if (!e && u->gen != mounted) e = SYS_EIO;
     if (!e) {
-        uint8_t s;
+        uint8_t s = CH376_MISS_FILE;
         uint32_t index = 0;
         if (listing == u && listing_pos == f->pos && listing_mark == ch376_commands()) {
             s = ch376_enum_next();
@@ -279,7 +292,8 @@ static int u_readdir(struct file *f, struct nn_dirent *d)
         } else {
             deactivate();
             s = walk(u->path, 0);
-            s = s == CH376_OPEN_DIR ? ch376_enum_first(strcmp(u->path, "/") ? "*" : "/*") : CH376_MISS_FILE;
+            if (s != CH376_OPEN_DIR) e = s == CH376_OK ? SYS_ENOTDIR : status_error(s);   /* gone, or not listed */
+            else s = ch376_enum_first(strcmp(u->path, "/") ? "*" : "/*");
         }
         listing = 0;
         while (s == CH376_ENTRY_READY) {
@@ -304,6 +318,9 @@ static int u_readdir(struct file *f, struct nn_dirent *d)
             }
             s = ch376_enum_next();
         }
+        /* Only "no more entries" ends the listing; a timeout or a failed
+         * transfer is an error, not an empty directory (review R62). */
+        if (!e && !found && s != CH376_MISS_FILE) e = SYS_EIO;
     }
     ch376_unlock();
     return e ? e : found;
@@ -359,11 +376,12 @@ static int u_remove(struct mount *m, const char *path)
     if (!e) e = u_stat(m, path, &st);
     if (e) return e;
     if (st.type == NN_TYPE_DIR) {                    /* only empty directories */
-        struct ufile dir = { .dir = 1 };
+        struct ufile dir = { .dir = 1, .gen = mounted };
         struct file f = { .priv = &dir };
         struct nn_dirent d;
         strcpy(dir.path, p83);
-        if (u_readdir(&f, &d) > 0) return SYS_ENOTEMPTY;
+        int r = u_readdir(&f, &d);
+        if (r) return r > 0 ? SYS_ENOTEMPTY : r;       /* a listing that failed says nothing */
     }
     ch376_lock();
     e = ensure();

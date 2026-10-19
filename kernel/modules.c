@@ -9,16 +9,31 @@
 
 struct modules_state modules;
 
+/* Both INT lines low is also what two pending interrupts look like (they are
+ * active low, review R64): while the modules count as powered, it means
+ * "off" only when neither answers either. A module in the middle of a file
+ * operation counts as answering. */
+static int still_answering(void)
+{
+    if (modules.w5500 && w5500_present()) return 1;
+    if (!modules.ch376) return 0;
+    if (!ch376_trylock()) return 1;
+    int ch = ch376_present();
+    ch376_unlock();
+    return ch;
+}
+
 void modules_poll(void)
 {
     int powered = board_modules_powered();
+    if (!powered && modules.powered && still_answering()) powered = 1;
     if (powered != modules.powered) {
         if (powered) msleep(200);                      /* let the rail settle */
-        powered = board_modules_powered();
+        powered = board_modules_powered() || (modules.powered && still_answering());
         if (powered != modules.powered) {
             board_w5500_irq(0);
             board_ch376_irq(0);
-            modules = (struct modules_state){ .powered = (uint8_t)powered };
+            modules = (struct modules_state){ .powered = (uint8_t)powered, .last_ch376 = modules.last_ch376 };
             kprintf(powered ? "modules: power on\n" : "modules: power off, SPI pins released\n");
             board_spi_pins(powered);
             if (powered) {                             /* W5500 hardware reset */
@@ -35,8 +50,9 @@ void modules_poll(void)
     int ch = ch376_present();
     uint8_t version = ch ? ch376_version() : 0;
     ch376_unlock();
-    if (ch != modules.ch376) {
-        modules.ch376 = (uint8_t)ch;
+    if (ch != !!modules.ch376) {
+        if (ch) modules.last_ch376 = (uint8_t)(modules.last_ch376 % 63u + 1u);   /* 1-63 */
+        modules.ch376 = ch ? (uint8_t)modules.last_ch376 : 0;
         board_ch376_irq(ch);
         if (ch) kprintf("ch376: present, version 0x%02x\n", version);
         else kprintf("ch376: not responding\n");

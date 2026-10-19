@@ -173,7 +173,12 @@ static int rfs_write(struct file *f, const void *buf, uint32_t n)
 static int rfs_lseek(struct file *f, int32_t off, int whence)
 {
     struct lfile *lf = f->priv;
-    return lf->dir ? SYS_EISDIR : lfs_file_seek(&lfs, &lf->file, off, whence);   /* same SEEK_* values */
+    if (lf->dir) return SYS_EISDIR;
+    lfs_soff_t cur = lfs_file_tell(&lfs, &lf->file), end = lfs_file_size(&lfs, &lf->file);
+    if (cur < 0) return cur;
+    if (end < 0) return end;
+    int32_t pos = vfs_seek_pos((uint32_t)cur, (uint32_t)end, off, whence);
+    return pos < 0 ? pos : lfs_file_seek(&lfs, &lf->file, pos, LFS_SEEK_SET);
 }
 
 static int rfs_readdir(struct file *f, struct nn_dirent *d)

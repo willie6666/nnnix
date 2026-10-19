@@ -280,13 +280,16 @@ __attribute__((noinline)) static int run(struct get *g, const char *file)
     uint32_t start = sys_uptime();
     int e = body(g);
     uint32_t ms = sys_uptime() - start;
-    if (!to_stdout) sys_close(g->out);
+    /* The file is saved only once it is closed: the size or the last data may
+     * be written then (review R60). */
+    int c = to_stdout ? 0 : sys_close(g->out);
     if (e == SYS_EINTR) return 130;
     if (e) {
         printf("wget: %s after %u bytes\n", e == BAD_CHUNKS ? "a malformed chunked body" : e == SYS_EIO ?
                "connection closed early" : errstr(e), g->got);
         return 1;
     }
+    if (c < 0) return fail(file, c);
     if (!g->quiet && !to_stdout)
         printf("saved %s: %u bytes in %u.%01u s\n", file, g->got, ms / 1000u, ms % 1000u / 100u);
     return 0;

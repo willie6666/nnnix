@@ -68,7 +68,7 @@ static void gen_stacks(struct gen *g)
 
 static void gen_modules(struct gen *g)
 {
-    say(g, "power %u\nch376 %u\nw5500 %u\nlink 0x%x\n", modules.powered, modules.ch376, modules.w5500, modules.link);
+    say(g, "power %u\nch376 %u\nw5500 %u\nlink 0x%x\n", modules.powered, !!modules.ch376, modules.w5500, modules.link);
 }
 
 static void gen_klog(struct gen *g)

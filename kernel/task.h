@@ -9,6 +9,7 @@
 #define TASK_PRIO_IDLE  7
 #define TASK_REDZONE    128u         /* a saved sp this close to the stack bottom is an overflow */
 #define ETIMEDOUT       110
+#define EIO             5            /* net_recv: a failed transfer */
 #define EINTR_TASK      4
 #define ESRCH           3
 #define ECHILD          10

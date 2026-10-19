@@ -812,10 +812,32 @@ def settings_tests(ns, report):
     time.sleep(0.5)
     with_shell = heap_free(t)
     on_screen = screen()
+    time.sleep(0.2)                                     # the diag worker that answered is reaped within 50 ms
     # 8 KiB of scrollback does not fit beside the shells: the 512-byte ring stays.
     out = t.cmd('sysctl console_history=8192') + t.cmd('sysctl console_history')
     report.add('scrollback no memory', 'console_history: out of memory' in out and 'console_history=512' in out
                and heap_free(t) == with_shell, out.strip().replace('\r\n', ' | '))
+    # Full review R48: two sessions resizing the scrollback at once while the
+    # console shell prints: one size and one ring, nothing written past it.
+    t2 = Telnet(ns)
+    t2.read_until(Telnet.PROMPT)
+    for i in range(12):
+        t.send(f'sysctl console_history={1024 if i % 2 else 256}\r\n')
+        t2.send(f'sysctl console_history={256 if i % 2 else 1024}\r\n')
+        if i % 4 == 0:
+            ns.call(request, b'I', 4, 9, b'ls /proc\r')
+    for _ in range(12):
+        t.read_until(Telnet.PROMPT, 5)
+        t2.read_until(Telnet.PROMPT, 5)
+    size = t.cmd('sysctl console_history')
+    ns.call(request, b'I', 4, 9, b'ls /proc\r')
+    time.sleep(0.5)
+    out = t.cmd('sysctl console_history=512') + t2.cmd('sysctl console_history')
+    t2.send('exit\r\n'); t2.wait_closed(); t2.close()
+    time.sleep(0.3)
+    report.add('scrollback resized at once', re.search(r'console_history=(256|1024)', size) is not None
+               and 'console_history=512' in out and heap_free(t) == with_shell and 'nnnix$' in screen(),
+               (size + out).strip().replace('\r\n', ' | '))
     t.cmd('sysctl console=off')
     time.sleep(0.6)
     without = heap_free(t)
@@ -923,6 +945,15 @@ def review_tests(ns, serial, report, iface):
         t.cmd('rm /usb/r10.txt')
         report.add('same-file cp/mv', out.count('are the same file') == 3 and kept == 'keep me\r\nkeep usb\r\n',
                    kept.strip().replace('\r\n', ' | '))
+
+        # Full review R65: cp from a directory is refused before the destination
+        # is touched (it used to be emptied first); so is a device.
+        t.cmd(f'mkdir {folder}/r65') + t.cmd(f'echo keep this > {folder}/r65.txt')
+        out = t.cmd(f'cp {folder}/r65 {folder}/r65.txt') + t.cmd('echo $?') + t.cmd(f'cp /dev/zero {folder}/r65.txt')
+        kept = t.cmd(f'cat {folder}/r65.txt')
+        t.cmd(f'rmdir {folder}/r65') + t.cmd(f'rm {folder}/r65.txt')
+        report.add('cp from a directory', 'is a directory' in out and 'not a plain file' in out and kept == 'keep this\r\n',
+                   (out + kept).strip().replace('\r\n', ' | '))
 
         # R15: nc with a pipe as input sends and receives at once: 32 KiB through an echo
         # server that stops reading while its send buffer is full. All the buffers on the
@@ -1827,6 +1858,27 @@ def input_tests(ns, serial, report):
         got = ns.call(remote)
         out = t.read_until(Telnet.PROMPT, 10)
         events = [struct.unpack_from('<BBBbbb', got, i) for i in range(0, len(got) - 7, 8)]
+        # Full review R54: a stream cut inside a record is a failure, not the end.
+        def cut():
+            for _ in range(50):
+                try:
+                    c = socket.create_connection((TARGET[0], 1234), timeout=5)
+                    break
+                except OSError:
+                    time.sleep(0.2)
+            else:
+                return
+            with c:
+                c.sendall(b'NNV1' + struct.pack('<HHHHBBH', 128, 64, 0, 0, 0, 0, 0) + struct.pack('<BH', 0, 1024) + b'x')
+                c.shutdown(socket.SHUT_WR)
+                time.sleep(0.5)
+
+        t.send('remote\r\n')
+        time.sleep(0.8)
+        ns.call(cut)
+        cut_out = t.read_until(Telnet.PROMPT, 10) + t.cmd('echo $?')
+        report.add('remote cut short', 'the stream was cut short' in cut_out and cut_out.strip().endswith('1'),
+                   cut_out.strip().replace('\r\n', ' | '))
         report.add('remote', events == [(1, 0x04, 1, ord('a'), 0, 0), (1, 0x04, 0, 0, 0, 0), (2, 1, 0, 0, 5, -3),
                                         (2, 0, 0, 0, 0, 0), (3, 2, 1, 0, 0, 0), (3, 2, 0, 0, 0, 0)]
                    and 'remote: 2 frames, 26 bytes in' in out and '6 events sent' in out,

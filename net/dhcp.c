@@ -91,11 +91,11 @@ static int get(void *p, uint16_t n)
     left = (uint16_t)(left - n);
     return 0;
 }
-static void skip(uint16_t n)
+static int skip(uint16_t n)
 {
     if (n > left) n = left;
-    w5500_skip(SN, n);
     left = (uint16_t)(left - n);
+    return w5500_skip(SN, n);
 }
 
 static int parse(struct reply *r)
@@ -181,12 +181,16 @@ static void receive(void)
 {
     while (d.open && w5500_rx_available(SN) >= 8) {
         uint8_t h[8];
-        w5500_recv(SN, h, 8);                          /* sender address, port, length */
+        int got = w5500_recv(SN, h, 8);                /* sender address, port, length */
         left = (uint16_t)(h[6] << 8 | h[7]);
         static struct reply r;                         /* kd's stack is small */
         memset(&r, 0, sizeof r);
-        int ok = !parse(&r);
-        skip(left);
+        int ok = got == 8 && !parse(&r);
+        if (got != 8 || skip(left)) {                  /* the read pointer is unknown: start the socket again */
+            left = 0;
+            (void)w5500_open(SN, W5500_MODE_UDP, 68);
+            return;
+        }
         if (ok) handle(&r);
     }
 }

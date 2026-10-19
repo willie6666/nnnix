@@ -40,7 +40,7 @@ int sock_listen(int fd, uint16_t port);
 int sock_info(int fd, struct nn_sockinfo *out);
 
 /* Blocking stream calls for an established socket. */
-int  net_recv(int sn, void *buf, uint16_t n, uint32_t timeout_ms); /* bytes; 0 when closed; -ETIMEDOUT */
+int  net_recv(int sn, void *buf, uint16_t n, uint32_t timeout_ms); /* bytes; 0 when closed; -ETIMEDOUT, -EIO */
 int  net_send(int sn, const void *buf, uint32_t n);                /* n, or -1 when the connection failed */
 void net_close(int sn);
 void net_peer(int sn, uint8_t ip[4], uint16_t *port);

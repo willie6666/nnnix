@@ -40,18 +40,22 @@ struct remote {
     uint32_t frames, bytes, events;
 };
 
-/* The record has all its data: show the frame it made. 0, or -1 if damaged. */
+enum { BAD_STREAM = -1, BAD_LCD = -2 };
+
+/* The record has all its data: show the frame it made. 0, BAD_STREAM if
+ * damaged, or BAD_LCD when the display took no frame. */
 static int record_end(struct remote *r)
 {
     r->stage = RECORD;
-    if (r->kind == NNV_DELTA && nnv_end(&r->dec)) return -1;
+    if (r->kind == NNV_DELTA && nnv_end(&r->dec)) return BAD_STREAM;
     if (r->kind != NNV_RAW && r->kind != NNV_DELTA) return 0;
-    sys_write(r->lcd, r->frame, NNV_FRAME);
+    if (sys_write(r->lcd, r->frame, NNV_FRAME) != (int)NNV_FRAME) return BAD_LCD;
     r->frames++;
     return 0;
 }
 
-/* n more bytes of the stream: 0, or -1 when it is not NNV or damaged. */
+/* n more bytes of the stream: 0, BAD_STREAM when it is not NNV or damaged,
+ * or BAD_LCD. */
 static int feed(struct remote *r, const uint8_t *p, uint32_t n)
 {
     while (n) {
@@ -66,17 +70,18 @@ static int feed(struct remote *r, const uint8_t *p, uint32_t n)
             r->got = 0;
             if (r->stage == HEADER) {
                 struct nnv_info info;
-                if (nnv_header(r->head, &info)) return -1;
+                if (nnv_header(r->head, &info)) return BAD_STREAM;
                 r->stage = RECORD;
                 continue;
             }
             r->kind = r->head[0];
             r->left = nnv_u16(r->head + 1);
-            if (r->kind == NNV_RAW && r->left != NNV_FRAME) return -1;
+            if (r->kind == NNV_RAW && r->left != NNV_FRAME) return BAD_STREAM;
             nnv_start(&r->dec);
             r->pos = 0;
             r->stage = DATA;
-            if (!r->left && record_end(r)) return -1;
+            int e = r->left ? 0 : record_end(r);
+            if (e) return e;
             continue;
         }
         uint32_t k = r->left < n ? r->left : n;
@@ -84,25 +89,42 @@ static int feed(struct remote *r, const uint8_t *p, uint32_t n)
             memcpy(r->frame + r->pos, p, k);
             r->pos = (uint16_t)(r->pos + k);
         } else if (r->kind == NNV_DELTA && nnv_feed(&r->dec, r->frame, p, k)) {
-            return -1;
+            return BAD_STREAM;
         }
         p += k;
         n -= k;
         r->left -= k;
-        if (!r->left && record_end(r)) return -1;
+        int e = r->left ? 0 : record_end(r);
+        if (e) return e;
     }
     return 0;
 }
 
-/* Events waiting in /dev/input go to the computer. 0, or -1 once there is no
- * more input (released) or the connection failed. */
+/* The computer closed: fine between records, cut short anywhere else (R54). */
+static int stream_end(struct remote *r)
+{
+    if (r->stage == RECORD && !r->got) return 0;
+    printf("remote: the stream was cut short%s\n", r->stage == HEADER ? " (before its header)" : "");
+    return 1;
+}
+
+/* Events waiting in /dev/input go to the computer: 0, an exit status, or -1
+ * when the computer has closed the connection (the stream says how it ended).
+ * Taken away from it (SW_INT ends this program), it is ended anyway. */
 static int send_events(struct remote *r, int input, int fd)
 {
     struct nn_input_event ev[4];
     int n = sys_read(input, ev, sizeof ev);
     if (n == SYS_EAGAIN) return 0;
-    if (n <= 0) return -1;
-    if (sys_write(fd, ev, (size_t)n) < 0) return -1;
+    if (n == 0) return 130;
+    if (n < 0) { printf("remote: /dev/input: %s\n", errstr(n)); return 1; }
+    int w = sys_write(fd, ev, (size_t)n);
+    if (w != n) {
+        struct nn_sockinfo i;
+        if (!sys_sockinfo(fd, &i) && i.state != NN_SS_ESTABLISHED) return -1;   /* closed: see the stream */
+        printf("remote: sending the input failed: %s\n", errstr(w < 0 ? w : SYS_EIO));
+        return 1;
+    }
     r->events += (uint32_t)n / sizeof ev[0];
     return 0;
 }
@@ -110,21 +132,25 @@ static int send_events(struct remote *r, int input, int fd)
 static int show(struct remote *r, int fd, int input)
 {
     for (;;) {
-        if (send_events(r, input, fd)) return 0;
+        int rc = send_events(r, input, fd);
+        if (rc > 0) return rc;
+        if (rc < 0) return stream_end(r);
         struct nn_sockinfo i;
         if (sys_sockinfo(fd, &i)) return 1;
         if (i.rx) {
             int n = sys_read(fd, r->buf, sizeof r->buf);
-            if (n < 0) return 1;
-            if (n == 0) return 0;
+            if (n < 0) { printf("remote: %s\n", errstr(n)); return 1; }
+            if (n == 0) return stream_end(r);
             r->bytes += (uint32_t)n;
-            if (feed(r, r->buf, (uint32_t)n)) {
+            int e = feed(r, r->buf, (uint32_t)n);
+            if (e == BAD_LCD) { printf("remote: /dev/lcd took no frame\n"); return 1; }
+            if (e) {
                 printf("remote: %s\n", r->frames || r->stage != HEADER ? "damaged stream" : "not an NNV stream");
                 return 1;
             }
             continue;
         }
-        if (i.state != NN_SS_ESTABLISHED) return 0;     /* the computer closed */
+        if (i.state != NN_SS_ESTABLISHED) return stream_end(r);   /* the computer closed */
         if (nn_interrupted()) return 130;
         sys_sleep(10);
     }

@@ -59,6 +59,19 @@ check(dark(shots[300], 0, 0, 128, 30) > 40, 'flappy shows its title')
 check(dark(shots[1100], 24, 0, 29, 61) >= 10, 'flappy draws the bird')
 check(dark(shots[4000], 24, 14, 104, 50) > 100, 'flappy: the ground ends it')
 
+# R58: down held for 400 ms drops a step at once and then one every 40 ms
+# (a point each), not one per 20 ms pass of the main loop.
+rc, out, _ = run('tetris', '1000:+down', '1400:-down', '1500:q')
+best = int(out.split('tetris: best ')[1].split()[0]) if 'tetris: best ' in out else -1
+check(10 <= best <= 11, f'tetris soft drop every 40 ms: {best} points in 400 ms')
+
+# R56: Left held while a (also left) goes down and up: still held, the piece
+# goes on to the wall exactly as with Left alone.
+_, _, alone = run('tetris', '1000:+left', '1700:shot', '1800:q')
+_, _, both = run('tetris', '1000:+left', '1050:+a', '1100:-a', '1700:shot', '1800:q')
+_, _, let_go = run('tetris', '1000:+left', '1100:-left', '1700:shot', '1800:q')
+check(alone[1700] == both[1700] and alone[1700] != let_go[1700], 'tetris: letting a go leaves Left held')
+
 # Quit at once, from the keypad too.
 for game, key in (('tetris', 'pad1'), ('snake', 'q'), ('flappy', 'esc')):
     rc, out, _ = run(game, f'200:{key}')

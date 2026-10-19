@@ -79,13 +79,14 @@ static int rx_pattern(uint32_t length, uint32_t *errors)
     uint32_t received = 0, last = jiffies;
     while (received < length) {
         uint32_t want = length - received < CHUNK ? length - received : CHUNK;
-        uint16_t n = w5500_recv(SOCK, buf, (uint16_t)want);
+        int n = w5500_recv(SOCK, buf, (uint16_t)want);
+        if (n < 0) return -1;
         if (!n) {
             uint8_t sr = w5500_status(SOCK);
             if ((sr != W5500_SOCK_ESTABLISHED && sr != W5500_SOCK_CLOSE_WAIT) || jiffies - last > 5000u) return -1;
             continue;
         }
-        for (uint32_t k = 0; k < n; ++k) if (buf[k] != pattern(received + k)) (*errors)++;
+        for (uint32_t k = 0; k < (uint32_t)n; ++k) if (buf[k] != pattern(received + k)) (*errors)++;
         received += n; last = jiffies;
     }
     return 0;
@@ -207,7 +208,7 @@ static void status_text(void)
     report("nnnix %s uptime %u ms\n", nnnix_version, jiffies);
     report("reset 0x%02x msp %u/%u B static ram %u B heap free %u B\n",
            board_reset_cause(), stack_used(), stack_size(), ram_static(), m.free);
-    report("modules power %u ch376 %u w5500 %u link 0x%x\n", modules.powered, modules.ch376, modules.w5500, modules.link);
+    report("modules power %u ch376 %u w5500 %u link 0x%x\n", modules.powered, !!modules.ch376, modules.w5500, modules.link);
     report("uart1 %u B err %u drop %u spi timeouts %u\n", u.bytes, u.errors, u.drops, spi_timeouts());
     if (fault_last_report()[0]) report("last crash: %s\n", fault_last_report());
 }

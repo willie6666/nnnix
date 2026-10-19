@@ -14,6 +14,10 @@ extern const struct nn_lib *__nn_lib;    /* sdk/crt0.c: the fonts are the firmwa
 static uint8_t fb[GAME_W * GAME_H / 8];
 static int in = -1, lcd = -1;
 static unsigned held, pressed;
+/* The keys down, each its own: one action has several keys (arrows and
+ * WASD), and letting one go must not end the action another holds (R56). */
+static uint8_t keys_down[32];
+static uint16_t pad_down;
 static int any;                       /* some key or keypad key was pressed (game_over) */
 static uint32_t seed;
 
@@ -26,6 +30,8 @@ int game_open(const char *name)
     if (lcd < 0) { printf("%s: /dev/lcd: %s\n", name, errstr(lcd)); sys_close(in); return 1; }
     seed = sys_uptime() * 2654435761u + 1u;
     held = pressed = 0;
+    memset(keys_down, 0, sizeof keys_down);
+    pad_down = 0;
     return 0;
 }
 
@@ -35,14 +41,15 @@ void game_close(void)
     sys_close(in);
 }
 
-static unsigned action(const struct nn_input_event *e)
+static unsigned pad_action(unsigned code)
 {
-    if (e->type == NN_INPUT_PAD) {
-        static const uint8_t pad[10] = { 0, GAME_QUIT, GAME_UP, 0, GAME_LEFT, GAME_A, GAME_RIGHT, 0, GAME_DOWN, 0 };
-        return e->code < 10 ? pad[e->code] : 0;
-    }
-    if (e->type != NN_INPUT_KEY) return 0;
-    switch (e->code) {
+    static const uint8_t pad[10] = { 0, GAME_QUIT, GAME_UP, 0, GAME_LEFT, GAME_A, GAME_RIGHT, 0, GAME_DOWN, 0 };
+    return code < 10 ? pad[code] : 0;
+}
+
+static unsigned key_action(unsigned code)
+{
+    switch (code) {
     case NN_KEY_UP: case NN_KEY_A + 'w' - 'a': return GAME_UP;
     case NN_KEY_DOWN: case NN_KEY_A + 's' - 'a': return GAME_DOWN;
     case NN_KEY_LEFT: case NN_KEY_A: return GAME_LEFT;
@@ -53,16 +60,38 @@ static unsigned action(const struct nn_input_event *e)
     }
 }
 
+/* The actions of all the keys down now. */
+static unsigned held_actions(void)
+{
+    unsigned h = 0;
+    for (unsigned k = 0; k < 256; ++k)
+        if (keys_down[k >> 3] >> (k & 7) & 1) h |= key_action(k);
+    for (unsigned k = 1; k <= 9; ++k)
+        if (pad_down >> k & 1) h |= pad_action(k);
+    return h;
+}
+
 void game_poll(void)
 {
     struct nn_input_event ev[4];
     int n;
     while ((n = sys_read(in, ev, sizeof ev)) > 0)
         for (int i = 0; i < n / (int)sizeof ev[0]; ++i) {
-            unsigned a = action(&ev[i]);
-            if (ev[i].value && ev[i].type != NN_INPUT_MOUSE) any = 1;
-            if (ev[i].value) { held |= a; pressed |= a; }
-            else held &= ~a;
+            const struct nn_input_event *e = &ev[i];
+            unsigned a;
+            if (e->type == NN_INPUT_KEY) {
+                a = key_action(e->code);
+                if (e->value) keys_down[e->code >> 3] |= (uint8_t)(1u << (e->code & 7));
+                else keys_down[e->code >> 3] &= (uint8_t)~(1u << (e->code & 7));
+            } else if (e->type == NN_INPUT_PAD && e->code <= 9) {
+                a = pad_action(e->code);
+                if (e->value) pad_down |= (uint16_t)(1u << e->code);
+                else pad_down &= (uint16_t)~(1u << e->code);
+            } else {
+                continue;
+            }
+            if (e->value) { any = 1; pressed |= a; }
+            if (a) held = held_actions();
         }
 }
 

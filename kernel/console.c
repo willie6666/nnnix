@@ -248,14 +248,23 @@ void console_input(const uint8_t *bytes, int n)
 }
 
 /* The scrollback ring, while the console shell runs: a new one, empty, or
- * none. 0, or -1 when there is no memory for the new one (the old one stays). */
+ * none. 0, or -1 when there is no memory for the new one (the old one stays).
+ * The ring gets the size its buffer was allocated for, read once; a resize
+ * that another one overtook meanwhile installs nothing (review R48: two
+ * shells resizing at once installed one's size with the other's buffer). */
 static int history(int on)
 {
-    char *buf = on && hist_size ? kmalloc_high(hist_size) : 0;
-    if (on && hist_size && !buf) return -1;
+    uint32_t size = hist_size;
+    char *buf = on && size ? kmalloc_high(size) : 0;
+    if (on && size && !buf) return -1;
     mutex_lock(&lcd_lock);
+    if (on && size != hist_size) {                     /* overtaken: the newer size's ring stays */
+        mutex_unlock(&lcd_lock);
+        kfree(buf);
+        return 0;
+    }
     kfree(hist.buf);
-    scrollback_init(&hist, buf, hist_size);
+    scrollback_init(&hist, buf, size);
     if (view) { view = 0; redraw(0); flush(); }
     mutex_unlock(&lcd_lock);
     return 0;
@@ -349,7 +358,9 @@ int console_history(int bytes)
         uint32_t was = hist_size;
         hist_size = (uint32_t)bytes;
         if (shell_task && history(1)) {              /* a new ring, empty */
-            hist_size = was;
+            uint32_t s = irq_save();
+            if (hist_size == (uint32_t)bytes) hist_size = was;   /* unless another resize came since */
+            irq_restore(s);
             return SYS_ENOMEM;
         }
     }

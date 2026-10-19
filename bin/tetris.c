@@ -153,8 +153,11 @@ static unsigned play(void)
                 if (fits(&t)) { p = t; break; }
             }
         }
+        /* Down held: a step at once, then one every 40 ms; the deadline says
+         * when, also for the soft drop (review R58). */
         int soft = held & GAME_DOWN;
-        if (soft || (int32_t)(now - fall_at) >= 0) {
+        if (soft && (int32_t)(fall_at - now) > 40) fall_at = now;
+        if ((int32_t)(now - fall_at) >= 0) {
             fall_at = now + (soft ? 40u : level < 10 ? 700u - level * 60u : 100u);
             p.y++;
             if (fits(&p)) {

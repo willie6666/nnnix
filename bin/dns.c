@@ -95,10 +95,12 @@ int dns_resolve(const char *name, uint8_t ip[4])
     uint16_t id = (uint16_t)(sys_uptime() * 2654435761u >> 16);
     int qlen = fd >= 0 ? question(m, id, name) : 0;
     if (fd >= 0) e = qlen < 0 ? SYS_EINVAL : sys_connect(fd, &a);
-    for (int attempt = 0; !e && attempt < 3; ++attempt) {
+    if (!e) e = SYS_ETIMEDOUT;
+    /* Three tries, 2 s each: only a try that timed out leads to the next (R59). */
+    for (int attempt = 0; e == SYS_ETIMEDOUT && attempt < 3; ++attempt) {
         question(m, id, name);                         /* again: the buffer holds the last reply */
-        if ((e = sys_write(fd, m, (size_t)qlen)) < 0) break;
-        e = SYS_ETIMEDOUT;
+        int w = sys_write(fd, m, (size_t)qlen);
+        if (w < 0) { e = w; break; }
         for (uint32_t start = sys_uptime(); sys_uptime() - start < 2000u;) {
             struct nn_sockinfo i;
             sys_sockinfo(fd, &i);
@@ -108,7 +110,7 @@ int dns_resolve(const char *name, uint8_t ip[4])
                 continue;
             }
             int n = sys_read(fd, m, MSG);
-            if (n == SYS_EAGAIN) continue;             /* not from the server: dropped */
+            if (n == SYS_EAGAIN || n == SYS_EIO) continue;   /* not from the server, or lost: dropped */
             if (n < 0) { e = n; goto out; }
             if ((e = answer(m, n, id, ip)) <= 0) goto out;
             e = SYS_ETIMEDOUT;                     /* someone else's: keep waiting */

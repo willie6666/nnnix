@@ -209,7 +209,8 @@ def undo(p):
     failed = []
     for cmd in steps:
         r = sh(*cmd, check=False)
-        if r.returncode and 'No such file' not in r.stderr:
+        gone = 'No such file' in r.stderr or 'Cannot assign requested address' in r.stderr   # undone before
+        if r.returncode and not gone:
             failed.append(f'{" ".join(cmd)}: {r.stderr.strip()}')
     return failed
 
@@ -378,36 +379,55 @@ def serve(p, ready=None):
 # ---- the commands ----
 
 def tidy(state):
-    """Undo what a server that died left (under the lock)."""
+    """Undo what a server left (under the lock). The state file goes only once
+    everything is undone: otherwise it stays, with what failed, so `off` can
+    try again and `on` does not start over it (review R55)."""
     failed = undo(state)
-    STATE.unlink(missing_ok=True)
+    if failed:
+        state = dict(state, serving=False, undo_failed=failed)
+        save_state(state)
+    else:
+        STATE.unlink(missing_ok=True)
     return failed
 
 
+def preview(args):
+    """--dry-run, for `on` and `run` alike: what would be done, nothing done
+    (review R49: `run --dry-run` used to apply)."""
+    p = plan(args.iface)
+    state = load_state()
+    if state:
+        print(f'first, undo what the state file {STATE} records (pid {state.get("pid")})')
+    print(f'uplink: {", ".join(p["uplinks"])}; board cable: {p["iface"]}')
+    print('would run:')
+    apply(p, True)
+    print(f'and serve DHCP on {p["iface"]}, DNS on {HOST}:53 (to {resolver()})')
+    return 0
+
+
 def start(args, foreground):
+    if args.dry_run:
+        return preview(args)
     if foreground:
         return run_server(args)
     state = load_state()
     if server_running() or (state and is_server(state)):
         print(f'nnshare: already on (pid {state["pid"] if state else "?"}); "off" first')
         return 1
-    lock = None if args.dry_run else take_lock()
-    if not args.dry_run and lock is None:
+    lock = take_lock()
+    if lock is None:
         print('nnshare: another nnshare is starting or stopping; try again')
         return 1
     try:
-        if state and not args.dry_run:                  # a server that died: tidy up after it
-            tidy(state)
+        if state:                                       # a server that died: tidy up after it
+            failed = tidy(state)
+            if failed:
+                print('nnshare: could not undo what an earlier server left: ' + '; '.join(failed))
+                return 1
         p = plan(args.iface)
     finally:
-        if lock is not None:
-            os.close(lock)                              # the server takes it for itself
+        os.close(lock)                                  # the server takes it for itself
     print(f'uplink: {", ".join(p["uplinks"])}; board cable: {p["iface"]}')
-    if args.dry_run:
-        print('would run:')
-        apply(p, True)
-        print(f'and serve DHCP on {p["iface"]}, DNS on {HOST}:53 (to {resolver()})')
-        return 0
     with open(LOG, 'w') as out:
         child = subprocess.Popen([sys.executable, os.path.abspath(__file__), 'run', '--iface', args.iface,
                                   '--token', secrets.token_hex(8)],
@@ -429,6 +449,8 @@ def start(args, foreground):
 def run_server(args):
     """The server: holds the lock from before its first change to after its
     last undo, so no other nnshare changes anything meanwhile."""
+    if args.dry_run:                                    # start() previews instead; never apply for it
+        raise RuntimeError('run_server with --dry-run')
     lock = take_lock()
     if lock is None:
         log('nnshare: another nnshare is running, starting or stopping')
@@ -439,7 +461,10 @@ def run_server(args):
             if is_server(state):                        # one of the old kind, without the lock
                 log(f'nnshare: already on (pid {state["pid"]})')
                 return 1
-            tidy(state)
+            failed = tidy(state)
+            if failed:
+                log('nnshare: could not undo what an earlier server left: ' + '; '.join(failed))
+                return 1
         p = plan(args.iface)
         # How off and status know this process (is_server): its start time,
         # and the token `on` put on its command line ('' when run by hand).
@@ -459,7 +484,10 @@ def run_server(args):
             return_code = 0
         finally:
             failed = tidy(p)
-            log('stopped; changes undone' + (': but ' + '; '.join(failed) if failed else ''))
+            log('stopped; changes undone' if not failed else
+                'stopped; could not undo: ' + '; '.join(failed) + ' ("off" tries again)')
+            if failed:
+                return_code = 1
         return return_code
     finally:
         os.close(lock)
@@ -505,6 +533,8 @@ def status():
     state = load_state()
     if not state or not (server_running() or is_server(state)):
         print('nnshare: off' + (' (a stale state file: "off" tidies up)' if state else ''))
+        if state and state.get('undo_failed'):
+            print('nnshare: could not undo: ' + '; '.join(state['undo_failed']))
     else:
         print(f'nnshare: on (pid {state["pid"]}), {state["iface"]} shares {", ".join(state["uplinks"])}')
     if LOG.exists():

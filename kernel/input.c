@@ -33,6 +33,7 @@ static uint32_t mouse_reports;
 struct claim {
     struct input_queue q;
     struct waitq readers;
+    uint8_t buttons;                 /* the mouse's, as its last report had them */
 };
 static struct claim *claim;
 static uint16_t owner;               /* its pid */
@@ -57,9 +58,19 @@ static void queue(const struct nn_input_event *e)
     while ((t = waitq_pop(&claim->readers))) sched_wake(t, 0);
 }
 
+/* Interrupts off. After dropped events, the reader first gets what changed
+ * meanwhile (inputq_sync), from the state before the events at hand. */
+static void sync(void)
+{
+    if (!claim || !claim->q.resync) return;
+    struct input_state now = { kbd.prev, kbd.caps, claim->buttons, (uint16_t)(keys & 0x1ffu) };
+    inputq_sync(&claim->q, &now, now_ms());
+}
+
 static void deliver(const struct nn_input_event *e, int n)
 {
     uint32_t s = irq_save();
+    sync();
     for (int i = 0; i < n; ++i) queue(&e[i]);
     irq_restore(s);
 }
@@ -69,8 +80,9 @@ static void event(const struct ch9350_event *ev)
     switch (ev->type) {
     case CH9350_KEYBOARD: {
         uint8_t bytes[24];
-        struct nn_input_event e[16];
-        if (claim) deliver(e, input_key_events(kbd.prev, ev->data, kbd.caps, now_ms(), e, 16));
+        struct nn_input_event e[INPUT_KEY_EVENTS];
+        if (!input_report_valid(ev->data)) break;      /* rollover: not the keys' state (R52) */
+        if (claim) deliver(e, input_key_events(kbd.prev, ev->data, kbd.caps, now_ms(), e, INPUT_KEY_EVENTS));
         int n = kbd_report(&kbd, ev->data, jiffies, bytes, sizeof bytes);   /* the last report, Caps Lock, repeats */
         if (!claim) console_input(bytes, n);
         break;
@@ -78,14 +90,17 @@ static void event(const struct ch9350_event *ev)
     case CH9350_MOUSE: {
         mouse_reports++;
         struct nn_input_event e = { NN_INPUT_MOUSE, ev->data[0], ev->data[3], 0, (int8_t)ev->data[1], (int8_t)ev->data[2], now_ms() };
-        if (claim) deliver(&e, 1);
+        if (claim) { deliver(&e, 1); claim->buttons = ev->data[0]; }
         break;
     }
     case CH9350_REMOVED: {
+        /* Whatever was held is let go: keys, and mouse buttons (R66). */
         kprintf("ch9350: device removed\n");
-        struct nn_input_event e[16];
+        struct nn_input_event e[INPUT_KEY_EVENTS + 1];
         static const uint8_t none[8];
-        if (claim) deliver(e, input_key_events(kbd.prev, none, 0, now_ms(), e, 16));
+        int n = input_key_events(kbd.prev, none, 0, now_ms(), e, INPUT_KEY_EVENTS);
+        if (claim && claim->buttons) e[n++] = (struct nn_input_event){ NN_INPUT_MOUSE, 0, 0, 0, 0, 0, now_ms() };
+        if (claim) { deliver(e, n); claim->buttons = 0; }
         kbd = (struct kbd){ 0 };
         break;
     }
@@ -140,10 +155,10 @@ static void board_keys(void)
     uint16_t m = scan();
     if (m != seen) { seen = m; return; }          /* not settled yet */
     uint16_t was = keys;
+    struct nn_input_event e[9];
+    if (claim) deliver(e, input_pad_events(was & 0x1ffu, m & 0x1ffu, now_ms(), e, 9));   /* keys: still the state before */
     keys = m;
     if ((m & SW_INT) && !(was & SW_INT)) stop_holder();
-    struct nn_input_event e[9];
-    if (claim) deliver(e, input_pad_events(was & 0x1ffu, m & 0x1ffu, now_ms(), e, 9));
 }
 
 void input_inject_keys(uint16_t mask) { injected = mask & 0x3ffu; }
@@ -221,7 +236,7 @@ int input_read(void *buf, uint32_t n, int nonblock)
     for (;;) {
         if (!claim) { irq_restore(s); return 0; }      /* released under the reader */
         while (got < max && inputq_get(&claim->q, &out[got])) ++got;
-        if (got) break;
+        if (got) { sync(); break; }                    /* room again: catch up after a drop */
         if (nonblock) { irq_restore(s); return SYS_EAGAIN; }
         int r = sched_block_interruptible(&claim->readers, 0, s);
         if (r) return r;

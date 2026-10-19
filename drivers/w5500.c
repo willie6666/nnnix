@@ -70,11 +70,13 @@ static uint16_t r16_stable(uint16_t a, uint8_t b)
     while ((y = r16(a, b)) != x) x = y;
     return x;
 }
+/* 0 once the chip has taken the command (Sn_CR reads 0 again), -1 if the
+ * write failed or it did not within 100 ms. */
 static int command(int sn, uint8_t cmd)
 {
     if (w8(Sn_CR, SREG(sn), cmd)) return -1;
     uint32_t start = jiffies;
-    while (r8(Sn_CR, SREG(sn)) && jiffies - start < 100u) { }
+    while (r8(Sn_CR, SREG(sn))) if (jiffies - start >= 100u) return -1;
     return 0;
 }
 
@@ -214,23 +216,27 @@ uint16_t w5500_rx_available(int sn) { return r16_stable(Sn_RX_RSR, SREG(sn)); }
 uint16_t w5500_tx_free(int sn) { return r16_stable(Sn_TX_FSR, SREG(sn)); }
 
 /* A failed transfer takes nothing: the data stays for the next call. */
-uint16_t w5500_recv(int sn, void *buf, uint16_t n)
+int w5500_recv(int sn, void *buf, uint16_t n)
 {
     uint16_t avail = w5500_rx_available(sn), ptr;
     if (n > avail) n = avail;
-    if (!n || r16_checked(Sn_RX_RD, SREG(sn), &ptr)) return 0;
-    if (rd(ptr, SRX(sn), buf, n) ||                 /* chip wraps the offset itself */
-        w16(Sn_RX_RD, SREG(sn), (uint16_t)(ptr + n))) return 0;
-    command(sn, CR_RECV);
+    if (!n) return 0;
+    /* A failure from here on leaves the chip's read pointer unknown: the
+     * caller must not take what follows as the next bytes (review R50). */
+    if (r16_checked(Sn_RX_RD, SREG(sn), &ptr) ||
+        rd(ptr, SRX(sn), buf, n) ||                 /* chip wraps the offset itself */
+        w16(Sn_RX_RD, SREG(sn), (uint16_t)(ptr + n)) || command(sn, CR_RECV)) return -1;
     return n;
 }
 
-void w5500_skip(int sn, uint16_t n)
+int w5500_skip(int sn, uint16_t n)
 {
     uint16_t avail = w5500_rx_available(sn), ptr;
     if (n > avail) n = avail;
-    if (!n || r16_checked(Sn_RX_RD, SREG(sn), &ptr) || w16(Sn_RX_RD, SREG(sn), (uint16_t)(ptr + n))) return;
-    command(sn, CR_RECV);
+    if (!n) return 0;
+    if (r16_checked(Sn_RX_RD, SREG(sn), &ptr) || w16(Sn_RX_RD, SREG(sn), (uint16_t)(ptr + n)) ||
+        command(sn, CR_RECV)) return -1;
+    return 0;
 }
 
 int w5500_write(int sn, const void *buf, uint16_t n)

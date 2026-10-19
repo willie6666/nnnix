@@ -23,12 +23,19 @@ static void put(int at, int kind)
     else if (kind != EMPTY) game_fill(x, y, 4, 4, 1);
 }
 
-static void food(void)
+/* Food on an empty cell: 0, or -1 when there is none (the snake fills the
+ * board: it has won). A few random tries, then the next empty cell after
+ * the last try, so it always ends (review R57). */
+static int food(void)
 {
-    for (;;) {
-        int at = (int)(game_rand() % (W * H));
-        if (grid[at] == EMPTY) { put(at, FOOD); return; }
+    int at = 0;
+    for (int tries = 0; tries < 64; ++tries) {
+        at = (int)(game_rand() % (W * H));
+        if (grid[at] == EMPTY) { put(at, FOOD); return 0; }
     }
+    for (int k = 0; k < W * H; ++k, at = (at + 1) % (W * H))
+        if (grid[at] == EMPTY) { put(at, FOOD); return 0; }
+    return -1;
 }
 
 static int step(int at, int dir)
@@ -80,7 +87,7 @@ static unsigned play(unsigned best)
         }
         put(to, dir);
         head = to;
-        if (ate) food();
+        if (ate && food()) return score;              /* no room left: a full board ends the game */
     }
 }
 

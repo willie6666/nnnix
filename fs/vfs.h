@@ -15,6 +15,18 @@
  * with '/'. */
 #define VFS_FDS 6                    /* per task; 0-2 fall back to the terminal while unset */
 
+/* lseek's new position, the same rule for every file system: off from 0
+ * (SEEK_SET), cur (SEEK_CUR) or end (SEEK_END), within 0..INT32_MAX; else
+ * SYS_EINVAL, also for any other whence. Summed without signed overflow
+ * (review R63). */
+static inline int32_t vfs_seek_pos(uint32_t cur, uint32_t end, int32_t off, int whence)
+{
+    int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? (int64_t)cur : (int64_t)end;
+    if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) return SYS_EINVAL;
+    int64_t pos = base + off;
+    return pos < 0 || pos > INT32_MAX ? SYS_EINVAL : (int32_t)pos;
+}
+
 struct file;
 struct mount;
 

@@ -9,7 +9,8 @@ int net_recv(int sn, void *buf, uint16_t n, uint32_t timeout_ms)
 {
     uint32_t start = jiffies;
     for (;;) {
-        uint16_t got = w5500_recv(sn, buf, n);
+        int got = w5500_recv(sn, buf, n);
+        if (got < 0) return -EIO;
         if (got) return got;
         if (w5500_status(sn) != W5500_SOCK_ESTABLISHED) return 0;   /* peer closed, or reset */
         if (timeout_ms && jiffies - start >= timeout_ms) return -ETIMEDOUT;

@@ -41,6 +41,13 @@ int  wdt_set(int seconds);           /* watchdog: 0 off, 2, 7 or 26 s; -1 for ot
 int  wdt_seconds(void);
 void wdt_kick(void);
 
+#ifdef NNNIX_HOST                    /* host tests: one thread, no interrupts */
+static inline void irq_disable(void) { }
+static inline void irq_enable(void) { }
+static inline uint32_t irq_save(void) { return 0; }
+static inline void irq_restore(uint32_t primask) { (void)primask; }
+static inline int in_interrupt(void) { return 0; }
+#else
 static inline void irq_disable(void) { __asm volatile("cpsid i" ::: "memory"); }
 static inline void irq_enable(void) { __asm volatile("cpsie i" ::: "memory"); }
 
@@ -61,6 +68,7 @@ static inline int in_interrupt(void)
     __asm volatile("mrs %0, ipsr" : "=r"(ipsr));
     return ipsr != 0;
 }
+#endif
 
 /* Context switching (switch.c). Tasks run in thread mode on PSP; handlers use MSP. */
 void arch_sched_init(void);                       /* exception priorities */

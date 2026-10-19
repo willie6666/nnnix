@@ -108,10 +108,10 @@ static int d_close(struct file *f)
 static int d_lseek(struct file *f, int32_t off, int whence)
 {
     if ((uintptr_t)f->priv != DEV_LCD) return SYS_EINVAL;
-    int32_t base = whence == SEEK_CUR ? (int32_t)f->pos : whence == SEEK_END ? (int32_t)LCD_FRAME : 0;
-    if (whence > SEEK_END || base + off < 0) return SYS_EINVAL;
-    f->pos = (uint32_t)(base + off);
-    return (int)f->pos;
+    int32_t pos = vfs_seek_pos(f->pos, LCD_FRAME, off, whence);
+    if (pos < 0) return pos;
+    f->pos = (uint32_t)pos;
+    return pos;
 }
 
 static int d_readdir(struct file *f, struct nn_dirent *d)

@@ -115,7 +115,7 @@ test: build/nnnix.bin programs sdk
 
 HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty build/host/test_console build/host/test_shparse build/host/test_http \
              build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs build/host/test_boot build/host/test_nnv build/host/test_xip build/host/test_scrollback \
-             build/host/test_url build/host/test_spi build/host/test_inputev build/host/test_audio
+             build/host/test_url build/host/test_spi build/host/test_inputev build/host/test_audio build/host/test_socket build/host/test_dns build/host/test_wget
 build/host/test_lib: tests/host/test_lib.c lib/fmt.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin $^ -o $@
@@ -153,6 +153,16 @@ build/host/sim_%: tests/host/game_sim.c bin/%.c bin/game.c lib/fmt.c drivers/fon
 build/host/test_inputev: tests/host/test_inputev.c kernel/inputev.c drivers/hidkey.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_socket: tests/host/test_socket.c net/socket.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+# -no-pie: the program's sys_alloc passes pointers through 32 bits, as on the board.
+build/host/test_dns: tests/host/test_dns.c bin/dns.c lib/string.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -no-pie -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_wget: tests/host/test_wget.c bin/wget.c bin/url.c bin/dns.c lib/string.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -no-pie -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_spi: tests/host/test_spi.c drivers/spi.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
@@ -191,6 +201,7 @@ host-test: $(HOST_TESTS) build/bin/wget.elf $(GAMES:%=build/host/sim_%)
 	@echo "== tests/host/test_mknxe.py"; $(PYTHON) tests/host/test_mknxe.py build/bin/wget.elf
 	@echo "== tests/host/test_games.py"; $(PYTHON) tests/host/test_games.py
 	@echo "== tests/host/test_nnscreen.py"; $(PYTHON) tests/host/test_nnscreen.py
+	@echo "== tests/host/test_nnshare.py"; $(PYTHON) tests/host/test_nnshare.py
 
 size: build/nnnix.elf
 	$(SIZE) -A $<

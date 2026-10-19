@@ -24,7 +24,9 @@ void kfree(void *p) { free(p); }
 void kprintf(const char *fmt, ...) { (void)fmt; }
 void ch376_lock(void) { }
 void ch376_unlock(void) { }
-int ch376_mount(void) { cur = -1; return 0; }  /* RESET_ALL: the chip's open file is gone */
+static int mounts, chip_mounted = 1;   /* the chip forgets its mount when its power goes */
+static uint8_t enum_fail;              /* a status the listing gives instead (0: none) */
+int ch376_mount(void) { cur = -1; mounts++; chip_mounted = 1; return 0; }  /* RESET_ALL: the chip's open file is gone */
 
 static int find(const char *path)
 {
@@ -47,6 +49,7 @@ uint8_t ch376_open(const char *name)
 {
     ++commands;
     enum_at = -1;
+    if (!chip_mounted) return CH376_TIMEOUT;     /* no disk: nothing opens */
     char p[NN_PATH_MAX * 2];
     full(name, p);
     cur = -1;
@@ -110,8 +113,13 @@ static uint8_t enum_from(int i)
     enum_at = i < 32 ? i : -1;
     return enum_at >= 0 ? CH376_ENTRY_READY : CH376_MISS_FILE;
 }
-uint8_t ch376_enum_first(const char *pattern) { (void)pattern; ++commands; return enum_from(0); }
-uint8_t ch376_enum_next(void) { ++commands; return enum_at < 0 ? CH376_MISS_FILE : enum_from(enum_at + 1); }
+uint8_t ch376_enum_first(const char *pattern) { (void)pattern; ++commands; return enum_fail ? enum_fail : enum_from(0); }
+uint8_t ch376_enum_next(void)
+{
+    ++commands;
+    if (enum_fail) return enum_fail;
+    return enum_at < 0 ? CH376_MISS_FILE : enum_from(enum_at + 1);
+}
 int ch376_read_entry(uint8_t entry[32])
 {
     ++commands;
@@ -232,6 +240,52 @@ int main(void)
     }
     CHECK(!strcmp(seen, "f0.txt f1.txt f2.txt f3.txt f4.txt f5.txt f6.txt f7.txt f8.txt f9.txt "));
     CHECK_EQ_INT(usbfs_ops.close(&b), 0);
+    CHECK_EQ_INT(usbfs_ops.close(&a), 0);
+
+    /* R62: a listing that fails is an error, not the end of the directory;
+     * and rmdir does not take it for an empty directory. */
+    CHECK_EQ_INT(open_file("/L", O_RDONLY, &a), 0);
+    enum_fail = CH376_TIMEOUT;
+    CHECK_EQ_INT(usbfs_ops.readdir(&a, &de), SYS_EIO);
+    CHECK_EQ_INT(usbfs_ops.remove(&usb, "/L"), SYS_EIO);
+    enum_fail = 0;
+    CHECK_EQ_INT(usbfs_ops.readdir(&a, &de), 1);
+    CHECK_EQ_INT(usbfs_ops.close(&a), 0);
+    CHECK_EQ_INT(usbfs_ops.remove(&usb, "/L"), SYS_ENOTEMPTY);
+
+    /* R63: seeks are checked without signed overflow; unknown whence refused. */
+    CHECK_EQ_INT(open_file("/LOG.TXT", O_RDONLY, &a), 0);
+    CHECK_EQ_INT(usbfs_ops.lseek(&a, 2, SEEK_SET), 2);
+    CHECK_EQ_INT(usbfs_ops.lseek(&a, INT32_MAX, SEEK_CUR), SYS_EINVAL);
+    CHECK_EQ_INT(usbfs_ops.lseek(&a, INT32_MIN, SEEK_CUR), SYS_EINVAL);
+    CHECK_EQ_INT(usbfs_ops.lseek(&a, INT32_MAX, SEEK_END), SYS_EINVAL);
+    CHECK_EQ_INT(usbfs_ops.lseek(&a, -1, SEEK_SET), SYS_EINVAL);
+    CHECK_EQ_INT(usbfs_ops.lseek(&a, 0, 3), SYS_EINVAL);
+    CHECK_EQ_INT(usbfs_ops.lseek(&a, 0, -1), SYS_EINVAL);
+    CHECK_EQ_INT(usbfs_ops.lseek(&a, 100, SEEK_SET), 3);       /* no holes: the end */
+    CHECK_EQ_INT(usbfs_ops.lseek(&a, -1, SEEK_END), 2);
+    CHECK_EQ_INT(vfs_seek_pos(0, 0, INT32_MAX, SEEK_SET), INT32_MAX);
+    CHECK_EQ_INT(vfs_seek_pos(UINT32_MAX, 0, INT32_MIN, SEEK_CUR), INT32_MAX);
+    CHECK_EQ_INT(vfs_seek_pos(UINT32_MAX, 0, -1, SEEK_CUR), SYS_EINVAL);           /* above INT32_MAX */
+
+    /* R61: the module loses its power with files closed, and with one open
+     * and written: the next use mounts again; the old handle fails, its
+     * close reports the data that may be lost; new opens work. */
+    CHECK_EQ_INT(open_file("/OLD.TXT", O_WRONLY | O_CREAT, &b), 0);
+    CHECK_EQ_INT(usbfs_ops.write(&b, "xy", 2), 2);
+    int before = mounts;
+    modules.ch376 = 0; chip_mounted = 0; cur = -1;                         /* power off */
+    CHECK_EQ_INT(open_file("/LOG.TXT", O_RDONLY, &a), SYS_ENODEV);
+    modules.ch376 = 2;                                                       /* power on: a new number */
+    CHECK_EQ_INT(open_file("/LOG.TXT", O_RDONLY, &a), 0);
+    CHECK_EQ_INT(mounts, before + 1);
+    CHECK_EQ_INT(usbfs_ops.read(&a, buf, sizeof buf), 3);
+    CHECK_EQ_INT(usbfs_ops.close(&a), 0);
+    CHECK_EQ_INT(usbfs_ops.write(&b, "z", 1), SYS_EIO);           /* opened before: fails */
+    CHECK_EQ_INT(usbfs_ops.close(&b), SYS_EIO);                   /* its data may be lost */
+    modules.ch376 = 3; chip_mounted = 0; cur = -1;                /* off and on between two uses */
+    CHECK_EQ_INT(open_file("/LOG.TXT", O_RDONLY, &a), 0);
+    CHECK_EQ_INT(mounts, before + 2);
     CHECK_EQ_INT(usbfs_ops.close(&a), 0);
     return check_summary("test_usbfs");
 }

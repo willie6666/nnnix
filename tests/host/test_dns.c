@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* bin/dns.c against a scripted server and a clock of its own (review R59):
+/* lib/dns.c against a scripted server and a clock of its own (review R59):
  * three queries 2 s apart when nothing answers, an answer to the second
  * query after the first was lost, a lost datagram (EIO) not ending the
  * wait, NXDOMAIN at once. */
 #include <stdint.h>
 #include <string.h>
-#include "../../bin/dns.h"
+#include "../../lib/dns.h"
 #include "../../lib/sys.h"
 #include "check.h"
 

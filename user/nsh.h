@@ -2,7 +2,7 @@
 #ifndef NNNIX_NSH_H
 #define NNNIX_NSH_H
 
-/* Stack of a shell task: measured peak 840 B (2026-10-16, whole test suite)
+/* Stack of a shell task: measured peak 952 B (2026-10-19, script arguments)
  * plus the 128-byte red zone, plus room. */
 #define NSH_STACK 1152u
 

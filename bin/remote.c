@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* remote: the board as a small screen and keyboard for a computer.
- *   remote [-v] [PORT]
- * Waits for one TCP connection on PORT (default 1234), shows the NNV stream
+ *   remote [-v] IP PORT
+ * Connects to the computer at IP:PORT, shows the NNV stream
  * that arrives on the LCD as it comes (tools/nnscreen.py: the computer's
  * screen), and sends the keyboard, mouse and keypad back on the same
  * connection (/dev/input events, 8 bytes each, for tools/nninput.py):
  *
- *   computer: nnscreen.py | nc BOARD 1234 | nninput.py
+ *   computer: python3 tools/nnremote.py 1234
  *
  * Frames show when they have come, whatever time per frame the header gives;
  * sound records are skipped. While it runs the keyboard types nothing into the
@@ -23,7 +23,7 @@
 #include "../lib/sys.h"
 #include "../lib/nnv.h"
 
-#define PORT 1234u
+#define CONNECT_MS 10000u
 #define BUF 128u                             /* one socket read */
 
 enum { HEADER, RECORD, DATA };
@@ -156,26 +156,31 @@ static int show(struct remote *r, int fd, int input)
     }
 }
 
-static int run(struct remote *r, uint16_t port, int verbose)
+static int run(struct remote *r, const struct nn_sockaddr *addr, int verbose)
 {
     int fd = sys_socket(NN_SOCK_TCP);
     if (fd < 0) { printf("remote: %s\n", errstr(fd)); return 1; }
-    int rc = 1, e = sys_listen(fd, port), input = -1;
-    if (e) { printf("remote: port %u: %s\n", port, errstr(e)); goto out; }
-    printf("remote: waiting on port %u\n", port);
+    int rc = 1, e = sys_connect(fd, addr), input = -1;
+    if (e) { printf("remote: connect: %s\n", errstr(e)); goto out; }
+    printf("remote: connecting to %u.%u.%u.%u:%u\n",
+           addr->ip[0], addr->ip[1], addr->ip[2], addr->ip[3], addr->port);
     struct nn_sockinfo i;
-    for (;;) {
-        sys_sockinfo(fd, &i);
+    for (uint32_t start = sys_uptime();;) {
+        e = sys_sockinfo(fd, &i);
+        if (e) { printf("remote: socket: %s\n", errstr(e)); goto out; }
         if (i.state == NN_SS_ESTABLISHED || i.state == NN_SS_CLOSE_WAIT) break;
-        if (i.state == NN_SS_CLOSED) { printf("remote: the connection failed\n"); goto out; }
+        if (i.state == NN_SS_CLOSED || sys_uptime() - start >= CONNECT_MS) {
+            printf("remote: connection refused or timed out\n");
+            goto out;
+        }
         if (nn_interrupted()) { rc = 130; goto out; }
         sys_sleep(20);
     }
-    printf("remote: %u.%u.%u.%u connected; SW_INT ends\n", i.peer[0], i.peer[1], i.peer[2], i.peer[3]);
     r->lcd = sys_open("/dev/lcd", O_WRONLY);
     if (r->lcd < 0) { printf("remote: /dev/lcd: %s\n", errstr(r->lcd)); goto out; }
     input = sys_open("/dev/input", O_RDONLY | O_NONBLOCK);
     if (input < 0) { printf("remote: /dev/input: %s\n", errstr(input)); goto out; }
+    printf("remote: connected; SW_INT ends\n");
     uint32_t start = sys_uptime();
     rc = show(r, fd, input);
     uint32_t took = sys_uptime() - start;
@@ -193,28 +198,51 @@ out:
     return rc;
 }
 
+/* Numeric IPv4 only, as for nc; reject incomplete addresses and overflow. */
+static int parse_ip(const char *s, uint8_t ip[4])
+{
+    for (int i = 0; i < 4; ++i) {
+        unsigned v = 0, digits = 0;
+        while (*s >= '0' && *s <= '9' && digits < 3) {
+            v = v * 10u + (unsigned)(*s++ - '0');
+            ++digits;
+        }
+        if (!digits || v > 255 || *s != (i < 3 ? '.' : 0)) return -1;
+        ip[i] = (uint8_t)v;
+        if (i < 3) ++s;
+    }
+    return 0;
+}
+
 int cmd_remote(int argc, char **argv)
 {
-    int verbose = 0, bad = 0;
-    uint32_t port = PORT;
+    int verbose = 0, count = 0, bad = 0;
+    const char *args[2];
+    struct nn_sockaddr addr = { .port = 0 };
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-v")) { verbose = 1; continue; }
-        uint32_t v = 0;
-        const char *s = argv[i];
-        for (; *s >= '0' && *s <= '9' && v < 65536u; ++s) v = v * 10u + (uint32_t)(*s - '0');
-        if (*s || s == argv[i] || !v || v > 65535u) bad = 1;
-        port = v;
+        if (count == 2) { bad = 1; break; }
+        args[count++] = argv[i];
     }
-    if (bad) {
-        printf("usage: remote [-v] [PORT]   (default port %u; on the computer: nnscreen.py | nc BOARD PORT | nninput.py)\n", PORT);
+    uint32_t port = 0;
+    if (count == 2) {
+        bad |= parse_ip(args[0], addr.ip) != 0;
+        const char *s = args[1];
+        for (; *s >= '0' && *s <= '9' && port < 65536u; ++s)
+            port = port * 10u + (uint32_t)(*s - '0');
+        bad |= *s || s == args[1] || !port || port > 65535u;
+    }
+    if (bad || count != 2) {
+        printf("usage: remote [-v] IP PORT   (computer: python3 tools/nnremote.py PORT)\n");
         return 2;
     }
+    addr.port = (uint16_t)port;
     struct remote *r = sys_alloc(sizeof *r);
     if (!r) { printf("remote: %s\n", errstr(SYS_ENOMEM)); return 1; }
     memset(r, 0, sizeof *r);
     r->lcd = -1;
     (void)nn_interrupted();
-    int rc = run(r, (uint16_t)port, verbose);
+    int rc = run(r, &addr, verbose);
     sys_free(r);
     return rc;
 }

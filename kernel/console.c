@@ -278,6 +278,8 @@ static int console_getc(void *ctx, uint32_t timeout_ms)
     (void)ctx;
     uint32_t start = jiffies;
     for (;;) {
+        if (task_self()->killed || mode == CONSOLE_OFF) return -1;
+        if (tty0.interrupt_pending) return TTY_TIMEOUT;
         uint32_t s = irq_save();
         if (tail != head) {
             int c = queue[tail++ % INPUT_QUEUE];
@@ -285,8 +287,6 @@ static int console_getc(void *ctx, uint32_t timeout_ms)
             return c;
         }
         irq_restore(s);
-        /* A killed program sees end of input; so does the shell when the console is turned off. */
-        if (task_self()->killed || mode == CONSOLE_OFF) return -1;
         uint32_t wait = 200;
         if (timeout_ms) {
             uint32_t waited = jiffies - start;
@@ -300,6 +300,7 @@ static int console_getc(void *ctx, uint32_t timeout_ms)
 static int console_poll_byte(void *ctx)
 {
     (void)ctx;
+    if (task_self()->killed || mode == CONSOLE_OFF) return TTY_HANGUP;
     uint32_t s = irq_save();
     int c = tail != head ? queue[tail++ % INPUT_QUEUE] : -1;
     irq_restore(s);

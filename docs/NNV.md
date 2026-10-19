@@ -10,7 +10,7 @@ sound for the onboard buzzer. A picture is a video of one frame. The pieces:
 | `/dev/audio`, `/dev/adpcm` | In the kernel: the buzzer, playing 8-bit samples at 8 kHz, or NNV sound records that its timer interrupt decodes as it plays them (`drivers/audio.c`) |
 | `play` (`bin/play.c`) | On the board: the program `/bin/play`, which shows an NNV file, with its sound if asked; its code runs from flash (APROM), so it takes about 2.6 KiB of RAM while it plays, its stack and its buffers |
 | `lib/nnv.h` | The format and its decoders, shared by `play` and the host test |
-| `tools/nnscreen.py`, `tools/nninput.py`, `remote` | On a GNOME computer: its screen as a live NNV stream, and the board's keyboard and mouse working it; on the board, `/bin/remote` (`bin/remote.c`) shows the one and sends the other (see "This computer's screen on the LCD") |
+| `tools/nnremote.py`, `tools/nnscreen.py`, `tools/nninput.py`, `remote` | On a GNOME computer: its screen as a live NNV stream, and the board's keyboard and mouse working it; on the board, `/bin/remote` (`bin/remote.c`) shows the one and sends the other (see "This computer's screen on the LCD") |
 
 ## Quick start
 
@@ -64,12 +64,27 @@ desktop. `tools/nnscreen.py` turns the computer's screen into a live NNV stream
 on its standard output; `remote` (`bin/remote.c`) on the board shows that
 stream and sends the board's keyboard, mouse and keypad back on the same
 connection; `tools/nninput.py` takes them from its standard input and works
-the computer with them:
+the computer with them. `tools/nnremote.py` runs both tools on one TCP
+connection and listens on the computer first:
 
+```sh
+# On the GNOME computer, in its desktop session (without sudo):
+python3 tools/nnremote.py 1234
+# Then on the board (use the computer's reachable IPv4 address):
+remote 198.18.0.1 1234
 ```
-nnnix$ remote                                     # on the board, then on the computer:
-$ python3 tools/nnscreen.py | nc 198.18.0.2 1234 | python3 tools/nninput.py
-```
+
+The computer listens on TCP port 1234 (replace it in both commands to choose
+another port). `--bind 198.18.0.1` limits listening to that local address;
+the default is all local IPv4 addresses. It serves one board at a time and
+waits for another connection when the board disconnects. Ctrl-C stops the
+server; `--once` exits after one session. `--monitor NAME`, `--speed X` and
+`-v` select the monitor, pointer speed and input logging. Pass screen options
+after `--`, for example `python3 tools/nnremote.py 1234 -- --fps 15 --invert`.
+Capture and input start only after a board connects, and each connection has
+its own temporary pointer/zoom state file. Allow the chosen port only from
+trusted peers: there is no authentication or encryption, and a connected peer
+can see the desktop and control its keyboard and mouse.
 
 The board's keypad zooms, at the mouse pointer: **2** closer, **8** farther,
 **5** the whole screen again. The steps are 8, 4, 2 and 1 screen pixels per
@@ -77,21 +92,45 @@ LCD pixel (at 2, a 256x128 part of the screen, text can be read; at 1 it is
 sharp); a new step keeps the point under the pointer where it was on the LCD,
 and the zoomed part moves along once the pointer comes near its edge.
 
-`remote [-v] [PORT]` waits for one connection on PORT (default 1234). Once
+Press the board's **1** key to toggle the mouse mode (the board's nine-key
+keypad, not the USB keyboard):
+
+- **Absolute** (default): the ordinary desktop pointer, with the synthetic
+  arrow on the LCD and zoom following it.
+- **Relative** (**R** at the LCD's top right): send mouse deltas so a game or
+  3D application can lock the pointer and keep receiving movement without a
+  screen-edge limit. The synthetic arrow is hidden and zoom stays centred on
+  the monitor. The buttons and wheel still work. Press 1 again to return to
+  absolute motion; its remembered desktop position resumes on the next move.
+
+The application controls its own pointer lock: use its usual Escape/menu
+action to release that lock when returning to the desktop. The board's mode
+switch changes the events sent; it does not send Escape to the application.
+The existing **2 / 8 / 5** zoom controls and **SW_INT** exit button still work.
+To start each connection in relative mode, run
+`python3 tools/nnremote.py 1234 --relative`. This needs updated host scripts
+only: the board's `remote` already forwards keypad events. Restart the host
+server and reconnect after updating a running session.
+
+`remote [-v] IP PORT` connects to the computer (numeric IPv4 and a port from
+1 to 65535). A refused or stalled connection ends with status 1 within about
+10 seconds; Ctrl-C cancels the attempt. Once
 connected it holds `/dev/lcd` and `/dev/input` (the keyboard types nothing into
 the console meanwhile), shows each frame as soon as it has come (whatever time
 per frame the header gives; sound records are skipped) and sends each input
 event (8 bytes, `struct nn_input_event` in `lib/sys.h`) as it comes. The
 board's SW_INT button ends it (Ctrl-C too, from a telnet session); so does the
-computer closing the connection. Either way the pipeline on the computer ends
-too, letting go of any key still held. The exit status is 0 when the stream
+computer closing the connection. Either way the capture and input processes
+on the computer end too, letting go of any key still held; the server then
+waits for the next connection. The exit status is 0 when the stream
 ended between records, 1 when it was cut short inside one, damaged, or the
 input or the display failed, and 130 for SW_INT or Ctrl-C. `-v` prints the
 frames, the bytes and the events at the end. It is one task: it reads the socket and polls
 `/dev/input` in the same loop and decodes the stream a piece at a time into its
 one frame, so it takes about 1.2 KiB of RAM besides its stack, less than
 `nc -l 1234 | play` (two tasks and a pipe). That also works, to only watch:
-`nnscreen.py | nc 198.18.0.2 1234` on the computer.
+`nnscreen.py | nc 198.18.0.2 1234` on the computer with `nc -l 1234 | play`
+on the board (this receive-only alternative still listens on the board).
 
 How the computer's side works:
 
@@ -102,19 +141,34 @@ How the computer's side works:
   GNOME shows its screen sharing indicator while they run, and stopping the
   sharing there ends them.
 - `nnscreen.py` takes the newest picture `--fps` times a second (default 10),
-  has GStreamer scale it to about twice the size the LCD shows of it (changed
-  as the zoom changes), averages that down, stretches the grey levels (a dark
+  requests linear BGRx DMA-BUF images from PipeWire, averages them on the CPU
+  to about twice the size the LCD shows (changed as the zoom changes), then
+  averages that down, stretches the grey levels (a dark
   theme's greys would otherwise all turn into the same sparse dots;
   `--no-levels` keeps them) and dithers it (Bayer by default, which keeps
   still parts still). The header gives no frame count and no time per frame,
   and a frame goes out only when the picture changed, so nothing piles up
   between the computer and the board.
+- Fullscreen video: the DMA-BUF source also captures Mutter's direct-scanout
+  path after a browser hides its playback controls/cursor. The old software
+  source could freeze there until mouse movement caused compositing again.
+  Software scaling is done after mapping/copying the DMA-BUF, so GStreamer's
+  `videoscale` cannot negotiate the source back to shared memory. The source's
+  `keepalive-time` only repeats the last image; it cannot fix a frozen capture.
+  If DMA-BUF negotiation or mapping fails at startup, the tool prints a message
+  and falls back to the old shared-memory/software pipeline. That fallback
+  retains the fullscreen limitation on affected desktops. No GNOME settings,
+  system-wide scanout flag or simulated pointer motion is used.
 - Options: `--zoom N` starts zoomed; `--area X,Y,W,H` shows that part of the
   screen instead of the whole; `--invert` suits dark themes; `--fit`,
   `--dither` and `--threshold` are as in `mknnv.py convert`. Into a file (`-o
   FILE` or a redirection) it records an ordinary timed video instead.
 - `nninput.py` replays keys as the same keys (HID usages to Linux key codes;
   the computer's keyboard layout applies), buttons and the wheel as they are.
+  It only sends keyboard state changes accepted by this session: an initial
+  release of the Enter used to start `remote`, and duplicate presses/releases,
+  are ignored. This avoids Mutter's `Invalid key event` on connection. Genuine
+  input failures now end with status 1, which `nnremote.py` reports.
   It keeps the pointer's position itself (starting in the middle; `--speed`
   pointer pixels per mouse count, default 2) and moves the pointer there,
   because GNOME tells no program where the pointer is. It writes the position
@@ -122,16 +176,22 @@ How the computer's side works:
   the pointer as a small arrow (GNOME's own is a dot or nothing at this size)
   and shows the part around it. A mouse used on the computer meanwhile makes
   the pointer jump back at the board's next move.
+- Relative mode uses Mutter's `NotifyPointerMotionRelative(dx, dy)` with the
+  same `--speed` multiplier as absolute motion, without clamping movement to
+  monitor coordinates. The mode travels with the preview state in its fourth
+  column; three-column state files are still read as absolute mode. The API
+  signature was checked against the running desktop and
+  [Mutter's interface definition](https://github.com/GNOME/mutter/blob/main/data/dbus-interfaces/org.gnome.Mutter.RemoteDesktop.xml).
 - Whoever can write to `nninput.py`'s standard input controls the computer:
   feed it only from the board.
 
-Measured on the board, `remote -v` with the LCD console's shell and a telnet
+Measured with the original board-listening transport, `remote -v` with the LCD console's shell and a telnet
 session logged in: full 1 KiB raw frames as fast as the computer sends them go
 through at about 120 frames a second (a 10 fps desktop needs far less: mostly
 10-400 byte deltas, and nothing while the screen stays the same), lowest free
 RAM 2848 B (1768 B with `nc -l 1234 | play` the same way). An event reaches
-the computer's pointer within about 25 ms. On the computer (RK3588)
-`nnscreen.py` takes about 45% of one core at 10 fps, most of it fetching and
+the computer's pointer within about 25 ms. With the original shared-memory
+capture on the computer (RK3588), `nnscreen.py` took about 45% of one core at 10 fps, most of it fetching and
 scaling the pictures in GStreamer.
 
 With the LCD console's shell logged in as well, the 2 KiB sound buffer does

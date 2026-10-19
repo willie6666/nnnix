@@ -6,7 +6,8 @@
  * interrupted by a kill. A UDP read returns one datagram. On a listening UDP
  * socket its sender becomes the destination of following writes; a connected
  * one keeps its destination and drops datagrams from anyone else (the read
- * then returns SYS_EAGAIN if nothing else is waiting). */
+ * then returns SYS_EAGAIN if nothing else is waiting). ICMP uses IPRAW with
+ * the same datagram semantics and a six-byte sender/length header. */
 #include "net.h"
 #include "../fs/vfs.h"
 #include "../kernel/kmem.h"
@@ -18,11 +19,12 @@
 struct sock {
     struct mutex wlock, rlock;       /* a parent and its children may share the socket */
     uint8_t sn, proto, has_peer, connected;
-    uint16_t left;                   /* UDP: unread bytes of the current datagram */
+    uint16_t left;                   /* UDP/IPRAW: unread bytes of the current datagram */
     uint8_t peer[4];
     uint16_t peer_port;
 };
 
+static uint8_t icmp_in_use;           /* ICMP cannot be demultiplexed between hardware sockets */
 static uint8_t in_use;               /* bit per program socket */
 static uint16_t next_port;
 
@@ -51,26 +53,32 @@ static int tcp_read(struct sock *s, void *buf, uint32_t n)
     }
 }
 
-/* After a failed transfer the chip's read pointer is unknown, so the next
- * bytes could be anything (a header taken for data, review R50): the socket
- * starts again on its port, dropping what it had received, and the read fails. */
-static int udp_resync(struct sock *s)
+static uint8_t datagram_mode(struct sock *s) { return s->proto == NN_SOCK_ICMP ? W5500_MODE_ICMP : W5500_MODE_UDP; }
+static uint8_t datagram_state(struct sock *s) { return s->proto == NN_SOCK_ICMP ? W5500_SOCK_IPRAW : W5500_SOCK_UDP; }
+
+/* After a failed transfer the read pointer is unknown: reopen in the same
+ * mode, dropping queued packets so header bytes cannot be returned as data. */
+static int datagram_resync(struct sock *s)
 {
     s->left = 0;
-    (void)w5500_open(s->sn, W5500_MODE_UDP, w5500_port(s->sn));
+    (void)w5500_open(s->sn, datagram_mode(s), w5500_port(s->sn));
     return SYS_EIO;
 }
 
-static int udp_read(struct sock *s, void *buf, uint32_t n)
+static int datagram_read(struct sock *s, void *buf, uint32_t n)
 {
+    int raw = s->proto == NN_SOCK_ICMP;
+    uint16_t header = raw ? 6 : 8;
     while (!s->left) {
-        if (w5500_rx_available(s->sn) >= 8) {
+        if (w5500_rx_available(s->sn) >= header) {
             uint8_t h[8];
-            if (w5500_recv(s->sn, h, 8) != 8) return udp_resync(s);   /* sender address, port, length */
-            uint16_t port = (uint16_t)(h[4] << 8 | h[5]), len = (uint16_t)(h[6] << 8 | h[7]);
+            if (w5500_recv(s->sn, h, header) != header) return datagram_resync(s);   /* sender address, port, length */
+            uint16_t port = raw ? 0 : (uint16_t)(h[4] << 8 | h[5]);
+            uint16_t len = raw ? (uint16_t)(h[4] << 8 | h[5]) : (uint16_t)(h[6] << 8 | h[7]);
+            if (len > w5500_rx_available(s->sn)) return datagram_resync(s);
             if (s->connected && (memcmp(s->peer, h, 4) || s->peer_port != port)) {
-                if (w5500_skip(s->sn, len)) return udp_resync(s);   /* not from the peer */
-                if (w5500_rx_available(s->sn) < 8) return SYS_EAGAIN;
+                if (w5500_skip(s->sn, len)) return datagram_resync(s);   /* not from the peer */
+                if (w5500_rx_available(s->sn) < header) return SYS_EAGAIN;
                 continue;
             }
             if (!s->connected) {
@@ -82,15 +90,15 @@ static int udp_read(struct sock *s, void *buf, uint32_t n)
             if (!s->left) return 0;
             break;
         }
-        if (w5500_status(s->sn) != W5500_SOCK_UDP) return SYS_EBADF;
+        if (w5500_status(s->sn) != datagram_state(s)) return SYS_EBADF;
         if (killed()) return SYS_EINTR;
         w5500_wait(s->sn, 100);
     }
     uint16_t k = n < s->left ? (uint16_t)n : s->left;
     int got = w5500_recv(s->sn, buf, k);
-    if (got != k) return udp_resync(s);            /* the datagram is all there: less is a failure */
+    if (got != k) return datagram_resync(s);            /* the datagram is all there: less is a failure */
     s->left = (uint16_t)(s->left - got);
-    if (s->left && w5500_skip(s->sn, s->left)) return udp_resync(s);
+    if (s->left && w5500_skip(s->sn, s->left)) return datagram_resync(s);
     s->left = 0;
     return got;
 }
@@ -101,26 +109,26 @@ static int s_read(struct file *f, void *buf, uint32_t n)
 {
     struct sock *s = f->priv;
     if (mutex_lock_killable(&s->rlock)) return SYS_EINTR;
-    int r = s->proto == NN_SOCK_TCP ? tcp_read(s, buf, n) : udp_read(s, buf, n);
+    int r = s->proto == NN_SOCK_TCP ? tcp_read(s, buf, n) : datagram_read(s, buf, n);
     mutex_unlock(&s->rlock);
     return r;
 }
 
-static int udp_write(struct sock *s, const void *buf, uint32_t n);
+static int datagram_write(struct sock *s, const void *buf, uint32_t n);
 
 static int s_write(struct file *f, const void *buf, uint32_t n)
 {
     struct sock *s = f->priv;
     mutex_lock(&s->wlock);
-    int r = s->proto == NN_SOCK_TCP ? (net_send(s->sn, buf, n) < 0 ? SYS_EPIPE : (int)n) : udp_write(s, buf, n);
+    int r = s->proto == NN_SOCK_TCP ? (net_send(s->sn, buf, n) < 0 ? SYS_EPIPE : (int)n) : datagram_write(s, buf, n);
     mutex_unlock(&s->wlock);
     return r;
 }
 
-static int udp_write(struct sock *s, const void *buf, uint32_t n)
+static int datagram_write(struct sock *s, const void *buf, uint32_t n)
 {
     if (!s->has_peer) return SYS_EINVAL;
-    if (w5500_status(s->sn) != W5500_SOCK_UDP) return SYS_EBADF;
+    if (w5500_status(s->sn) != datagram_state(s)) return SYS_EBADF;
     if (n > net_buffers_kib[s->sn] * 1024u) return SYS_EINVAL;
     if (w5500_flush(s->sn, 3000)) return SYS_EIO;     /* the previous datagram has left */
     w5500_set_peer(s->sn, s->peer, s->peer_port);
@@ -136,6 +144,7 @@ static int s_close(struct file *f)
     else w5500_close(s->sn);
     uint32_t irq = irq_save();
     in_use &= (uint8_t)~(1u << (s->sn - NET_SOCK_USER));
+    if (s->proto == NN_SOCK_ICMP) icmp_in_use = 0;
     irq_restore(irq);
     kfree(s);
     return 0;
@@ -146,11 +155,15 @@ static struct mount sock_mount = { "socket:", &sock_ops, 0, 0 };
 
 int sock_create(int proto)
 {
-    if (proto != NN_SOCK_TCP && proto != NN_SOCK_UDP) return SYS_EINVAL;
+    if (proto != NN_SOCK_TCP && proto != NN_SOCK_UDP && proto != NN_SOCK_ICMP) return SYS_EINVAL;
     uint32_t irq = irq_save();
+    if (proto == NN_SOCK_ICMP && icmp_in_use) { irq_restore(irq); return SYS_EBUSY; }
     int i = 0;
     while (i < NET_USER_SOCKS && (in_use & (1u << i))) ++i;
-    if (i < NET_USER_SOCKS) in_use |= (uint8_t)(1u << i);
+    if (i < NET_USER_SOCKS) {
+        in_use |= (uint8_t)(1u << i);
+        if (proto == NN_SOCK_ICMP) icmp_in_use = 1;
+    }
     irq_restore(irq);
     if (i == NET_USER_SOCKS) return SYS_EBUSY;
     struct sock *s = kmalloc(sizeof *s);
@@ -166,6 +179,7 @@ int sock_create(int proto)
     kfree(f);
     irq = irq_save();
     in_use &= (uint8_t)~(1u << i);
+    if (proto == NN_SOCK_ICMP) icmp_in_use = 0;
     irq_restore(irq);
     return fd;
 }
@@ -180,13 +194,13 @@ int sock_connect(int fd, const struct nn_sockaddr *a)
 {
     struct sock *s = sock_of(fd);
     if (!s) return SYS_EBADF;
-    if (!a->port) return SYS_EINVAL;
+    if (s->proto == NN_SOCK_ICMP ? a->port != 0 : a->port == 0) return SYS_EINVAL;
     memcpy(s->peer, a->ip, 4);
     s->peer_port = a->port;
     s->has_peer = s->connected = 1;
     if (s->proto == NN_SOCK_TCP)
         return w5500_tcp_connect(s->sn, a->ip, a->port, ephemeral()) ? SYS_EIO : 0;
-    if (w5500_status(s->sn) != W5500_SOCK_UDP && w5500_open(s->sn, W5500_MODE_UDP, ephemeral())) return SYS_EIO;
+    if (w5500_status(s->sn) != datagram_state(s) && w5500_open(s->sn, datagram_mode(s), s->proto == NN_SOCK_ICMP ? 0 : ephemeral())) return SYS_EIO;
     return 0;
 }
 
@@ -194,7 +208,7 @@ int sock_listen(int fd, uint16_t port)
 {
     struct sock *s = sock_of(fd);
     if (!s) return SYS_EBADF;
-    if (!port) return SYS_EINVAL;
+    if (!port || s->proto == NN_SOCK_ICMP) return SYS_EINVAL;
     if (s->proto == NN_SOCK_TCP) return w5500_tcp_listen(s->sn, port) ? SYS_EIO : 0;
     s->has_peer = s->connected = 0;
     return w5500_open(s->sn, W5500_MODE_UDP, port) ? SYS_EIO : 0;
@@ -215,7 +229,7 @@ int sock_info(int fd, struct nn_sockinfo *out)
     out->sn = (uint8_t)sn;
     out->state = w5500_status(sn);
     uint8_t mode = w5500_mode(sn) & 0x0fu;
-    if (out->state != W5500_SOCK_CLOSED) out->proto = mode == 1 ? NN_SOCK_TCP : mode == 2 ? NN_SOCK_UDP : 0;
+    if (out->state != W5500_SOCK_CLOSED) out->proto = mode == 1 ? NN_SOCK_TCP : mode == 2 ? NN_SOCK_UDP : mode == 3 ? NN_SOCK_ICMP : 0;
     out->user = sn >= NET_SOCK_USER && sn < NET_SOCK_USER + NET_USER_SOCKS && (in_use & (1u << (sn - NET_SOCK_USER)));
     out->port = w5500_port(sn);
     w5500_peer(sn, out->peer, &out->peer_port);

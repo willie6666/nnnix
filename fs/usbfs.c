@@ -13,6 +13,7 @@
 #define MAX_DEPTH 6
 
 struct ufile {
+    struct ufile *next;              /* all open handles, including inactive files/directories */
     char path[NN_PATH_MAX];          /* 8.3 upper case, absolute within the drive */
     uint32_t size;
     uint8_t gen;                     /* mount_gen when opened */
@@ -26,6 +27,25 @@ static uint32_t listing_pos, listing_mark;
 /* 0, or modules.ch376 when the drive was mounted (review R61): files opened
  * under another mount fail rather than reach whatever is mounted now. */
 static uint8_t mounted;
+static struct ufile *opened;
+static volatile uint8_t media_lost;  /* sticky until fsd invalidates all handles under the chip lock */
+
+/* kd only records the event: it must not traverse fsd's handle list. Keeping
+ * this set across reconnects also catches a complete 1-63 generation wrap. */
+void usbfs_media_lost(void) { media_lost = 1; }
+
+static void invalidate(void)
+{
+    if (!media_lost && !(mounted && mounted != modules.ch376)) return;
+    media_lost = 0;
+    for (struct ufile *u = opened; u; u = u->next) {
+        u->gen = 0;                  /* never assigned to a new handle: cannot revive */
+        if (u->dirty) u->error = SYS_EIO;
+        u->dirty = 0;
+    }
+    current = listing = 0;           /* never write stale state back to a different medium */
+    mounted = 0;
+}
 
 static int valid_char(char c)
 {
@@ -118,6 +138,7 @@ static void deactivate(void)
 int usbfs_release(void)
 {
     struct ufile *u = current;
+    invalidate();
     deactivate();
     mounted = 0;
     return u ? u->error : 0;
@@ -125,13 +146,8 @@ int usbfs_release(void)
 
 static int ensure(void)
 {
+    invalidate();
     uint8_t gen = modules.ch376;
-    if (mounted && gen != mounted) {                  /* the chip lost its mount and its open file */
-        if (current && current->dirty) current->error = SYS_EIO;
-        current = 0;
-        listing = 0;
-        mounted = 0;
-    }
     if (!gen) return SYS_ENODEV;
     if (mounted) return 0;
     current = 0;
@@ -194,9 +210,13 @@ static int u_open(struct mount *m, const char *path, int flags, struct file *f)
             else { ch376_close(1); u->size = 0; }
         }
     }
+    if (!e) {
+        u->gen = mounted;
+        u->next = opened;
+        opened = u;
+    }
     ch376_unlock();
     if (e) { kfree(u); return e; }
-    u->gen = mounted;
     f->priv = u;
     f->pos = (flags & O_APPEND) ? u->size : 0;
     return 0;
@@ -206,8 +226,12 @@ static int u_close(struct file *f)
 {
     struct ufile *u = f->priv;
     ch376_lock();
+    invalidate();
     if (listing == u) listing = 0;
     if (current == u) deactivate();
+    struct ufile **p = &opened;
+    while (*p != u) p = &(*p)->next;
+    *p = u->next;
     ch376_unlock();
     int e = u->error;
     kfree(u);
@@ -254,13 +278,12 @@ static int u_lseek(struct file *f, int32_t off, int whence)
 {
     struct ufile *u = f->priv;
     if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) return SYS_EINVAL;
-    if (whence == SEEK_END && !u->dir) {               /* the current size, as read and write see it */
-        ch376_lock();
-        int e = ensure();
-        if (!e) e = activate(u);
-        ch376_unlock();
-        if (e) return e;
-    }
+    ch376_lock();
+    int e = ensure();
+    if (!e && u->gen != mounted) e = SYS_EIO;
+    if (!e && whence == SEEK_END && !u->dir) e = activate(u);  /* refresh the size */
+    ch376_unlock();
+    if (e) return e;
     int32_t pos = vfs_seek_pos(f->pos, u->size, off, whence);
     if (pos < 0) return pos;
     f->pos = (uint32_t)pos > u->size ? u->size : (uint32_t)pos;   /* no holes on FAT through the CH376 */

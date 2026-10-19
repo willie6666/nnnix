@@ -17,6 +17,7 @@ int ledit_feed(struct ledit *e, uint8_t c)
         e->after_cr = 0;
         if (c == '\n' || c == 0) return LEDIT_MORE;   /* second half of CR LF / CR NUL */
     }
+    if (c == 0x03) e->esc = 0;                       /* ^C also interrupts an unfinished escape */
     if (e->esc == 1) {                                /* after ESC */
         e->esc = c == '[' || c == 'O' ? 2 : 0;
         return LEDIT_MORE;

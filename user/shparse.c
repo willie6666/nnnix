@@ -14,6 +14,47 @@ static int special(char c) { return c == '<' || c == '>' || c == '|' || c == '&'
  * which is stored in *term (0 at the end) and left unconsumed. */
 struct target { char *words; int *used; char **argv; struct sh_redir *redir; int *argc, *nredir; };
 
+/* $@ is the one expansion that produces separate arguments. Keep it a whole
+ * word (usually "$@") so an empty list contributes no spurious empty word. */
+static const char *all_arguments(const char *p)
+{
+    const char *end = 0;
+    if (p[0] == '"') {
+        if (p[1] == '$' && p[2] == '@' && p[3] == '"') end = p + 4;
+        else if (p[1] == '$' && p[2] == '{' && p[3] == '@' && p[4] == '}' && p[5] == '"') end = p + 6;
+    } else if (p[0] == '$') {
+        if (p[1] == '@') end = p + 2;
+        else if (p[1] == '{' && p[2] == '@' && p[3] == '}') end = p + 4;
+    }
+    return end && (!*end || blank(*end) || special(*end)) ? end : 0;
+}
+
+static const char *append_arguments(struct target *o, int *used,
+                                    const char *(*lookup)(void *, const char *), void *ctx)
+{
+    const char *p = lookup ? lookup(ctx, "#") : "";
+    unsigned count = 0;
+    for (; p && *p; ++p) {
+        if (*p < '0' || *p > '9' || count > 9) return "invalid positional argument count";
+        count = count * 10u + (unsigned)(*p - '0');
+    }
+    if (count > 9) return "too many positional arguments";
+    for (unsigned i = 1; i <= count; ++i) {
+        if (*o->argc == SH_ARGS - 1) return "too many arguments";
+        char name[2] = { (char)('0' + i), 0 };
+        const char *v = lookup(ctx, name);
+        if (!v) v = "";
+        char *word = o->words + *used;
+        do {
+            if (*used >= SH_WORDS) return "expanded line too long";
+            o->words[(*used)++] = *v;
+        } while (*v++);
+        o->argv[(*o->argc)++] = word;
+        o->argv[*o->argc] = 0;
+    }
+    return 0;
+}
+
 static const char *parse_one(const char **pp, struct target *o, char *term,
                              const char *(*lookup)(void *, const char *), void *ctx)
 {
@@ -38,6 +79,14 @@ static const char *parse_one(const char **pp, struct target *o, char *term,
             o->redir[pending].append = (unsigned char)append;
             continue;
         }
+        const char *all = all_arguments(p);
+        if (all) {
+            if (pending >= 0) return "$@ cannot be a redirection target";
+            const char *e = append_arguments(o, &used, lookup, ctx);
+            if (e) return e;
+            p = all;
+            continue;
+        }
         char *word = o->words + used;
         char quote = 0;
         while (*p && (quote || (!blank(*p) && !special(*p)))) {
@@ -53,7 +102,8 @@ static const char *parse_one(const char **pp, struct target *o, char *term,
                 char name[32];
                 int n = 0, brace = *p == '{';
                 if (brace) ++p;
-                if (*p == '?' && !brace) { name[n++] = *p++; }
+                if (*p == '@') return "use $@ as a standalone argument";
+                if (*p == '?' || *p == '#' || (*p >= '0' && *p <= '9')) { name[n++] = *p++; }
                 else while (sh_name_char(*p, n == 0)) {
                     if (n == (int)sizeof name - 1) return "variable name too long";
                     name[n++] = *p++;

@@ -31,7 +31,7 @@ struct task {
     uint8_t prio, state, detached, slice;
     uint8_t preempted, yielded;      /* round-robin bookkeeping */
     uint8_t user;                    /* started by a program (spawn): may be killed */
-    uint8_t killed;                  /* exits at its next system call */
+    uint8_t killed;                  /* exits at a safe kernel/scheduling boundary */
     uint8_t interruptible;           /* current wait may be cut short by a kill */
     uint16_t ppid;                   /* parent, for wait */
     void *owned;                     /* kmalloc'd with the task, freed when it is reaped */
@@ -77,11 +77,15 @@ int  task_list(struct task_info *out, int max, int skip);   /* skip the first `s
 int  task_stack_peaks(uint16_t sizes[], uint16_t used[], int max);
 void task_report_leftovers(void);    /* kernel daemon: log leftover memory freed at reaping */
 
-/* Programs: a killed user task leaves at its next system call (no MMU: it can
- * not be stopped at an arbitrary point safely); interruptible waits (sleep,
- * pipes, terminal input, wait) end early with -EINTR. When a task exits, its
+/* A killed user task leaves at a system call or when the scheduler has saved
+ * a frame in program code. Kernel operations finish before exiting, so their
+ * locks are not abandoned. Interruptible waits (sleep, pipes, terminal input,
+ * wait) end early with -EINTR. When a task exits, its
  * children are killed and detached, like a hang-up. */
 int  task_kill(uint16_t pid);
+/* Cancel a foreground operation in a protected shell without killing it.
+ * A blocking terminal read notices within its one-second input timeout. */
+int  task_interrupt_tty(uint16_t pid);
 /* A killed program running its own code without system calls: once it is
  * preempted there, it is made to exit (130) when it next runs, its frames
  * dropped. 1 while the task is still there (call again), 0 once it is gone. */

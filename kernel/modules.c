@@ -6,6 +6,7 @@
 #include "../drivers/ch376.h"
 #include "../drivers/w5500.h"
 #include "../net/net.h"
+#include "../fs/vfs.h"
 
 struct modules_state modules;
 
@@ -31,6 +32,7 @@ void modules_poll(void)
         if (powered) msleep(200);                      /* let the rail settle */
         powered = board_modules_powered() || (modules.powered && still_answering());
         if (powered != modules.powered) {
+            if (modules.ch376) usbfs_media_lost();
             board_w5500_irq(0);
             board_ch376_irq(0);
             modules = (struct modules_state){ .powered = (uint8_t)powered, .last_ch376 = modules.last_ch376 };
@@ -51,6 +53,7 @@ void modules_poll(void)
     uint8_t version = ch ? ch376_version() : 0;
     ch376_unlock();
     if (ch != !!modules.ch376) {
+        if (!ch) usbfs_media_lost();
         if (ch) modules.last_ch376 = (uint8_t)(modules.last_ch376 % 63u + 1u);   /* 1-63 */
         modules.ch376 = ch ? (uint8_t)modules.last_ch376 : 0;
         board_ch376_irq(ch);

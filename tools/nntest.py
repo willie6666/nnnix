@@ -596,6 +596,32 @@ def m5_tests(ns, serial, report):
         out = t.cmd(f'sh {longscript}')
         report.add('long script line', 'script read failed' in out and t.cmd(f'cat {final}').splitlines() == ['hello script', 'done'], '')
 
+        flow = upload('flow.sh', (b'set COUNT 0\nwhile [ "$COUNT" -lt 5 ]; do\ninc COUNT\n'
+                                  b'if [ "$COUNT" -eq 2 ]; then\ncontinue\nelif [ "$COUNT" -eq 4 ]; then\n'
+                                  b'break\nelse\necho item-$COUNT\nfi\ndone\n'
+                                  b'if [ "$COUNT" -eq 4 ]; then\necho flow-ok\nfi\nunset COUNT\n'))
+        out = t.cmd(f'sh {flow}', 10)
+        report.add('script control flow', out.splitlines() == ['item-1', 'item-3', 'flow-ok'], repr(out))
+        missing = upload('missing-fi.sh', b'if true; then\necho missing-fi\n')
+        out = t.cmd(f'sh {missing}')
+        report.add('script structural error', 'unterminated' in out and t.cmd('echo $?').strip() == '2', repr(out))
+        looping = upload('loop.sh', b'while true; do\ntrue\ndone\n')
+        t.send(f'sh {looping}\r\n')
+        time.sleep(.3)
+        t.send(b'\x03')
+        t.read_until(Telnet.PROMPT, 5)
+        report.add('script loop Ctrl-C', t.cmd('echo $?').strip() == '130')
+
+        arg_child = upload('argv-child.sh', b'echo "child=$# <$1> <$2> <$3>"\nshift\necho "shifted=$# <$1>"\n')
+        arg_parent = upload('argv-parent.sh', (f'echo "before=$# <$1>"\nsource {arg_child} "$@"\n'
+                                              'echo "after=$# <$1>"\n').encode())
+        out = t.cmd(f'sh {arg_parent} "two words" "" "-t"')
+        report.add('script positional args', out.splitlines() == ['before=3 <two words>',
+                   'child=3 <two words> <> <-t>', 'shifted=2 <>', 'after=3 <two words>'], repr(out))
+        arg_loop = upload('argv-loop.sh', b'while [ "$#" -gt 0 ]; do\necho "arg=<$1>"\nshift\ndone\n')
+        out = t.cmd(f'sh {arg_loop} first "two words" ""')
+        report.add('script shift loop', out.splitlines() == ['arg=<first>', 'arg=<two words>', 'arg=<>'], repr(out))
+
         payload = pattern(32768)
         binary = upload('upload.bin', payload)
         status, body = ns.call(http_request, 'GET', binary)
@@ -1026,10 +1052,11 @@ def review_tests(ns, serial, report, iface):
 def install_programs(ns, report):
     """The programs for /bin (build/bin, `make programs`): play, ed, grep... are
     programs, not built-in commands; later sections use them."""
-    files = sorted((REPO / 'build/bin').glob('*.nxe'))
+    files = sorted(f for f in (REPO / 'build/bin').glob('*.nxe') if f.stem != 'lcd')
     t = Telnet(ns)
     t.read_until(Telnet.PROMPT)
     t.cmd('mkdir /bin')
+    t.cmd('rm /bin/lcd')
     t.send('exit\r\n'); t.wait_closed(); t.close()
     statuses = [ns.call(http_request, 'PUT', f'/bin/{f.stem}', f.read_bytes())[0] for f in files]
     report.add('programs installed', len(files) >= 7 and all(s in (201, 204) for s in statuses),
@@ -1741,11 +1768,11 @@ def web_server(stop):
             server.handle_request()
 
 
-def dns_server(stop, asked):
+def dns_server(stop, asked, bind=None):
     """A names for web.test, alias.test (a CNAME to web.test), forged.test (after
     a forged answer from another port); NXDOMAIN otherwise."""
     u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    u.bind((PEER.split('/')[0], 53))
+    u.bind((bind or PEER.split('/')[0], 53))
     u.settimeout(0.2)
     other = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     other.bind((PEER.split('/')[0], 0))
@@ -1785,7 +1812,7 @@ def ch9350_keys(*keys, mods=0):
     return bytes([0x57, 0xab, 0x01, mods, 0] + list(keys) + [0] * (6 - len(keys)))
 
 
-def input_tests(ns, serial, report):
+def input_tests(ns, serial, report, remote_port=1234):
     """/dev/input: keyboard and mouse frames fed through the CH9350 parser (diag
     J), the board keypad and SW_INT pressed by diag; one holder at a time; the
     SW_INT button ends a program that never makes a system call, and a game
@@ -1819,21 +1846,25 @@ def input_tests(ns, serial, report):
                    out.strip().replace('\r\n', ' | '))
         # remote: a live stream (a header with no time per frame) shown, and the
         # events fed through the CH9350 parser and the keypad sent back on the
-        # same connection, as for tools/nnscreen.py | nc | nninput.py.
+        # same connection, as for tools/nnremote.py.
+        ready = threading.Event()
+        active = threading.Event()
+
         def remote():
-            for _ in range(50):
-                try:
-                    c = socket.create_connection((TARGET[0], 1234), timeout=5)
-                    break
-                except OSError:
-                    time.sleep(0.2)
-            else:
-                return b''
+            with socket.socket() as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(('198.18.0.1', remote_port))
+                listener.listen(1)
+                listener.settimeout(10)
+                ready.set()
+                c, _ = listener.accept()
             got = b''
             with c:
                 c.settimeout(5)
                 frame = struct.pack('<BHBB', 1, 2, 0xff, 0xaa)       # a delta: 64 bytes of 0xaa
                 c.sendall(b'NNV1' + struct.pack('<HHHHBBH', 128, 64, 0, 0, 0, 0, 0) + frame + frame)
+                if not active.wait(5):
+                    raise TimeoutError('remote did not acquire the input device')
                 for f in (ch9350_keys(0x04), ch9350_keys(), bytes([0x57, 0xab, 0x02, 1, 5, 0xfd, 0]),
                           bytes([0x57, 0xab, 0x02, 0, 0, 0, 0])):
                     request(b'J', 4, len(f), f)
@@ -1853,29 +1884,44 @@ def input_tests(ns, serial, report):
                 time.sleep(0.5)
             return got
 
-        t.send('remote -v\r\n')
-        time.sleep(0.8)
-        got = ns.call(remote)
+        result = {}
+        worker = threading.Thread(target=lambda: result.update(got=ns.call(remote)))
+        worker.start()
+        if not ready.wait(5):
+            raise TimeoutError('remote peer did not listen')
+        t.send(f'remote -v 198.18.0.1 {remote_port}\r\n')
+        t.read_until('remote: connected; SW_INT ends\r\n', 10)
+        active.set()
+        worker.join(15)
+        if worker.is_alive() or 'got' not in result:
+            raise TimeoutError('remote peer did not finish')
+        got = result['got']
         out = t.read_until(Telnet.PROMPT, 10)
         events = [struct.unpack_from('<BBBbbb', got, i) for i in range(0, len(got) - 7, 8)]
         # Full review R54: a stream cut inside a record is a failure, not the end.
+        ready.clear()
+
         def cut():
-            for _ in range(50):
-                try:
-                    c = socket.create_connection((TARGET[0], 1234), timeout=5)
-                    break
-                except OSError:
-                    time.sleep(0.2)
-            else:
-                return
+            with socket.socket() as listener:
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                listener.bind(('198.18.0.1', remote_port))
+                listener.listen(1)
+                listener.settimeout(10)
+                ready.set()
+                c, _ = listener.accept()
             with c:
                 c.sendall(b'NNV1' + struct.pack('<HHHHBBH', 128, 64, 0, 0, 0, 0, 0) + struct.pack('<BH', 0, 1024) + b'x')
                 c.shutdown(socket.SHUT_WR)
                 time.sleep(0.5)
 
-        t.send('remote\r\n')
-        time.sleep(0.8)
-        ns.call(cut)
+        worker = threading.Thread(target=lambda: ns.call(cut))
+        worker.start()
+        if not ready.wait(5):
+            raise TimeoutError('remote cut peer did not listen')
+        t.send(f'remote 198.18.0.1 {remote_port}\r\n')
+        worker.join(15)
+        if worker.is_alive():
+            raise TimeoutError('remote cut peer did not finish')
         cut_out = t.read_until(Telnet.PROMPT, 10) + t.cmd('echo $?')
         report.add('remote cut short', 'the stream was cut short' in cut_out and cut_out.strip().endswith('1'),
                    cut_out.strip().replace('\r\n', ' | '))
@@ -1893,6 +1939,24 @@ def input_tests(ns, serial, report):
         report.add('input SW_INT', 'busy' in busy and 'done' in jobs and ' keys ' not in jobs and line is not None,
                    'a second reader gets EBUSY; SW_INT ended `keys spin` (no system calls) '
                    + (serial.lines[line] if line is not None else 'no log line'))
+        # These must also work without the input driver's SW_INT retry path.
+        t.cmd('keys spin &')
+        time.sleep(0.2)
+        started = time.monotonic()
+        t.cmd('kill %1')
+        t.cmd('wait', 5)
+        elapsed = time.monotonic() - started
+        report.add('kill spinning program', elapsed < 1 and ' keys ' not in t.cmd('ps'),
+                   f'kill/wait ended a program making no system calls in {elapsed:.3f} s')
+        t.send('keys spin\r\n')
+        time.sleep(0.2)
+        started = time.monotonic()
+        t.send('\x03')
+        t.read_until(Telnet.PROMPT, 5)
+        elapsed = time.monotonic() - started
+        status = t.cmd('echo $?').strip()
+        report.add('ctrl-c spinning program', elapsed < 1 and status == '130' and ' keys ' not in t.cmd('ps'),
+                   f'Ctrl-C ended a program making no system calls in {elapsed:.3f} s, status {status}')
         out = ''
         for game in ('snake', 'tetris', 'flappy'):            # bin/: started, played a moment, Esc
             t.send(f'{game}\r\n')
@@ -1921,6 +1985,82 @@ def input_tests(ns, serial, report):
         t.send('exit\r\n'); t.close()
 
 
+def binary_tests(ns, report):
+    """Binary printf output and a frame generated entirely by nsh."""
+    t = Telnet(ns); t.read_until(Telnet.PROMPT)
+    other, active = None, False
+    data = f'/home/.printf-{os.getpid()}.bin'
+    script = f'/home/.printf-{os.getpid()}.sh'
+
+    def put(text):
+        code, _ = ns.call(http_request, 'PUT', script, text.encode())
+        if code not in (201, 204): raise OSError(f'HTTP PUT {code}')
+
+    try:
+        idle_httpd(t); before = t.cmd('free')
+        out = t.cmd('lcd')
+        report.add('lcd command removed', 'command not found' in out and t.cmd('echo $?').strip() == '127')
+        t.cmd('test -e /bin/lcd')
+        report.add('lcd executable removed', t.cmd('echo $?').strip() == '1')
+        t.cmd("printf '\\x00\\xff' > " + data)
+        t.cmd("printf '%B' 128 0 65 >> " + data)
+        code, body = ns.call(http_request, 'GET', data)
+        report.add('printf NUL and numeric bytes', code == 200 and body == bytes([0, 255, 128, 0, 65]), repr(body))
+        t.cmd("printf '%B' 256 > " + data)
+        report.add('printf rejects byte overflow', t.cmd('echo $?').strip() == '2')
+        code, body = ns.call(http_request, 'GET', data)
+        report.add('printf bad input writes no bytes', code == 200 and not body)
+        put(f"printf '' > {data}\nset I 0\nwhile [ $I -lt 256 ]; do\n"
+            f"printf '%B' $I >> {data}\ninc I\ndone\nunset I\n")
+        t.cmd('sh ' + script, 20)
+        code, body = ns.call(http_request, 'GET', data)
+        report.add('script emits all 256 bytes', code == 200 and body == bytes(range(256)))
+        put(f"printf '%B' 0 255 | cat > {data}\n")
+        t.cmd('sh ' + script, 5)
+        code, body = ns.call(http_request, 'GET', data)
+        report.add('printf binary pipeline', code == 200 and body == bytes([0, 255]))
+        example = (REPO / 'examples/scripts/raw-box.sh').read_text()
+        put(example)
+        for mode in ('EOF', 'Ctrl-C', 'SW_INT'):
+            t.send(f'sh {script} {data}\r\n'); active = True
+            t.read_until('Rectangle ready;', 30)
+            time.sleep(.15)
+            code, body = ns.call(http_request, 'GET', data)
+            expected = bytes(255 if 2 <= p <= 5 and 24 <= x <= 103 else 0
+                             for p in range(8) for x in range(128))
+            report.add(f'script rectangle {mode} pixels', code == 200 and body == expected)
+            if other is None:
+                other = Telnet(ns); other.read_until(Telnet.PROMPT)
+            out = other.cmd('sleep 0 > /dev/lcd')
+            report.add(f'script rectangle {mode} owns display', 'busy' in out)
+            if mode == 'SW_INT':
+                try:
+                    ns.call(request, b'J', 4, 0x10200)
+                    t.read_until(Telnet.PROMPT, 3)
+                finally: ns.call(request, b'J', 4, 0x10000)
+            else:
+                t.send(b'\x04' if mode == 'EOF' else b'\x03'); t.read_until(Telnet.PROMPT, 3)
+            active = False
+            status = t.cmd('echo $?').strip()
+            other.cmd('sleep 0 > /dev/lcd')
+            released = other.cmd('echo $?').strip() == '0'
+            report.add(f'script rectangle {mode} cleanup', released and status == ('0' if mode == 'EOF' else '130'), status)
+        other.send('exit\r\n'); other.wait_closed(); other.close(); other = None
+        for name in ('OUTPUT', 'PAGE', 'X', 'N', 'DATA', 'B'): t.cmd('unset ' + name)
+        t.cmd(f'rm {data} {script}'); idle_httpd(t)
+        for _ in range(20):
+            if ' diag ' not in t.cmd('ps'): break
+            time.sleep(.05)
+        after = t.cmd('free')
+        report.add('binary scripts resources freed', before == after, after.strip())
+        print('binary script stacks:', t.cmd('ps').strip(), flush=True)
+    finally:
+        if active: t.send(b'\x03'); t.read_until(Telnet.PROMPT, 3)
+        if other: other.send('exit\r\n'); other.close()
+        t.cmd(f'rm {data} {script}')
+        t.send('exit\r\n'); t.wait_closed(); t.close()
+
+
 def wget_tests(ns, serial, report):
     """wget and host: HTTP and DNS against servers on the test peer."""
     stop, asked = threading.Event(), []
@@ -1941,6 +2081,19 @@ def wget_tests(ns, serial, report):
         report.add('host', 'no DNS server' in none and 'web.test has address 198.18.0.1' in out
                    and 'alias.test has address 198.18.0.1' in out and 'nosuch.test: not found' in out
                    and 'forged.test has address 198.18.0.1' in out,
+                   out.strip().replace('\r\n', ' | '))
+        out = t.cmd('ping -c 2 198.18.0.1', 10) + t.cmd('ping -c 1 web.test', 10)
+        report.add('ping IP and DNS', '2 packets transmitted, 2 received, 0% packet loss' in out
+                   and '1 packets transmitted, 1 received, 0% packet loss' in out,
+                   out.strip().replace('\r\n', ' | '))
+        t.send('ping 198.18.0.1\r\n')
+        t.read_until('icmp_seq=1', 5)
+        t.send(b'\x03')
+        out = t.read_until(Telnet.PROMPT, 5)
+        status = t.cmd('echo $?')
+        # Closing IPRAW ICMP must restore the chip's hardware echo responder.
+        incoming = run(*ns.exec_prefix(), 'ping', '-n', '-c', '1', '-w', '3', '198.18.0.2', check=False)
+        report.add('ping Ctrl-C and recovery', status.strip() == '130' and incoming.returncode == 0,
                    out.strip().replace('\r\n', ' | '))
         out = t.cmd('wget -O /home/w.txt http://web.test:8000/small.txt', 20) + t.cmd('cat /home/w.txt')
         report.add('wget', 'HTTP/1.1 200 OK' in out and 'saved /home/w.txt: 20 bytes' in out
@@ -2135,11 +2288,17 @@ def m5c_tests(ns, serial, report, iface):
         # NTP.
         stop, served = threading.Event(), []
         server = ns.background(ntp_server, stop, served)
+        asked = []
+        dns = ns.background(dns_server, stop, asked)
         time.sleep(0.3)
         out = t.cmd('ntpdate 198.18.0.1', 10)
         utc = t.cmd('date -u')
-        stop.set(); server.join()
         report.add('ntpdate', utc.startswith('2030-01-02 03:04:0') and len(served) == 1, out.strip().replace('\r\n', ' | '))
+        out = t.cmd('ntpdate alias.test', 10)
+        utc = t.cmd('date -u')
+        stop.set(); server.join(); dns.join()
+        report.add('ntpdate DNS', utc.startswith('2030-01-02 03:04:0') and 'alias.test' in asked
+                   and len(served) == 2, out.strip().replace('\r\n', ' | '))
         out = t.cmd('ntpdate 198.18.0.1', 10)             # the server has stopped
         t.cmd("date -s '" + time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime()) + "'")
         report.add('ntpdate no server', 'no answer' in out, out.strip())
@@ -2441,6 +2600,11 @@ def main():
             except (OSError, TimeoutError, ConnectionError) as exc:
                 traceback.print_exc()
                 report.add('input', False, repr(exc))
+            try:
+                binary_tests(ns, report)
+            except (OSError, TimeoutError, ConnectionError) as exc:
+                traceback.print_exc()
+                report.add('binary output', False, repr(exc))
             try:
                 wget_tests(ns, serial, report)
             except (OSError, TimeoutError, ConnectionError) as exc:

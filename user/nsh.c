@@ -2,7 +2,11 @@
 #include "nsh.h"
 #include "cmds.h"
 #include "shparse.h"
+#include "shflow.h"
+#include "shtest.h"
+#include "shprintf.h"
 #include "../lib/stdio.h"
+#include "../lib/fmt.h"
 #include "../lib/string.h"
 #include "../lib/sys.h"
 #include "../kernel/task.h"          /* struct task_info layout */
@@ -15,19 +19,29 @@
 #define CHILD_STACK 1024u                  /* pipeline stages: peak 680 B measured */
 
 struct job { int pid[STAGES]; char name[20]; };
+/* Packed copies survive freeing the command parser; each script owns its
+ * positional arguments and shift count, independent of caller variables. */
+struct script_args { uint8_t count, shifted, fd, base; char words[]; };
+_Static_assert(TASK_FDS < 256, "script descriptors must fit a byte");
 
 struct shell {
     struct sh_pipeline *cmd;       /* allocated only while executing a line */
     struct job jobs[JOBS];
     char line[SH_LINE];
     char *env[ENV_MAX];             /* NAME=VALUE strings, local to this shell */
-    int scripts[SCRIPT_MAX], depth, status;
+    struct script_args *args[SCRIPT_MAX];
+    struct sh_flow *flow;
     char *sbuf;                     /* SCRIPT_BUF bytes read ahead from the innermost script, while one runs */
-    uint8_t spos, slen;
+    int status;
+    /* Descriptors and flow bases live in the active script's allocation;
+     * bounded indices fit bytes. Keep these together to avoid padding. */
+    uint8_t depth, spos, slen;
     char status_text[12];
 };
 static volatile int boot_done;
 int nsh_boot_done(void) { return boot_done; }
+
+static struct script_args *current_script(struct shell *s) { return s->args[s->depth - 1]; }
 
 struct command {
     const char *name;
@@ -147,6 +161,7 @@ static int cmd_reboot(int argc, char **argv)
 static const struct command commands[] = {
     { "help", cmd_help, "list commands" },
     { "echo", cmd_echo, "print arguments" },
+    { "printf", cmd_printf, "FORMAT [ARG...]; escapes, %b, %B numeric byte" },
     { "ps", cmd_ps, "list tasks" },
     { "free", cmd_free, "kernel heap usage; -l the lowest free, -r also start it again" },
     { "uptime", cmd_uptime, "time since boot" },
@@ -176,8 +191,14 @@ static const struct command commands[] = {
     { "netstat", cmd_netstat, "network sockets" },
     { "nc", cmd_nc, "TCP/UDP client or server" },
     { "ntpdate", cmd_ntpdate, "set the clock from NTP" },
+    { "test", cmd_test, "test strings, integers or files" },
+    { "[", cmd_test, "test EXPR (closing ] required)" },
+    { "true", cmd_true, "return success" },
+    { "false", cmd_false, "return failure" },
+    { "inc", 0, "inc NAME [AMOUNT]: add an integer (default 1)" },
     { "sh", 0, "run a script in this shell" },
     { "source", 0, "run a script in this shell" },
+    { "shift", 0, "shift [N]: remove leading script arguments" },
     { "set", 0, "set NAME VALUE" },
     { "unset", 0, "remove a variable" },
     { "env", 0, "list shell variables" },
@@ -194,6 +215,7 @@ static int cmd_help(int argc, char **argv)
     (void)argc; (void)argv;
     for (unsigned i = 0; i < sizeof commands / sizeof commands[0]; ++i)
         printf("  %-8s %s\n", commands[i].name, commands[i].help);
+    printf("scripts: if/then/elif/else/fi, while/do/done, break/continue\n");
     int fd = sys_open("/bin", O_RDONLY);             /* and the programs: each NAME is /bin/NAME */
     if (fd < 0) return 0;
     struct nn_dirent d;
@@ -214,14 +236,24 @@ static int cmd_help(int argc, char **argv)
 static const char *lookup(void *ctx, const char *name)
 {
     struct shell *s = ctx;
-    if (!strcmp(name, "?")) {
-        unsigned v = (unsigned)s->status, n = 0;
+    struct script_args *a = s->depth ? s->args[s->depth - 1] : 0;
+    if (!strcmp(name, "?") || !strcmp(name, "#")) {
+        unsigned v = name[0] == '?' ? (unsigned)s->status : a ? (unsigned)(a->count - a->shifted) : 0u, n = 0;
         do { s->status_text[n++] = (char)('0' + v % 10u); v /= 10u; } while (v && n < 10);
         s->status_text[n] = 0;
         for (unsigned i = 0; i < n / 2; ++i) {
             char c = s->status_text[i]; s->status_text[i] = s->status_text[n - i - 1]; s->status_text[n - i - 1] = c;
         }
         return s->status_text;
+    }
+    if (name[0] >= '0' && name[0] <= '9' && !name[1]) {
+        unsigned i = (unsigned)(name[0] - '0');
+        if (!a) return i ? "" : "nsh";
+        if (i) i += a->shifted;
+        if (i > a->count) return "";
+        const char *p = a->words;
+        while (i--) p += strlen(p) + 1;
+        return p;
     }
     size_t n = strlen(name);
     for (int i = 0; i < ENV_MAX; ++i)
@@ -234,6 +266,28 @@ static int variable(struct shell *s, int argc, char **argv)
     if (!strcmp(argv[0], "env") || (argc == 1 && !strcmp(argv[0], "set"))) {
         for (int i = 0; i < ENV_MAX; ++i) if (s->env[i]) printf("%s\n", s->env[i]);
         return 0;
+    }
+    if (!strcmp(argv[0], "shift")) {
+        int32_t n = 1;
+        struct script_args *a = s->depth ? s->args[s->depth - 1] : 0;
+        if (!a || argc > 2 || (argc == 2 && sh_number(argv[1], &n)) || n < 0 || n > a->count - a->shifted) {
+            printf("shift: invalid count or outside a script\n"); return 2;
+        }
+        a->shifted = (uint8_t)(a->shifted + n);
+        return 0;
+    }
+    if (!strcmp(argv[0], "inc")) {
+        int32_t n = 0, amount = 1;
+        if (argc < 2 || argc > 3) { printf("usage: inc NAME [AMOUNT]\n"); return 2; }
+        const char *old = lookup(s, argv[1]);
+        if ((*old && sh_number(old, &n)) || (argc == 3 && sh_number(argv[2], &amount)) ||
+            (amount > 0 && n > 2147483647 - amount) || (amount < 0 && n < (-2147483647 - 1) - amount)) {
+            printf("inc: invalid integer or overflow\n"); return 2;
+        }
+        char value[12];
+        nn_snprintf(value, sizeof value, "%d", (int)(n + amount));
+        char *args[] = { "set", argv[1], value };
+        return variable(s, 3, args);
     }
     int unset = !strcmp(argv[0], "unset");
     if (argc != (unset ? 2 : 3)) { printf("usage: %s NAME%s\n", argv[0], unset ? "" : " VALUE"); return 1; }
@@ -266,7 +320,7 @@ static int variable(struct shell *s, int argc, char **argv)
  * (lseek), so it carries on where its line ended. */
 #define SCRIPT_BUF 64
 
-static int push_script(struct shell *s, const char *path, int optional)
+static int push_script(struct shell *s, const char *path, int argc, char **argv, int optional)
 {
     if (s->depth == SCRIPT_MAX) { printf("nsh: scripts nested too deeply\n"); return 1; }
     int fd = sys_open(path, O_RDONLY);
@@ -274,25 +328,53 @@ static int push_script(struct shell *s, const char *path, int optional)
         if (!optional || fd != SYS_ENOENT) printf("nsh: %s: %s\n", path, errstr(fd));
         return optional && fd == SYS_ENOENT ? 0 : 1;
     }
-    if (s->depth && s->slen > s->spos) sys_lseek(s->scripts[s->depth - 1], -(int32_t)(s->slen - s->spos), SEEK_CUR);
+    size_t bytes = sizeof(struct script_args) + strlen(path) + 1;
+    for (int i = 0; i < argc; ++i) bytes += strlen(argv[i]) + 1;
+    struct script_args *args = sys_alloc(bytes);
+    if (!args) { sys_close(fd); printf("nsh: out of memory\n"); return 1; }
+    args->count = (uint8_t)argc;
+    args->shifted = 0;
+    char *p = args->words;
+    strcpy(p, path); p += strlen(p) + 1;
+    for (int i = 0; i < argc; ++i) { strcpy(p, argv[i]); p += strlen(p) + 1; }
+    if (!s->flow) {
+        s->flow = sys_alloc(sizeof *s->flow);
+        if (!s->flow) { sys_free(args); sys_close(fd); printf("nsh: out of memory\n"); return 1; }
+        memset(s->flow, 0, sizeof *s->flow);
+    }
+    if (s->depth && s->slen > s->spos &&
+        sys_lseek(current_script(s)->fd, -(int32_t)(s->slen - s->spos), SEEK_CUR) < 0) {
+        /* The parent still owns its unread buffer. Do not start the child or
+         * discard those commands when the filesystem refuses the rewind. */
+        sys_free(args);
+        sys_close(fd);
+        printf("nsh: cannot rewind parent script\n");
+        return 1;
+    }
     s->spos = s->slen = 0;
     if (!s->sbuf) s->sbuf = sys_alloc(SCRIPT_BUF);  /* without it: a byte at a time */
-    s->scripts[s->depth++] = fd;
+    args->base = (uint8_t)s->flow->depth;
+    args->fd = (uint8_t)fd;
+    s->args[s->depth++] = args;
     return 0;
 }
 
 static void pop_script(struct shell *s)
 {
-    sys_close(s->scripts[--s->depth]);
+    struct script_args *args = s->args[--s->depth];
+    sys_close(args->fd);
+    s->flow->depth = args->base;
+    sys_free(args); s->args[s->depth] = 0;
+    if (s->depth) sh_flow_record(s->flow, current_script(s)->base, s->status);
     s->spos = s->slen = 0;          /* the outer script's file is where its buffer ended */
-    if (!s->depth) { sys_free(s->sbuf); s->sbuf = 0; }
+    if (!s->depth) { sys_free(s->sbuf); s->sbuf = 0; sys_free(s->flow); s->flow = 0; }
 }
 
 static int script_byte(struct shell *s, char *c)
 {
-    if (!s->sbuf) return sys_read(s->scripts[s->depth - 1], c, 1);
+    if (!s->sbuf) return sys_read(current_script(s)->fd, c, 1);
     if (s->spos == s->slen) {
-        int n = sys_read(s->scripts[s->depth - 1], s->sbuf, SCRIPT_BUF);
+        int n = sys_read(current_script(s)->fd, s->sbuf, SCRIPT_BUF);
         if (n <= 0) return n;
         s->slen = (uint8_t)n;
         s->spos = 0;
@@ -430,7 +512,9 @@ static const char *program_path(const char *name, char *buf)
 static int run_children(struct shell *s, int n, int background)
 {
     const struct command *c[STAGES];
-    char path[NN_PATH_MAX];
+    /* Parsing already copied argv into s->cmd. Reuse the consumed source
+     * line for the executable path, keeping 64 B off the small task stack. */
+    char *path = s->line;
     int pipes[STAGES - 1][2], pid[STAGES] = { 0 }, ok = 1;
     for (int i = 0; i < n; ++i) {
         c[i] = find_command(s->cmd->cmd[i].argv[0]);
@@ -503,9 +587,9 @@ static int run_children(struct shell *s, int n, int background)
 
 /* Returns one to leave the current input source. Scripts deliberately share
  * cwd and variables with their caller; no recursive C calls or extra stacks. */
-static int execute_line(struct shell *s)
+static int execute_line(struct shell *s, const char *line, int condition)
 {
-    const char *error = sh_parse_line(s->line, s->cmd, lookup, s);
+    const char *error = sh_parse_line(line, s->cmd, lookup, s);
     if (error) { printf("nsh: %s\n", error); s->status = 2; return 0; }
     int stages = s->cmd->count, background = s->cmd->background;
     if (!stages) return 0;
@@ -513,14 +597,13 @@ static int execute_line(struct shell *s)
     struct sh_stage *cmd = &s->cmd->cmd[0];
     int argc = cmd->argc;
     char **argv = cmd->argv;
-    if (!strcmp(argv[0], "jobs") || !strcmp(argv[0], "kill") || !strcmp(argv[0], "wait")) {
-        s->status = job_command(s, argc, argv);
-        return 0;
-    }
     int script = !strcmp(argv[0], "sh") || !strcmp(argv[0], "source") || !strcmp(argv[0], ".");
+    if (condition && (script || !strcmp(argv[0], "exit") || !strcmp(argv[0], "logout"))) {
+        printf("nsh: script/exit cannot be a condition\n"); s->status = 2; return 1;
+    }
     if (script) {
-        if (argc != 2 || cmd->nredir) { printf("usage: sh FILE (without redirection)\n"); s->status = 2; }
-        else s->status = push_script(s, argv[1], 0);
+        if (argc < 2 || cmd->nredir) { printf("usage: sh FILE [ARG...] (without redirection)\n"); s->status = 2; }
+        else s->status = push_script(s, argv[1], argc - 2, argv + 2, 0);
         return 0;
     }
     if (!strcmp(argv[0], "exit") || !strcmp(argv[0], "logout")) return 1;
@@ -530,6 +613,7 @@ static int execute_line(struct shell *s)
         return 0;
     }
     s->status = 0;
+    unsigned redirected = 0;
     for (int i = 0; i < cmd->nredir; ++i) {
         struct sh_redir *r = &cmd->redir[i];
         int flags = r->target ? O_WRONLY | O_CREAT | (r->append ? O_APPEND : O_TRUNC) : O_RDONLY;
@@ -538,19 +622,50 @@ static int execute_line(struct shell *s)
         int e = sys_dup2(fd, r->target);
         sys_close(fd);
         if (e < 0) { s->status = 1; break; }
+        redirected |= 1u << r->target;
     }
-    if (!s->status) s->status = c->run ? c->run(argc, argv) : variable(s, argc, argv);
-    sys_dup2(-1, 0); sys_dup2(-1, 1);
+    if (!s->status) {
+        if (c->run) s->status = c->run(argc, argv);
+        else if (!strcmp(argv[0], "jobs") || !strcmp(argv[0], "kill") || !strcmp(argv[0], "wait"))
+            s->status = job_command(s, argc, argv);
+        else s->status = variable(s, argc, argv);
+    }
+    /* Closed 0/1 fall back to the session terminal. Only touch redirected
+     * descriptors, and retain errors from a filesystem's final write-back. */
+    for (int fd = 0; fd < 2; ++fd) if (redirected & (1u << fd)) {
+        if (sys_close(fd) < 0) {
+            if (!s->status) s->status = 1;
+            fputs_fd("nsh: redirection close failed\n", 2);
+        }
+    }
     return 0;
 }
 
-static int execute(struct shell *s)
+static int execute(void *ctx, const char *line, int condition)
 {
+    struct shell *s = ctx;
     s->cmd = sys_alloc(sizeof *s->cmd);
     if (!s->cmd) { printf("nsh: out of memory\n"); s->status = 1; return 0; }
-    int leave = execute_line(s);
+    int leave = execute_line(s, line, condition);
     sys_free(s->cmd); s->cmd = 0;
     return leave;
+}
+
+static int loop_seek(void *ctx, uint32_t offset)
+{
+    struct shell *s = ctx;
+    int e = sys_lseek(current_script(s)->fd, (int32_t)offset, SEEK_SET);
+    s->spos = s->slen = 0;
+    sys_sleep(1);                  /* bounded loops also yield between iterations */
+    return e < 0 ? -1 : 0;
+}
+
+static const struct sh_flow_ops flow_ops = { execute, loop_seek };
+
+static void cancel(struct shell *s)
+{
+    s->status = 130;
+    while (s->depth) pop_script(s);
 }
 
 static void run_shell(int interactive)
@@ -561,13 +676,23 @@ static void run_shell(int interactive)
     if (interactive) {
         sys_uname(s->line, sizeof s->line);
         printf("\n%s\nType 'help' for a list of commands.\n", s->line);
-    } else push_script(s, "/etc/rc", 1);
+    } else push_script(s, "/etc/rc", 0, 0, 1);
     while (interactive || s->depth) {
         int scripted = s->depth > 0;
+        uint32_t offset = 0;
         if (scripted) {
+            if (nn_interrupted()) {
+                cancel(s);
+                continue;
+            }
+            int at = sys_lseek(current_script(s)->fd, 0, SEEK_CUR);
+            offset = at < 0 ? 0xffffffffu : (uint32_t)at - (s->slen - s->spos);
             int n = script_line(s);
             if (n <= 0) {
                 if (n < 0) { printf("nsh: script read failed: %s\n", errstr(n)); s->status = 2; }
+                if (!n && s->flow->depth > current_script(s)->base) {
+                    printf("nsh: unterminated if/while\n"); s->status = 2;
+                }
                 pop_script(s);
                 continue;
             }
@@ -576,10 +701,20 @@ static void run_shell(int interactive)
             printf("nnnix$ ");
             int n = sys_read(0, s->line, sizeof s->line - 1);
             if (!n) break;
+            if (n == SYS_EINTR) { cancel(s); continue; }
             if (n < 0) continue;
             s->line[n] = 0;
         }
-        if (execute(s)) {
+        int leave = 0;
+        if (scripted) {
+            const char *error = sh_flow_line(s->flow, current_script(s)->base, s->line, offset,
+                                              &s->status, &flow_ops, s, &leave);
+            if (error) { printf("nsh: %s\n", error); s->status = 2; leave = 1; }
+        } else if (sh_control_word(s->line)) {
+            printf("nsh: control flow requires sh FILE\n"); s->status = 2;
+        } else leave = execute(s, s->line, 0);
+        if (s->status == 130) { cancel(s); continue; }
+        if (leave) {
             if (scripted) pop_script(s);
             else break;
         }

@@ -5,17 +5,19 @@
 #   make flash      program APROM through Nu-Link (tools/flash.py)
 #   make test       flash + on-target tests (tools/nntest.py, needs sudo for the test netns)
 #   make host-test  unit tests that run on the build machine
-#   make size       section sizes
+#   make size       section sizes and firmware/NXE XIP capacity
 
 CLANG   ?= clang
 HOSTCC  ?= cc
 OBJCOPY ?= llvm-objcopy
 SIZE    ?= llvm-size
 PYTHON  ?= python3
+# Kernel size; use OPT=-Os for comparison. NXE programs and LDROM keep -Os.
+OPT     ?= -Oz
 
 VERSION := $(shell git describe --always --dirty --tags 2>/dev/null || echo unknown)
 
-CFLAGS  = --target=arm-none-eabi -mcpu=cortex-m0 -mthumb -Os -g \
+CFLAGS  = --target=arm-none-eabi -mcpu=cortex-m0 -mthumb $(OPT) -g \
           -ffreestanding -fno-builtin -ffunction-sections -fdata-sections \
           -Wall -Wextra -Werror -std=c11 -DNNNIX_VERSION='"$(VERSION)"' \
           -DLFS_CONFIG=lfs_port.h -DLFS_NAME_MAX=31 -Ifs -Ithird_party/littlefs
@@ -26,6 +28,7 @@ OBJS = $(SRCS:%.c=build/%.o)
 
 .PHONY: all flash test host-test size clean sdk boot programs
 all: build/nnnix.bin programs
+$(OBJS): build/.kernel-opt
 
 build/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -50,13 +53,18 @@ build/.version: FORCE
 	@echo '$(VERSION)' | cmp -s - $@ || echo '$(VERSION)' > $@
 FORCE:
 
+# Switching OPT must rebuild every kernel object, even without make clean.
+build/.kernel-opt: FORCE
+	@mkdir -p build
+	@echo '$(OPT)' | cmp -s - $@ || echo '$(OPT)' > $@
+
 flash: build/nnnix.bin
 	$(PYTHON) tools/flash.py build/nnnix.bin
 
 # Programs for /bin, built like the SDK's (sdk/Makefile: -fropi -frwpi, run
 # from APROM by kernel/xip.c) from the commands in bin/: bin/main.c calls
 # cmd_NAME. tools/nnupdate.py --bin build/bin installs them.
-PROGRAMS = play ed wc head tail grep hexdump wget host snake tetris flappy remote
+PROGRAMS = play ed wc head tail grep hexdump wget host snake tetris flappy remote ping
 PROG_SRCS_play = bin/play.c
 PROG_SRCS_remote = bin/remote.c
 PROG_SRCS_ed = bin/ed.c bin/edcore.c
@@ -65,8 +73,9 @@ PROG_SRCS_head = bin/textutil.c
 PROG_SRCS_tail = bin/textutil.c
 PROG_SRCS_grep = bin/textutil.c
 PROG_SRCS_hexdump = bin/textutil.c
-PROG_SRCS_wget = bin/wget.c bin/dns.c bin/url.c
-PROG_SRCS_host = bin/dns.c
+PROG_SRCS_wget = bin/wget.c lib/dns.c bin/url.c
+PROG_SRCS_host = bin/host.c lib/dns.c
+PROG_SRCS_ping = bin/ping.c lib/dns.c
 PROG_SRCS_snake = bin/snake.c bin/game.c
 PROG_SRCS_tetris = bin/tetris.c bin/game.c
 PROG_SRCS_flappy = bin/flappy.c bin/game.c
@@ -84,22 +93,26 @@ build/prog/crt0.o: sdk/crt0.c sdk/include/nnnix.h
 build/prog/main_%.o: bin/main.c
 	@mkdir -p $(dir $@)
 	$(CLANG) $(PROG_CFLAGS) -DMAIN=cmd_$* -c $< -o $@
-prog_objs = $(patsubst bin/%.c,build/prog/%.o,$(PROG_SRCS_$1))
+build/prog/lib/%.o: lib/%.c
+	@mkdir -p $(dir $@)
+	$(CLANG) $(PROG_CFLAGS) -MMD -MP -c $< -o $@
+prog_objs = $(patsubst %.c,build/prog/%.o,$(patsubst bin/%,%,$(PROG_SRCS_$1)))
 .SECONDEXPANSION:
 build/bin/%.elf: build/prog/crt0.o build/prog/main_%.o $$(call prog_objs,$$*) sdk/nxe.ld
 	@mkdir -p $(dir $@)
 	$(CLANG) $(PROG_CFLAGS) $(PROG_LDFLAGS) $(filter %.o,$^) -o $@
 build/bin/%.nxe: build/bin/%.elf tools/mknxe.py
 	$(PYTHON) tools/mknxe.py $< $@
-.SECONDARY: $(PROGRAMS:%=build/bin/%.elf) $(PROGRAMS:%=build/prog/main_%.o) $(patsubst bin/%.c,build/prog/%.o,$(wildcard bin/*.c))
+.SECONDARY: $(PROGRAMS:%=build/bin/%.elf) $(PROGRAMS:%=build/prog/main_%.o) $(patsubst bin/%.c,build/prog/%.o,$(wildcard bin/*.c)) $(foreach p,$(PROGRAMS),$(call prog_objs,$(p)))
 
 # LDROM bootloader (boot/): at most 4 KiB.
 BOOT_OBJS = build/boot/boot.o build/boot/update.o
+BOOT_CFLAGS = $(filter-out $(OPT),$(CFLAGS)) -Os
 build/boot/%.o: boot/%.c lib/fwupdate.h boot/update.h build/.version
 	@mkdir -p $(dir $@)
-	$(CLANG) $(CFLAGS) -DBOOT_VERSION='"$(VERSION)"' -c $< -o $@
+	$(CLANG) $(BOOT_CFLAGS) -DBOOT_VERSION='"$(VERSION)"' -c $< -o $@
 build/boot.elf: $(BOOT_OBJS) boot/link.ld
-	$(CLANG) $(CFLAGS) -nostdlib -fuse-ld=lld -Wl,-T,boot/link.ld,--gc-sections $(BOOT_OBJS) -o $@
+	$(CLANG) $(BOOT_CFLAGS) -nostdlib -fuse-ld=lld -Wl,-T,boot/link.ld,--gc-sections $(BOOT_OBJS) -o $@
 build/boot.bin: build/boot.elf
 	$(OBJCOPY) -O binary $< $@
 	@test $$(stat -c %s $@) -le 4096 || { echo "boot.bin is larger than LDROM (4 KiB)"; exit 1; }
@@ -113,9 +126,9 @@ sdk:
 test: build/nnnix.bin programs sdk
 	sudo $(PYTHON) tools/nntest.py --flash build/nnnix.bin
 
-HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty build/host/test_console build/host/test_shparse build/host/test_http \
+HOST_TESTS = build/host/test_lib build/host/test_input build/host/test_kmem build/host/test_tty build/host/test_tty_io build/host/test_console build/host/test_shparse build/host/test_http \
              build/host/test_time build/host/test_ed build/host/test_rootfs build/host/test_usbfs build/host/test_boot build/host/test_nnv build/host/test_xip build/host/test_scrollback \
-             build/host/test_url build/host/test_spi build/host/test_inputev build/host/test_audio build/host/test_socket build/host/test_dns build/host/test_wget
+             build/host/test_url build/host/test_spi build/host/test_inputev build/host/test_audio build/host/test_socket build/host/test_dns build/host/test_wget build/host/test_remote build/host/test_netcmd build/host/test_shprintf build/host/test_modules
 build/host/test_lib: tests/host/test_lib.c lib/fmt.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin $^ -o $@
@@ -128,12 +141,18 @@ build/host/test_kmem: tests/host/test_kmem.c kernel/kmem.c
 build/host/test_tty: tests/host/test_tty.c kernel/ledit.c net/telnet.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_tty_io: tests/host/test_tty_io.c kernel/tty.c kernel/ledit.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_console: tests/host/test_console.c kernel/vt.c drivers/kbd.c drivers/hidkey.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_shparse: tests/host/test_shparse.c user/shparse.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/sim_nsh: tests/host/nsh_sim.c user/nsh.c user/fileutil.c user/shparse.c user/shflow.c user/shtest.c user/shprintf.c lib/fmt.c lib/stdio.c lib/string.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -no-pie -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_http: tests/host/test_http.c net/http.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
@@ -157,10 +176,19 @@ build/host/test_socket: tests/host/test_socket.c net/socket.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 # -no-pie: the program's sys_alloc passes pointers through 32 bits, as on the board.
-build/host/test_dns: tests/host/test_dns.c bin/dns.c lib/string.c
+build/host/test_dns: tests/host/test_dns.c lib/dns.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -no-pie -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
-build/host/test_wget: tests/host/test_wget.c bin/wget.c bin/url.c bin/dns.c lib/string.c
+build/host/test_netcmd: tests/host/test_netcmd.c bin/ping.c user/netutil.c lib/dns.c lib/time.c lib/string.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_remote: tests/host/test_remote.c bin/remote.c lib/string.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -no-pie -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_shprintf: tests/host/test_shprintf.c user/shprintf.c user/shtest.c lib/stdio.c lib/fmt.c lib/string.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -no-pie -ffunction-sections -fdata-sections -Wl,--gc-sections -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_wget: tests/host/test_wget.c bin/wget.c bin/url.c lib/dns.c lib/string.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fno-builtin -no-pie -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 build/host/test_spi: tests/host/test_spi.c drivers/spi.c
@@ -186,6 +214,9 @@ build/host/test_rootfs: tests/host/test_rootfs.c fs/rootfs.c fs/lfs_port.c third
 build/host/test_usbfs: tests/host/test_usbfs.c fs/usbfs.c
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
+build/host/test_modules: tests/host/test_modules.c kernel/modules.c
+	@mkdir -p $(dir $@)
+	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $^ -o $@
 NNV_DEMOS = pattern bounce mixed tone
 build/host/nnv_%.nnv: tools/mknnv.py
 	@mkdir -p $(dir $@)
@@ -196,17 +227,20 @@ build/host/test_nnv: tests/host/test_nnv.c lib/nnv.h $(NNV_DEMOS:%=build/host/nn
 build/host/test_audio: tests/host/test_audio.c drivers/audioring.h lib/nnv.h build/host/nnv_tone.nnv
 	@mkdir -p $(dir $@)
 	$(HOSTCC) -std=c11 -Wall -Wextra -Werror -g -DNNNIX_HOST -fsanitize=undefined -fno-sanitize-recover=undefined $< -o $@
-host-test: $(HOST_TESTS) build/bin/wget.elf $(GAMES:%=build/host/sim_%)
+host-test: $(HOST_TESTS) build/bin/wget.elf $(GAMES:%=build/host/sim_%) build/host/sim_nsh
 	@for t in $(HOST_TESTS); do echo "== $$t"; (cd tests/host && ../../$$t) || exit 1; done
 	@echo "== tests/host/test_mknxe.py"; $(PYTHON) tests/host/test_mknxe.py build/bin/wget.elf
 	@echo "== tests/host/test_games.py"; $(PYTHON) tests/host/test_games.py
+	@echo "== tests/host/test_nsh.py"; $(PYTHON) tests/host/test_nsh.py
 	@echo "== tests/host/test_nnscreen.py"; $(PYTHON) tests/host/test_nnscreen.py
+	@echo "== tests/host/test_nnremote.py"; $(PYTHON) tests/host/test_nnremote.py
 	@echo "== tests/host/test_nnshare.py"; $(PYTHON) tests/host/test_nnshare.py
 
-size: build/nnnix.elf
-	$(SIZE) -A $<
+size: build/nnnix.bin programs
+	$(SIZE) -A build/nnnix.elf
+	$(PYTHON) tools/nnsize.py --group remote,wget --group play,wget
 
 clean:
 	rm -rf build
 
--include $(OBJS:.o=.d) $(wildcard build/prog/*.d)
+-include $(OBJS:.o=.d) $(wildcard build/prog/*.d build/prog/lib/*.d)

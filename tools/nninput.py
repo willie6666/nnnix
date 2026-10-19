@@ -2,27 +2,32 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The board's keyboard, mouse and keypad, working this computer.
 
-  nnscreen.py | nc BOARD 1234 | nninput.py        on the board: remote
+  nnremote.py PORT        on the board: remote COMPUTER-IP PORT
 
 Reads the board's input events (sent by the board's `remote`: /dev/input
 events, 8 bytes each, lib/sys.h struct nn_input_event) from standard input and
 replays them on the GNOME desktop through Mutter's remote desktop service:
 keys as the same keys (this computer's keyboard layout applies), the mouse as
 the pointer. The board's keypad zooms the picture nnscreen.py sends, at the
-pointer: 2 closer, 8 farther, 5 the whole screen again (mutter.ZOOMS). Whoever
-can send to standard input controls this computer: feed it only from your
-board.
+pointer: 2 closer, 8 farther, 5 the whole screen again (mutter.ZOOMS).
+Keypad 1 switches between absolute desktop motion and relative deltas for a
+game or other program that locks the pointer. In relative mode the preview
+stays at the screen centre and shows R instead of the synthetic arrow;
+switching back restores the remembered desktop pointer on its next move.
+Whoever can send to standard input controls this computer: feed it only
+from your board.
 
 The pointer is moved to positions this program keeps (starting in the middle
 of the screen), so a mouse used here meanwhile makes it jump back on the next
 move from the board. It writes the position and the zoom for nnscreen.py, which
 draws the pointer on the LCD (the screen is too small there to show GNOME's
 own) and shows the part of the screen around it.
-When the input ends (the board's SW_INT button ends nc, or the stream
+When the input ends (the board's SW_INT button ends remote, or the stream
 stops), keys and buttons still held are let go.
 
   --speed X       pointer pixels per mouse count (default 2)
   --monitor NAME  a monitor other than the primary one
+  --relative      start in relative mode (keypad 1 still toggles)
   -v              print the events
 """
 import argparse
@@ -65,32 +70,49 @@ BUTTONS = ((0x01, 0x110), (0x02, 0x111), (0x04, 0x112))      # left, right, midd
 
 
 class Replay:
-    def __init__(self, session, speed, verbose):
+    def __init__(self, session, speed, verbose, relative=False):
         self.s, self.speed, self.verbose = session, speed, verbose
         self.w, self.h = session.size
         self.x, self.y = self.w / 2, self.h / 2
         self.keys, self.buttons = set(), 0
         self.moved = False
+        self.relative, self.mode_down = relative, False
         self.zoom = 0                                        # an index into mutter.ZOOMS
 
     def key(self, code, down):
+        down = bool(down)
+        # The Enter that started remote may be released after /dev/input was
+        # opened. This session never pressed it; Mutter rejects that release.
+        # Also leave auto-repeat to the desktop instead of re-pressing keys.
+        if (code in self.keys) == down:
+            return
+        self.s.input('NotifyKeyboardKeycode', code, down)
         if down:
             self.keys.add(code)
         else:
-            self.keys.discard(code)
-        self.s.input('NotifyKeyboardKeycode', code, bool(down))
+            self.keys.remove(code)
 
     def event(self, kind, code, value, dx, dy):
         if self.verbose:
             print(f'type {kind} code {code:#04x} value {value} dx {dx} dy {dy}', file=sys.stderr)
         if kind == KEY and code in HID_TO_EVDEV:
             self.key(HID_TO_EVDEV[code], value)
+        elif kind == PAD and code == 1:
+            if value and not self.mode_down:
+                self.relative = not self.relative
+                self.moved = False
+                self.save()
+                print(f'nninput: mouse mode: {"relative" if self.relative else "absolute"}', file=sys.stderr)
+            self.mode_down = bool(value)
         elif kind == PAD and code in KEYPAD and value:
             step = KEYPAD[code]
             self.zoom = min(max(self.zoom + step, 0), len(mutter.ZOOMS) - 1) if step else 0
             self.save()
         elif kind == MOUSE:
-            if dx or dy or not self.moved:
+            if self.relative:
+                if dx or dy:
+                    self.s.input('NotifyPointerMotionRelative', dx * self.speed, dy * self.speed)
+            elif dx or dy or not self.moved:
                 self.x = min(max(self.x + dx * self.speed, 0), self.w - 1)
                 self.y = min(max(self.y + dy * self.speed, 0), self.h - 1)
                 self.s.input('NotifyPointerMotionAbsolute', self.s.stream, self.x, self.y)
@@ -99,27 +121,42 @@ class Replay:
             for bit, button in BUTTONS:
                 if (code ^ self.buttons) & bit:
                     self.s.input('NotifyPointerButton', button, bool(code & bit))
-            self.buttons = code
+                    self.buttons = (self.buttons | bit) if code & bit else (self.buttons & ~bit)
             wheel = value - 256 if value > 127 else value
             if wheel:
                 self.s.input('NotifyPointerAxisDiscrete', 0, -wheel)  # the wheel turned away: up
 
     def save(self):
-        mutter.write_state(self.x, self.y, mutter.ZOOMS[self.zoom])
+        # A locked-pointer program usually aims at the screen's centre. Keep
+        # its zoom there, while remembering the ordinary desktop pointer.
+        x, y = (self.w / 2, self.h / 2) if self.relative else (self.x, self.y)
+        mutter.write_state(x, y, mutter.ZOOMS[self.zoom], self.relative)
 
     def release(self):
+        error = None
         for code in list(self.keys):
-            self.key(code, 0)
+            try:
+                self.key(code, 0)
+            except Exception as e:               # try the other releases even if one failed
+                if error is None:
+                    error = e
         for bit, button in BUTTONS:
             if self.buttons & bit:
-                self.s.input('NotifyPointerButton', button, False)
-        self.buttons = 0
+                try:
+                    self.s.input('NotifyPointerButton', button, False)
+                    self.buttons &= ~bit
+                except Exception as e:
+                    if error is None:
+                        error = e
+        if error is not None:
+            raise error
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--speed', type=float, default=2.0)
     ap.add_argument('--monitor', default='')
+    ap.add_argument('--relative', action='store_true', help='start in relative mouse mode; board keypad 1 toggles')
     ap.add_argument('-v', '--verbose', action='store_true')
     args = ap.parse_args()
     if sys.stdin.isatty():
@@ -129,13 +166,17 @@ def main():
     except mutter.Error as e:
         sys.exit(f'nninput: {e}')
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
-    replay = Replay(session, args.speed, args.verbose)
-    replay.save()
+    replay = Replay(session, args.speed, args.verbose, args.relative)
     data = b''
+    status = 0
     try:
+        replay.save()
         while True:
             chunk = sys.stdin.buffer.read1(4096)
             if not chunk:
+                if data:
+                    print('nninput: input stream ended inside an event', file=sys.stderr)
+                    status = 1
                 break
             data += chunk
             while len(data) >= EVENT.size:
@@ -146,14 +187,17 @@ def main():
         pass
     except mutter.GLib.Error as e:                         # the session ended (GNOME's indicator)
         print(f'nninput: {e.message}', file=sys.stderr)
+        status = 1
     finally:
         try:
             replay.release()
-        except mutter.GLib.Error:
-            pass
+        except mutter.GLib.Error as e:
+            print(f'nninput: releasing input: {e.message}', file=sys.stderr)
+            status = 1
         mutter.remove_state()
         session.stop()
+    return status
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

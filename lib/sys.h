@@ -43,7 +43,7 @@ enum {
     SYS_TIME    = 31,  /* time() -> seconds since 1970-01-01 UTC */
     SYS_STIME   = 32,  /* stime(seconds): set the clock (and the RTC) */
     SYS_ISATTY  = 33,  /* isatty(fd) -> 1 if fd is the terminal */
-    SYS_SOCKET  = 34,  /* socket(NN_SOCK_TCP or NN_SOCK_UDP) -> fd; read/write/close as a file */
+    SYS_SOCKET  = 34,  /* socket(NN_SOCK_TCP/UDP/ICMP) -> fd; read/write/close as a file */
     SYS_CONNECT = 35,  /* connect(fd, const struct nn_sockaddr *): TCP starts connecting; UDP sets the peer */
     SYS_LISTEN  = 36,  /* listen(fd, port): TCP accepts one connection on the socket; UDP binds */
     SYS_SOCKINFO = 37, /* sockinfo(fd, struct nn_sockinfo *); fd -1-N reads hardware socket N */
@@ -173,13 +173,17 @@ struct nn_fwinfo {
  * TCP reads wait for data and return 0 once the peer closed; a UDP read returns
  * one datagram (the rest of a longer one is dropped) and makes its sender the
  * peer for the next write. */
-enum { NN_SOCK_TCP = 1, NN_SOCK_UDP = 2 };
+/* ICMP: one socket at a time, connect to an IPv4 address with port 0.
+ * read/write carry ICMP messages without an IP header. While open, W5500
+ * hardware echo replies are disabled; close restores them. No listen. */
+enum { NN_SOCK_TCP = 1, NN_SOCK_UDP = 2, NN_SOCK_ICMP = 3 };
 struct nn_sockaddr { uint8_t ip[4]; uint16_t port; };
 #define NN_SS_CLOSED      0x00         /* states as the W5500 reports them */
 #define NN_SS_LISTEN      0x14
 #define NN_SS_SYNSENT     0x15
 #define NN_SS_ESTABLISHED 0x17
 #define NN_SS_CLOSE_WAIT  0x1c
+#define NN_SS_IPRAW       0x32
 #define NN_SS_UDP         0x22
 struct nn_sockinfo {
     uint8_t sn, proto, state, user;    /* proto: NN_SOCK_*, 0 when closed; user: opened by a program */

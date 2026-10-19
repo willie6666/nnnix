@@ -267,6 +267,7 @@ int main(void)
     CHECK_EQ_INT(vfs_seek_pos(0, 0, INT32_MAX, SEEK_SET), INT32_MAX);
     CHECK_EQ_INT(vfs_seek_pos(UINT32_MAX, 0, INT32_MIN, SEEK_CUR), INT32_MAX);
     CHECK_EQ_INT(vfs_seek_pos(UINT32_MAX, 0, -1, SEEK_CUR), SYS_EINVAL);           /* above INT32_MAX */
+    CHECK_EQ_INT(usbfs_ops.close(&a), 0);
 
     /* R61: the module loses its power with files closed, and with one open
      * and written: the next use mounts again; the old handle fails, its
@@ -287,5 +288,56 @@ int main(void)
     CHECK_EQ_INT(open_file("/LOG.TXT", O_RDONLY, &a), 0);
     CHECK_EQ_INT(mounts, before + 2);
     CHECK_EQ_INT(usbfs_ops.close(&a), 0);
+
+    /* R68: no filesystem call between 63 disconnect/reconnect pairs. The
+     * module's number is reused, but every old handle must stay invalid. */
+    struct file old_read, old_write, old_dir;
+    CHECK_EQ_INT(open_file("/LOG.TXT", O_RDONLY, &old_read), 0);
+    CHECK_EQ_INT(open_file("/L", O_RDONLY, &old_dir), 0);
+    CHECK_EQ_INT(usbfs_ops.readdir(&old_dir, &de), 1);
+    CHECK_EQ_INT(open_file("/WRAP.TXT", O_WRONLY | O_CREAT, &old_write), 0);
+    CHECK_EQ_INT(usbfs_ops.write(&old_write, "lost", 4), 4);
+    uint8_t original = modules.ch376;
+    for (int round = 0; round < 2; ++round) {
+        for (int i = 0; i < 63; ++i) {
+            uint8_t previous = modules.ch376;
+            usbfs_media_lost();       /* modules_poll, including a rail loss */
+            modules.ch376 = 0; chip_mounted = 0; cur = -1;
+            modules.ch376 = (uint8_t)(previous % 63u + 1u);
+        }
+        CHECK_EQ_INT(modules.ch376, original);
+        before = mounts;
+        CHECK_EQ_INT(open_file("/LOG.TXT", O_RDONLY, &a), 0);
+        CHECK_EQ_INT(mounts, before + 1);
+        CHECK_EQ_INT(usbfs_ops.read(&a, buf, sizeof buf), 3);
+        CHECK(!memcmp(buf, "ABC", 3));
+        CHECK_EQ_INT(usbfs_ops.read(&old_read, buf, sizeof buf), SYS_EIO);
+        CHECK_EQ_INT(usbfs_ops.write(&old_write, "bad", 3), SYS_EIO);
+        CHECK_EQ_INT(usbfs_ops.readdir(&old_dir, &de), SYS_EIO);
+        CHECK_EQ_INT(usbfs_ops.lseek(&old_read, 0, SEEK_SET), SYS_EIO);
+        CHECK_EQ_INT(usbfs_ops.lseek(&old_read, 0, SEEK_CUR), SYS_EIO);
+        CHECK_EQ_INT(usbfs_ops.lseek(&old_read, 0, SEEK_END), SYS_EIO);
+        CHECK_EQ_INT(usbfs_ops.lseek(&old_dir, 0, SEEK_SET), SYS_EIO);
+        CHECK_EQ_INT(usbfs_ops.lseek(&old_dir, 0, SEEK_END), SYS_EIO);
+        CHECK_EQ_INT(usbfs_ops.close(&a), 0);
+    }
+    CHECK_EQ_INT(usbfs_ops.close(&old_read), 0);
+    CHECK_EQ_INT(usbfs_ops.close(&old_dir), 0);
+    CHECK_EQ_INT(usbfs_ops.close(&old_write), SYS_EIO);
+    CHECK_EQ_INT(disk[find("/WRAP.TXT")].size, 0);  /* stale dirty data was never written back */
+
+    /* Close/release can be the first operation after loss too. Neither may
+     * issue a write-back to the replacement medium. */
+    for (int release = 0; release < 2; ++release) {
+        CHECK_EQ_INT(open_file("/WRAP.TXT", O_WRONLY, &a), 0);
+        CHECK_EQ_INT(usbfs_ops.write(&a, "lost", 4), 4);
+        usbfs_media_lost();
+        chip_mounted = 0; cur = -1;
+        uint32_t before_commands = commands;
+        if (release) CHECK_EQ_INT(usbfs_release(), SYS_EIO);
+        CHECK_EQ_INT(usbfs_ops.close(&a), SYS_EIO);
+        CHECK_EQ_INT(commands, before_commands);
+        CHECK_EQ_INT(disk[find("/WRAP.TXT")].size, 0);
+    }
     return check_summary("test_usbfs");
 }

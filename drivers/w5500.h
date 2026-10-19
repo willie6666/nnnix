@@ -10,6 +10,7 @@
 #define W5500_SOCK_SYNRECV     0x16
 #define W5500_SOCK_ESTABLISHED 0x17
 #define W5500_SOCK_CLOSE_WAIT  0x1c
+#define W5500_SOCK_IPRAW       0x32
 #define W5500_SOCK_UDP         0x22
 #define W5500_SOCK_SYNSENT     0x15
 #define W5500_SOCK_FIN_WAIT    0x18
@@ -17,6 +18,7 @@
 #define W5500_SOCK_TIME_WAIT   0x1b
 #define W5500_SOCK_LAST_ACK    0x1d
 #define W5500_MODE_TCP_ND      0x21          /* TCP, no delayed ACK */
+#define W5500_MODE_ICMP        0x03          /* IPRAW, Sn_PROTO = 1 */
 #define W5500_MODE_UDP         0x02
 
 struct w5500_netcfg { uint8_t mac[6], ip[4], mask[4], gateway[4]; };
@@ -33,7 +35,7 @@ int      w5500_wait(int sn, uint32_t timeout_ms);   /* 0 on an event, -ETIMEDOUT
 uint8_t  w5500_phy(void);                           /* PHYCFGR: bit0 link, bit1 100M, bit2 full */
 void     w5500_configure(const struct w5500_netcfg *cfg, const uint8_t buffer_kib[8]);
 void     w5500_set_addr(const struct w5500_netcfg *cfg);    /* addresses only; sockets stay */
-int      w5500_open(int sn, uint8_t mode, uint16_t port);   /* closes, then opens; 0 on INIT/UDP */
+int      w5500_open(int sn, uint8_t mode, uint16_t port);   /* closes, then opens; 0 on INIT/UDP/IPRAW */
 void     w5500_close(int sn);
 int      w5500_tcp_listen(int sn, uint16_t port);   /* 0 on LISTEN */
 int      w5500_tcp_connect(int sn, const uint8_t ip[4], uint16_t port, uint16_t local_port); /* starts */

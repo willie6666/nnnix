@@ -135,7 +135,9 @@ static uint16_t scan(void)
 
 static int scanning(void) { return claim || console_lcd_owner() || stopping; }
 
-/* SW_INT: end the program holding the keys, or the display. The kill takes
+/* SW_INT: end the program holding the keys, or the display. A protected
+ * shell receives a terminal interrupt and releases its LCD session itself.
+ * The kill takes
  * effect at its next system call; one that runs its own code without making
  * any is ended where it was preempted (task_end_now), tried until it is gone. */
 static void stop_holder(void)
@@ -143,6 +145,10 @@ static void stop_holder(void)
     uint16_t pid = owner ? owner : console_lcd_owner();
     if (!pid) return;
     int e = task_kill(pid);
+    if (e == -1 && !task_interrupt_tty(pid)) {
+        kprintf("input: SW_INT: interrupting pid %u (%s)\n", pid, owner == pid ? "/dev/input" : "/dev/lcd");
+        return;
+    }
     kprintf("input: SW_INT: %s pid %u (%s)\n", e ? "cannot end" : "ending", pid, owner == pid ? "/dev/input" : "/dev/lcd");
     if (!e) { stopping = pid; stop_scans = FORCE_SCANS; }
 }

@@ -95,5 +95,6 @@ int  rootfs_mount(struct mount *m);  /* in fsd: mount; format only a blank flash
 int  rootfs_format(struct mount *m); /* in fsd: format and mount, only while not mounted (or legacy, unused) */
 int  rootfs_legacy(void);            /* "/" still covers the firmware update area */
 int  usbfs_release(void);            /* before using the CH376S directly: write back, unmount (fsd, CH376S lock) */
+void usbfs_media_lost(void);         /* kd: latch a disconnect, even across generation wrap */
 
 #endif

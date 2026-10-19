@@ -5,23 +5,11 @@
 #include "../lib/string.h"
 #include "../lib/sys.h"
 #include "../lib/time.h"
+#include "../lib/dns.h"
 
 #define NTP_UNIX_OFFSET 2208988800u  /* seconds from 1900 to 1970 */
 
 static int usage(const char *text) { printf("usage: %s\n", text); return 1; }
-
-/* "a.b.c.d" with nothing after it. */
-static int parse_ip(const char *s, uint8_t ip[4])
-{
-    for (int i = 0; i < 4; ++i) {
-        unsigned v = 0, digits = 0;
-        while (*s >= '0' && *s <= '9' && digits < 4) { v = v * 10u + (unsigned)(*s++ - '0'); ++digits; }
-        if (!digits || v > 255 || *s != (i < 3 ? '.' : 0)) return -1;
-        ip[i] = (uint8_t)v;
-        if (i < 3) ++s;
-    }
-    return 0;
-}
 
 static int parse_port(const char *s, uint16_t *port)
 {
@@ -161,12 +149,12 @@ int cmd_ifconfig(int argc, char **argv)
         }
         if (prefix > 32) return usage(use);
     }
-    if (parse_ip(addr, c.ip)) return usage(use);
+    if (dns_parse_ip(addr, c.ip)) return usage(use);
     mask_of(prefix, c.mask);
     memset(c.gw, 0, 4);
     for (; i + 1 < argc; i += 2) {
         uint8_t *dst = !strcmp(argv[i], "gw") ? c.gw : !strcmp(argv[i], "dns") ? c.dns : 0;
-        if (!dst || parse_ip(argv[i + 1], dst)) return usage(use);
+        if (!dst || dns_parse_ip(argv[i + 1], dst)) return usage(use);
     }
     if (i != argc) return usage(use);
     int e = sys_netcfg(&c, NN_NET_SET);
@@ -246,6 +234,7 @@ static const char *state_name(uint8_t s)
     case 0x1c: return "CLOSEWAIT";
     case 0x1d: return "LASTACK";
     case 0x22: return "UDP";
+    case 0x32: return "IPRAW";
     default: return "?";
     }
 }
@@ -258,7 +247,7 @@ int cmd_netstat(int argc, char **argv)
     for (int sn = 0; sn < 8; ++sn) {
         struct nn_sockinfo i;
         if (sys_sockinfo(-1 - sn, &i)) continue;
-        printf("%d %-6s %-5s %-5u %-9s", sn, owners[sn], i.proto == NN_SOCK_TCP ? "tcp" : i.proto == NN_SOCK_UDP ? "udp" : "-",
+        printf("%d %-6s %-5s %-5u %-9s", sn, owners[sn], i.proto == NN_SOCK_TCP ? "tcp" : i.proto == NN_SOCK_UDP ? "udp" : i.proto == NN_SOCK_ICMP ? "icmp" : "-",
                i.proto ? i.port : 0, state_name(i.state));
         if (i.state >= 0x15 && i.state <= 0x1d) { printf(" "); print_ip(i.peer); printf(":%u", i.peer_port); }
         printf("\n");
@@ -338,7 +327,7 @@ int cmd_nc(int argc, char **argv)
     struct nn_sockaddr a;
     memset(&a, 0, sizeof a);
     if (listen ? i + 1 != argc || parse_port(argv[i], &a.port)
-               : i + 2 != argc || parse_ip(argv[i], a.ip) || parse_port(argv[i + 1], &a.port))
+               : i + 2 != argc || dns_parse_ip(argv[i], a.ip) || parse_port(argv[i + 1], &a.port))
         return usage(use);
     (void)nn_interrupted();
     int fd = sys_socket(proto);
@@ -383,11 +372,17 @@ out:
 int cmd_ntpdate(int argc, char **argv)
 {
     struct nn_sockaddr a = { .port = 123 };
-    if (argc != 2 || parse_ip(argv[1], a.ip)) return usage("ntpdate SERVER-IP");
+    if (argc != 2) return usage("ntpdate SERVER");
+    (void)nn_interrupted();
+    int resolved = dns_resolve(argv[1], a.ip);
+    if (resolved) {
+        printf("ntpdate: %s: %s\n", argv[1], resolved == SYS_ENOENT ? "no such host" :
+               resolved == SYS_EINVAL ? "invalid name or no DNS server (ifconfig or dhcp)" : errstr(resolved));
+        return resolved == SYS_EINTR ? 130 : 1;
+    }
     int fd = sys_socket(NN_SOCK_UDP);
     if (fd < 0) { printf("ntpdate: %s\n", errstr(fd)); return 1; }
     int rc = 1, e = sys_connect(fd, &a);
-    (void)nn_interrupted();
     for (int attempt = 0; !e && attempt < 3; ++attempt) {
         uint8_t p[48];
         /* Our transmit time, which the reply must give back as its originate

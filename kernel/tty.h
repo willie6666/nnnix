@@ -12,11 +12,12 @@
 /* A terminal: canonical line editing on top of a byte backend (telnet socket,
  * later the LCD + keyboard and the serial port). Used by one session task. */
 #define TTY_TIMEOUT (-2)
+#define TTY_HANGUP  (-3)             /* polling backend: terminal input has ended */
 struct tty_ops {
     /* Next input byte; -1 when hung up, TTY_TIMEOUT after timeout_ms (0: wait forever). */
     int  (*getc)(void *ctx, uint32_t timeout_ms);
     void (*write)(void *ctx, const char *s, size_t n);
-    int  (*poll)(void *ctx);                           /* a byte if one is waiting, else -1 */
+    int  (*poll)(void *ctx);                           /* byte, -1 if empty, TTY_HANGUP at EOF */
 };
 
 struct tty {
@@ -27,6 +28,8 @@ struct tty {
     uint16_t rpos, rlen;             /* finished line not yet read */
     uint8_t ahead[16], ahead_len;    /* typed while a command ran; read before new input */
     volatile uint8_t reading;        /* a task is inside tty_read */
+    volatile uint8_t interrupt_pending; /* out-of-band cancel, e.g. SW_INT */
+    uint8_t ahead_drop;             /* discard an overflowing type-ahead line through its end */
     /* A shell, its background jobs and pipeline stages all write here; the
      * backend's send (socket pointers, LCD cursor) must not interleave. */
     struct mutex wlock;
@@ -43,5 +46,8 @@ void tty_write(struct tty *t, const char *s, size_t n);   /* "\n" becomes "\r\n"
 /* Non-blocking check for Ctrl-C while nobody reads the terminal: pending input
  * is moved to the type-ahead buffer; returns 1 (and drops the ^C) if one came. */
 int  tty_interrupted(struct tty *t);
+/* Request cancellation without putting a byte into a possibly full input
+ * queue. The next read or foreground interrupt check consumes it. */
+void tty_interrupt(struct tty *t);
 
 #endif

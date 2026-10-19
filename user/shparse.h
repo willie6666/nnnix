@@ -16,7 +16,9 @@ struct sh_command {
 };
 
 /* Quotes, escapes, comments, variables and ordered < > >> redirections.
- * Expansions stay in one word; no globbing or field splitting. The lookup
+ * Expansions stay in one word; standalone $@/"$@" expands the positional list
+ * without field splitting. $0-$9 and $# (also braced) use the lookup callback.
+ * The lookup
  * callback returns an empty string for an unset variable. */
 const char *sh_parse(const char *line, struct sh_command *out,
                      const char *(*lookup)(void *, const char *), void *ctx);

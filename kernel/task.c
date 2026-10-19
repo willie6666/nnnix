@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "task.h"
+#include "tty.h"
 #include "xip.h"
 #include "exec.h"
 #include "kmem.h"
@@ -20,6 +21,7 @@ static int running;
 static uint16_t next_pid = 1;
 static uint32_t switch_seq, switches;
 static struct task *idle;
+static void end_preempted(struct task *t);
 
 static struct task *cur(void) { return (struct task *)sched_current; }
 int sched_running(void) { return running; }
@@ -140,6 +142,10 @@ void sched_switch(void)
               (uintptr_t)f >= (uintptr_t)prev->stack + 64u ? f[13] : 0u);
     }
     struct task *next = pick();
+    /* PendSV runs on MSP, after the task's PSP frame has been saved. A
+     * killed program spinning without system calls must leave too. Kernel
+     * PCs are excluded so a held lock or an in-flight syscall can finish. */
+    end_preempted(next);
     if (next != prev) {
         /* Still runnable with slice left and not yielding: it was preempted. */
         prev->preempted = prev->state == TASK_READY && prev->slice && !prev->yielded;
@@ -349,7 +355,7 @@ static void task_free(struct task *t, uint32_t peak)
     int mine = 1;
     if (image && --image->refs) {
         /* Still used by a relative (a child it spawned, which may still run
-         * until its next system call): the program's heap may be shared
+         * until cancellation takes effect): the program's heap may be shared
          * through its globals, so it passes to that relative instead. */
         for (int i = 0; i < TASK_MAX; ++i)
             if (tasks[i] && tasks[i] != t && tasks[i]->image == image) { kmem_reown(t->pid, tasks[i]->pid); break; }
@@ -431,15 +437,27 @@ int task_kill(uint16_t pid)
     return r;
 }
 
-int task_end_now(uint16_t pid)
+int task_interrupt_tty(uint16_t pid)
 {
     uint32_t s = irq_save();
     struct task *t = find(pid);
-    if (!t || t->state == TASK_ZOMBIE) { irq_restore(s); return 0; }
+    int r = 0;
+    if (!t || t->state == TASK_ZOMBIE) r = -ESRCH;
+    else if (!t->tty) r = -1;
+    /* Do not abort an unrelated wait (e.g. wait_pid) underneath the shell:
+     * it must still join and clean up its children. Its normal bounded tty
+     * reads/foreground checks consume the request. */
+    else tty_interrupt(t->tty);
+    irq_restore(s);
+    return r;
+}
+
+static void end_preempted(struct task *t)
+{
     /* Preempted (so not inside the kernel: system calls run in the task, but
      * a task blocked in one is not TASK_READY with its pc in program code).
      * Saved: r4-r11, then r0 r1 r2 r3 r12 lr pc xpsr. */
-    if (t != cur() && t->user && t->killed && t->state == TASK_READY && exec_is_program_code(t->sp[14])) {
+    if (t->user && t->killed && t->state == TASK_READY && exec_is_program_code(t->sp[14])) {
         uint32_t *frame = (uint32_t *)(((uintptr_t)t->stack + t->stack_size) & ~(uintptr_t)7u) - 16;
         for (int i = 0; i < 16; ++i) frame[i] = 0;
         frame[8] = 130;                          /* r0: the exit code of a kill */
@@ -447,6 +465,14 @@ int task_end_now(uint16_t pid)
         frame[15] = 0x01000000u;                 /* xPSR: Thumb */
         t->sp = frame;
     }
+}
+
+int task_end_now(uint16_t pid)
+{
+    uint32_t s = irq_save();
+    struct task *t = find(pid);
+    if (!t || t->state == TASK_ZOMBIE) { irq_restore(s); return 0; }
+    if (t != cur()) end_preempted(t);  /* a thread must not overwrite the stack it is using */
     irq_restore(s);
     return 1;
 }

@@ -54,12 +54,13 @@ def put(host, path, data):
 
 
 def install_programs(ns, host, folder):
-    files = sorted(folder.glob('*.nxe'))
+    files = sorted(f for f in folder.glob('*.nxe') if f.stem != 'lcd')
     if not files:
         raise RuntimeError(f'no programs (*.nxe) in {folder}')
     t = Telnet(ns, host=host)
     t.read_until(Telnet.PROMPT)
     t.cmd('mkdir /bin')                              # an error if it is there already
+    t.cmd('rm /bin/lcd')                            # retired; do not leave an old command installed
     t.send('exit\r\n'); t.wait_closed(); t.close()
     for f in files:
         status = ns.call(put, host, f'/bin/{f.stem}', f.read_bytes())

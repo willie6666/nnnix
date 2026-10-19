@@ -18,6 +18,7 @@ void tty_init(struct tty *t, const struct tty_ops *ops, void *ctx)
     t->ops = ops;
     t->ctx = ctx;
     t->rpos = t->rlen = 0;
+    t->ahead_len = t->reading = t->interrupt_pending = t->ahead_drop = 0;
     /* One byte is kept back so the line can be handed out with its '\n'. */
     ledit_init(&t->ed, t->line, TTY_LINE - 1, echo, t);
 }
@@ -33,13 +34,41 @@ static int next_byte(struct tty *t, uint32_t timeout_ms)
     return t->ops->getc(t->ctx, timeout_ms);
 }
 
+void tty_interrupt(struct tty *t) { t->interrupt_pending = 1; }
+
+static int take_interrupt(struct tty *t)
+{
+    if (!t->interrupt_pending) return 0;
+    t->interrupt_pending = 0;
+    t->ahead_len = 0;              /* a cancelled partial command must not run later */
+    t->ahead_drop = 0;
+    t->rpos = t->rlen = 0;
+    return 1;
+}
+
 int tty_interrupted(struct tty *t)
 {
-    if (t->reading || !t->ops->poll) return 0;
+    if (t->reading) return 0;
+    if (take_interrupt(t)) return 1;
+    if (!t->ops->poll) return 0;
     int c;
-    while (t->ahead_len < sizeof t->ahead && (c = t->ops->poll(t->ctx)) >= 0) {
-        if (c == 0x03) return 1;
-        t->ahead[t->ahead_len++] = (uint8_t)c;
+    /* Keep looking for ^C when type-ahead is full. Bound the work even if a
+     * peer streams input continuously; never execute a truncated command. */
+    for (unsigned budget = TTY_LINE; budget && (c = t->ops->poll(t->ctx)) >= 0; --budget) {
+        if (c == 0x03) {
+            t->ahead_len = t->ahead_drop = 0;
+            t->rpos = t->rlen = 0;
+            return 1;
+        }
+        if (t->ahead_drop || t->ahead_len == sizeof t->ahead) {
+            t->ahead_len = 0;
+            t->ahead_drop = c != '\r' && c != '\n' && c != 0x04;
+        } else t->ahead[t->ahead_len++] = (uint8_t)c;
+    }
+    if (c == TTY_HANGUP) {
+        t->ahead_len = t->ahead_drop = 0;
+        t->rpos = t->rlen = 0;
+        return 1;                   /* unwind foreground work; next read observes EOF */
     }
     return 0;
 }
@@ -57,6 +86,7 @@ int tty_read(struct tty *t, char *buf, size_t n)
 static int read_line(struct tty *t, char *buf, size_t n)
 {
     uint32_t idle_since = jiffies;
+    if (take_interrupt(t)) goto interrupted;
     while (t->rpos >= t->rlen) {
         /* Wait at most 1 s at a time, so a changed idle_logout applies to waiting readers too. */
         uint32_t limit = tty_idle_logout_s * 1000u, idle = jiffies - idle_since, wait = 1000u;
@@ -67,9 +97,18 @@ static int read_line(struct tty *t, char *buf, size_t n)
         }
         if (limit && limit - idle < wait) wait = limit - idle;
         int c = next_byte(t, wait);
+        if (take_interrupt(t)) {
+            /* A byte arriving after SW_INT must reach the next prompt. */
+            if (c >= 0 && c != 0x03) t->ahead[t->ahead_len++] = (uint8_t)c;
+            goto interrupted;
+        }
         if (c == TTY_TIMEOUT) continue;
         if (c < 0) return 0;                          /* hung up */
         idle_since = jiffies;
+        if (t->ahead_drop && c != 0x03) {
+            if (c == '\r' || c == '\n' || c == 0x04) t->ahead_drop = 0;
+            continue;
+        }
         switch (ledit_feed(&t->ed, (uint8_t)c)) {
         case LEDIT_LINE:
             t->line[t->ed.len] = '\n';
@@ -85,6 +124,11 @@ static int read_line(struct tty *t, char *buf, size_t n)
     size_t k = 0;
     while (k < n && t->rpos < t->rlen) buf[k++] = t->line[t->rpos++];
     return (int)k;
+interrupted:
+    t->rpos = t->rlen = 0;
+    ledit_init(&t->ed, t->line, TTY_LINE - 1, echo, t);
+    ledit_feed(&t->ed, 0x03);       /* reset partial lines/escape sequences and echo ^C */
+    return -EINTR;
 }
 
 void tty_write(struct tty *t, const char *s, size_t n)

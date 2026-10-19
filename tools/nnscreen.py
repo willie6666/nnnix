@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """This computer's screen as an NNV stream for the board's LCD (docs/NNV.md).
 
-  nnscreen.py [options] | nc BOARD 1234 | nninput.py      on the board: remote
+  nnremote.py PORT -- [options]             board: remote COMPUTER-IP PORT
   nnscreen.py [options] | nc BOARD 1234                   board: nc -l 1234 | play
 
-The first form also hands the board's keyboard and mouse to this computer
-(tools/nninput.py), and its keypad zooms the picture at the pointer: 2 closer,
-8 farther, 5 the whole screen. The second only shows the screen. Standard
+The first form listens on the computer and hands it the board's keyboard
+and mouse (tools/nninput.py), and its keypad zooms the picture at the pointer: 2 closer,
+8 farther, 5 the whole screen. Keypad 1 toggles relative mouse mode: the
+preview stays centred and shows R instead of the synthetic pointer.
+The second only shows the screen. Standard
 output gets a live stream: its header gives no frame count and no time per
 frame, so the board shows each frame as soon as it comes, and frames go out
 only when the picture changes. Into a file (`-o FILE`, or a redirection) it
@@ -74,14 +76,14 @@ class View:
         x, y = min(max(x, 0), sw - 1), min(max(y, 0), sh - 1)
         return x, y, max(1, min(w, sw - x)), max(1, min(h, sh - y))
 
-    def region(self, zoom, pointer):
+    def region(self, zoom, pointer, centered=False):
         sw, sh = self.screen
         if not zoom:
             r = self.whole()
         else:
             w, h = min(sw, W * zoom), min(sh, H * zoom)
             px, py = pointer if pointer else (sw / 2, sh / 2)
-            if self.cur is None:
+            if self.cur is None or centered:
                 x, y = px - w / 2, py - h / 2
             elif zoom != self.zoom:                      # the point under the pointer stays put
                 ox, oy, ow, oh = self.cur
@@ -187,6 +189,14 @@ def header(count, frame_ms):
     return b'NNV1' + struct.pack('<HHHHBBH', W, H, count, units >> 8, 0, units & 0xff, 0)
 
 
+def draw_relative(dark):
+    """A small inverse R at the top right; the synthetic arrow is hidden."""
+    dark[:7, -5:] = True
+    for y, row in enumerate(('110', '101', '110', '101', '101'), 1):
+        for x, c in enumerate(row, W - 4):
+            dark[y, x] = c != '1'
+
+
 def parse_area(text):
     try:
         v = [int(p) for p in text.split(',')]
@@ -235,7 +245,7 @@ def main():
             grey = levels(grey)
         return 255 - grey if args.invert else grey
 
-    sent = count = 0
+    sent = count = status = 0
     prev = None
     try:
         gray = frames.latest(5)
@@ -246,13 +256,16 @@ def main():
         while args.duration is None or time.monotonic() - start < args.duration:
             state = mutter.read_state()
             pointer, zoom = (state[:2], state[2]) if state else (None, args.zoom)
-            area = view.region(zoom, pointer)
+            relative = state[3] if state else False
+            area = view.region(zoom, pointer, centered=relative)
             frames.set_scale(scale_for(area))
             gray = frames.latest()
             f = gray.shape[1] / session.size[0]          # what came: the scale may have just changed
             grey, place = picture(gray, area, args.fit, f, tone)
             dark = mknnv.dither(grey, args.dither, args.threshold)
-            if pointer and not args.no_cursor:
+            if relative:
+                draw_relative(dark)
+            elif pointer and not args.no_cursor:
                 draw_arrow(dark, pointer, place)
             frame = mknnv.pack(dark)
             if record or frame != prev:
@@ -278,6 +291,7 @@ def main():
         os.dup2(os.open(os.devnull, os.O_WRONLY), out.fileno())
     except mutter.Error as e:
         print(f'nnscreen: {e}', file=sys.stderr)
+        status = 1
     finally:
         frames.stop()
         session.stop()
@@ -290,7 +304,8 @@ def main():
             pass
         if record:
             print(f'nnscreen: {count} frames, {sent} bytes', file=sys.stderr)
+    return status
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -4,11 +4,15 @@
 #include <string.h>
 
 static struct sh_command c;
+static const char *pos_count = "3";
+static const char *pos[10] = { "demo.sh", "two words", "", "| > & ; # \" \\" };
 static const char *value(void *ctx, const char *name)
 {
     (void)ctx;
     if (!strcmp(name, "X")) return "two words > literal";
     if (!strcmp(name, "?")) return "7";
+    if (!strcmp(name, "#")) return pos_count;
+    if (name[0] >= '0' && name[0] <= '9' && !name[1]) return pos[name[0] - '0'] ? pos[name[0] - '0'] : "";
     return "";
 }
 
@@ -57,5 +61,38 @@ int main(void)
     const char *badline[] = { "| a", "a |", "a | | b", "a || b", "&", "a & b", "a; b", "a|b|c|d", "a | > x" };
     for (unsigned i = 0; i < sizeof badline / sizeof badline[0]; ++i)
         CHECK(PL(badline[i]) != 0);
+
+    CHECK(!parse("echo $0 ${1} \"$2\" $3 $# ${#} ${?}"));
+    CHECK_EQ_INT(c.argc, 8);
+    CHECK(!strcmp(c.argv[1], "demo.sh"));
+    CHECK(!strcmp(c.argv[2], "two words"));
+    CHECK(!strcmp(c.argv[3], ""));
+    CHECK(!strcmp(c.argv[4], pos[3]));
+    CHECK(!strcmp(c.argv[5], "3")); CHECK(!strcmp(c.argv[6], "3")); CHECK(!strcmp(c.argv[7], "7"));
+    const char *vectors[] = { "echo \"$@\"", "echo $@", "echo ${@}", "echo \"${@}\"" };
+    for (unsigned i = 0; i < sizeof vectors / sizeof *vectors; ++i) {
+        CHECK(!parse(vectors[i])); CHECK_EQ_INT(c.argc, 4);
+        CHECK(!strcmp(c.argv[1], pos[1])); CHECK(!strcmp(c.argv[2], "")); CHECK(!strcmp(c.argv[3], pos[3]));
+        CHECK(c.argv[4] == 0);
+    }
+    CHECK(!PL("echo \"$@\" | echo \"$1\"")); CHECK_EQ_INT(n, 2);
+    CHECK_EQ_INT(p[0].argc, 4); CHECK(!strcmp(p[0].argv[3], pos[3]));
+    CHECK(!strcmp(p[1].argv[1], pos[1]));
+    CHECK(!parse("echo '$@' \\$@")); CHECK(!strcmp(c.argv[1], "$@")); CHECK(!strcmp(c.argv[2], "$@"));
+    CHECK(parse("echo prefix\"$@\"") != 0);
+    CHECK(parse("echo \"$@\"suffix") != 0);
+    CHECK(parse("echo > \"$@\"") != 0);
+    CHECK(parse("echo ${10}") != 0); /* one digit, as the script limit is nine */
+    CHECK(parse("echo $@ $@ $@ $@") != 0);
+    pos_count = "0";
+    CHECK(!parse("echo \"$@\"")); CHECK_EQ_INT(c.argc, 1);
+    CHECK(!parse("echo \"\" \"$@\"")); CHECK_EQ_INT(c.argc, 2);
+    CHECK(!parse("\"$@\"")); CHECK_EQ_INT(c.argc, 0);
+    pos_count = "10"; CHECK(parse("echo $@") != 0);
+    char exact[187]; memset(exact, 'z', sizeof exact - 1); exact[sizeof exact - 1] = 0;
+    pos_count = "1"; pos[1] = exact;
+    CHECK(!parse("echo $@")); CHECK_EQ_INT(c.argc, 2);
+    CHECK_EQ_INT(strlen(c.argv[1]), 186);
+    pos_count = "2"; CHECK(parse("echo $@") != 0); /* another empty arg exceeds the word buffer */
     return check_summary("test_shparse");
 }

@@ -72,11 +72,15 @@ pid name prio state stack_used stack_size cpu_ms
 - Kernel daemon `kd`: one event loop for the network, keyboard, telnet and diag listeners, the console shell and module supervision
 - File systems: VFS with `/` (littlefs on the SPI flash), `/usb` (CH376S FAT drive), `/dev`, `/proc`; per-task file descriptors and working directory; littlefs and CH376S work runs in the `fsd` task
 - Network: interrupt-driven W5500, socket layer with self re-arming listeners, telnet server with three sessions
-- Shell `nsh`: built in `help echo ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir
-  touch pwd cd df mkfile sum date ifconfig dhcp service netstat nc ntpdate`, and from `/bin` the programs
-  `wc head tail grep hexdump ed play wget host snake tetris flappy` (`bin/`); redirection `< > >>`, using only system calls
+- Shell `nsh`: built in `help echo printf ps free uptime dmesg uname sleep clear reboot exit ls cat cp mv rm mkdir rmdir
+  touch pwd cd df mkfile sum date ifconfig dhcp service netstat nc ntpdate test [ true false inc`, and from `/bin` the programs
+  `wc head tail grep hexdump ed play wget host ping snake tetris flappy remote` (`bin/`); redirection `< > >>`, using only system calls
 - M5 shell: quotes/escapes, per-session variables (`set`, `unset`, `env`, `$NAME`, `${NAME}`, `$?`),
   `sh`/`source` scripts and optional `/etc/rc` at boot; streaming `wc head tail grep hexdump`
+- Script control flow: `if`/`elif`/`else`, `while`, `break`/`continue`, string/integer/file
+  tests and `inc` counters; eight nested blocks, streamed from files with Ctrl-C cancellation.
+  Script arguments: `$0`-`$9`, `$#`, `"$@"`, `shift`, with separate lists for nested files.
+  Examples are in [`examples/scripts`](examples/scripts).
 - HTTP transfers: TCP port 8080, GET/PUT under `/home`, temporary-file uploads committed by atomic rename;
   `tools/nncp.py` transfers binary files with no third-party host dependencies
 - Pipes (`a | b | c`), background jobs (`&`, `jobs`, `kill`, `wait`) and Ctrl-C
@@ -95,24 +99,34 @@ pid name prio state stack_used stack_size cpu_ms
   `play -s` adds the sound, though the buzzer carries rhythm far better than pitch); `nc -l 1234 | play`
   plays a video streamed over the network (all of Bad Apple: 0 frames late); `remote` shows a GNOME
   computer's screen (`tools/nnscreen.py`) and works it with the board's keyboard and mouse
-  (`tools/nninput.py`); the board's keypad zooms in at the pointer
+  (`tools/nninput.py`); start `python3 tools/nnremote.py PORT` on the computer,
+  then `remote COMPUTER-IP PORT` on the board; the board's keypad zooms in at the pointer,
+  and keypad **1** toggles relative mouse motion for programs that lock the pointer (**R** on the LCD)
 - Input for programs (games): `/dev/input` gives one program the USB keyboard and mouse and the board's 1-9
   keypad as press/release events (`sdk/examples/keys.c`); the board's SW_INT button ends the program
   holding the keys or the display, even one stuck in a loop
+- Binary output in scripts: built-in `printf` supports byte escapes and `%B`
+  (numeric byte 0-255). `sh /home/nsh-examples/raw-box.sh` generates a frame
+  with `if`/`while`, then writes it through `cat ... > /dev/lcd`; Ctrl-D,
+  Ctrl-C or SW_INT restores the console. No LCD-specific command is needed.
 - Games on the LCD: `snake`, `tetris`, `flappy` (`bin/`, sharing `bin/game.c`), with the keyboard or the
   keypad; they also run on the host with a simulated clock and screenshots (`tests/host/game_sim.c`)
 - Firmware updates: `fwupdate FILE` (or `tools/nnupdate.py` from the NanoPi) stages an image in the SPI flash;
   the LDROM bootloader (`boot/`) installs it and repeats an installation that a reset or power loss cut short
 - Network: `ifconfig`, a DHCP client with lease renewal in the kernel daemon, `netstat`, `service` (telnetd,
   httpd), `nc` (TCP/UDP, client/server); sockets are files for programs (`socket`, `connect`, `listen`);
-  `host` (DNS lookups) and `wget` (HTTP downloads with redirects and chunked replies) as programs
+  `ping` (ICMP Echo, IP address or DNS name), `host` (DNS lookups) and `wget` (HTTP downloads with redirects and chunked replies) as programs
 - Memory: first-fit kmalloc with coalescing, long-lived blocks (login shells) from the top of the heap; each
   task's struct shares its stack's block; the boot runs on a temporary stack in the heap, so the main stack only
   needs room for interrupts; task stacks get red-zone and canary checks and an overflow panics
 - Crash records: HardFaults and panics are saved in `.noinit` and reported after the reboot; the boot log shows the reset cause
 - Drivers: CH376S (USB drive, FAT), W5500 (hardware TCP/IP), CH9350 (USB keyboard/mouse, interrupt-driven receive)
 
-| On-target tests (`make test`, 154 checks) | Result |
+The current `-Oz` image passed 95 selected board checks and a network self-update.
+The table records project regression coverage across runs; intentional crashes,
+watchdog resets and interrupted-update tests were not repeated for this image.
+
+| On-target regression coverage (`make test`) | Result |
 | --- | --- |
 | Files: flash and USB read/write, copies both ways (CRC-checked), USB subdirectories, redirection, `mv` across file systems | pass |
 | Two sessions reading two different files on the single-file CH376S at once | pass |
@@ -132,24 +146,28 @@ pid name prio state stack_used stack_size cpu_ms
 | LCD player: a 60-frame video at its frame rate, one `/dev/lcd` writer at a time, picture until Enter, Ctrl-C, damaged files refused, RAM reclaimed | pass |
 | Sound: 2 s of samples in 2.0 s, one `/dev/audio` writer, a video with sound on time and without gaps, Ctrl-C silences it | pass |
 | `/dev/input`: keyboard and mouse frames through the CH9350 parser, the keypad, one reader at a time, SW_INT ending a program that makes no system calls and a game holding the LCD; `snake`, `tetris`, `flappy` start, play and end | pass |
-| Efficiency: a video during a USB copy on time (fsd sleeps while the CH376 works), a program killed during a copy exits cleanly, audio interrupt latency under `ps`/`/proc` | pass (13 us) |
+| Efficiency: a video during a USB copy on time (fsd sleeps while the CH376 works), a program killed during a copy exits cleanly, audio interrupt latency under `ps`/`/proc` | pass (16 us) |
 | Review fixes (R24-R35): two tasks sharing `/dev/audio`, cut-short NNV files, the last frame's time, `mv` into a directory, out-of-range `kill`, 0-byte reads, `ed`'s last line, flash dumps during writes, a `/usb` file open across the CH376 bench | pass |
 | Review fixes: background redirections, memory of killed programs, concurrent terminal output, DHCP lease end, same-file `cp`/`mv`, `nc` both ways with back-pressure (32 KiB) | pass |
 | littlefs write / read (32 KiB) | 37-50 KiB/s / 256 KiB/s |
 | Console: banner, typing, line editing, clear, scrolling, shell restart after `exit` | pass |
 | Two telnet sessions: one runs `sleep 2`, the other answers | in 4 ms |
 | Line editing, Ctrl-C, Ctrl-D, three sessions, log-out and reconnect, heap leak checks | pass |
-| W5500 send / receive (SPI 12.5 MHz, 4 KiB socket buffer) | 559 KiB/s / 582 KiB/s, verified byte by byte |
+| W5500 send / receive (128 KiB, SPI 12.5 MHz, 4 KiB socket buffer) | 452 KiB/s / 510 KiB/s, verified byte by byte |
 | CH376S raw write / read 256 KiB (SPI 12.5 MHz) | 114 kB/s / 230 kB/s, 0 errors |
 | Preemption: worst lateness of a 10 ms ticker with the CPU saturated | 0 ms |
 | Round-robin between two equal-priority CPU hogs | 500 / 500 ms |
 | Stack overflow detection, HardFault capture, crash report kept after reboot, watchdog reset | pass |
-| Free RAM floor: heap free while `free` runs with the console shell (and its 512 B scrollback) and one telnet session | 5248 B (test limit 5200 B) |
-| Code size / static RAM including crash records / main stack / heap | 99.2 KiB / 2.8 KiB / 512 B / 12.7 KiB |
-| APROM for program code / writing a new program / RAM `hello` needs besides its stack | 28.5 KiB / 20 ms per 512 B page / 24 B |
+| Free RAM floor: heap free while `free` runs with the console shell (and its 512 B scrollback) and one telnet session | 5216 B (test limit 5200 B) |
+| Code size / static RAM including crash records / main stack / heap | 102.9 KiB / 2.8 KiB / 512 B / 12.7 KiB |
+| APROM for program code / writing a new program / RAM `hello` needs besides its stack | 25.0 KiB / 20 ms per 512 B page / 24 B |
 
-Host tests: 7708 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder, the sound ring's ADPCM blocks, the APROM slots on a simulated flash, the console's scrollback, URL resolution against RFC 3986's examples, SPI1 with a stuck controller, `mknxe` on damaged ELF files and `/dev/input`'s events), plus 80 243
-date conversions compared with the host C library.
+Host tests: 10534 checks pass (including littlefs on a RAM flash, usbfs against a CH376S model, the NNV decoder against the encoder, the sound ring's ADPCM blocks, the APROM slots on a simulated flash, the console's scrollback, URL resolution against RFC 3986's examples, SPI1 with a stuck controller, `mknxe` on damaged ELF files, `/dev/input`'s events, terminal cancellation, ICMP sockets, binary printf and network commands), plus 80 243
+date conversions compared with the host C library, 52 shell integration cases
+and 6 remote-server tests. Fault models verify that a failed nested-script rewind
+preserves the parent and USB handles stay invalid after 126 reconnects,
+including seeks. Regression cases also cover full terminal input buffers,
+redirection write-back failures and truncated remote input events.
 
 ## Hardware
 
@@ -175,6 +193,7 @@ Requires `clang`, `ld.lld`, `llvm-objcopy`, Python 3 and an OpenOCD (0.12) with 
 ```sh
 make              # build/nnnix.elf, build/nnnix.bin, and the programs for /bin: build/bin/*.nxe
 make host-test    # unit tests on the build machine
+make size         # section sizes, firmware bytes, XIP room and NXE slot requirements
 make flash        # program APROM through Nu-Link (APROM only; CONFIG and LDROM are never touched)
 make test         # build the SDK examples, flash, on-target tests (needs sudo for a network namespace)
 make -C sdk       # loadable programs: sdk/build/*.nxe (see sdk/README.md)
@@ -188,6 +207,10 @@ sudo python3 tools/nnshare.py on   # internet for the board through this compute
 sudo python3 tools/nncp.py --iface eth1 put local.bin /home/local.bin
 sudo python3 tools/nncp.py --iface eth1 get /home/local.bin copy.bin
 ```
+
+`make` uses `-Oz` for the kernel; NXE programs and the LDROM bootloader keep `-Os`.
+Use `make OPT=-Os` to compare; switching `OPT` rebuilds all kernel objects automatically.
+`python3 tools/nnsize.py --group remote,wget,ed` reports a chosen set of program slots.
 
 `make test` needs a USB Ethernet adapter cabled straight to the W5500. The test moves it into an isolated
 network namespace (198.18.0.1/30; nnnix is 198.18.0.2) and moves it back afterwards. The adapter must have

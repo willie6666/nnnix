@@ -10,7 +10,7 @@
 #define STX(sn)  ((uint8_t)(2u + 4u * (unsigned)(sn)))
 #define SRX(sn)  ((uint8_t)(3u + 4u * (unsigned)(sn)))
 enum { Sn_MR = 0x00, Sn_CR = 0x01, Sn_IR = 0x02, Sn_SR = 0x03, Sn_PORT = 0x04,
-       Sn_RXBUF = 0x1e, Sn_TXBUF = 0x1f, Sn_TX_FSR = 0x20, Sn_TX_WR = 0x24,
+       Sn_PROTO = 0x14, Sn_RXBUF = 0x1e, Sn_TXBUF = 0x1f, Sn_TX_FSR = 0x20, Sn_TX_WR = 0x24,
        Sn_TX_RD = 0x22, Sn_RX_RSR = 0x26, Sn_RX_RD = 0x28, Sn_IMR = 0x2c };
 enum { SIR = 0x0017, SIMR = 0x0018 };
 enum { CR_OPEN = 0x01, CR_LISTEN = 0x02, CR_CONNECT = 0x04, CR_DISCON = 0x08, CR_CLOSE = 0x10,
@@ -164,9 +164,12 @@ int w5500_open(int sn, uint8_t mode, uint16_t port)
     command(sn, CR_CLOSE);
     w8(Sn_MR, SREG(sn), mode);
     w16(Sn_PORT, SREG(sn), port);
+    /* WIZnet W5500 IPRAW application note v1.1: Sn_PROTO is 0x14. */
+    if (mode == W5500_MODE_ICMP && w8(Sn_PROTO, SREG(sn), 1)) return -1;
     reset_state(sn);
     command(sn, CR_OPEN);
-    uint8_t want = (mode & 0x0fu) == W5500_MODE_UDP ? W5500_SOCK_UDP : W5500_SOCK_INIT;
+    uint8_t want = (mode & 0x0fu) == W5500_MODE_UDP ? W5500_SOCK_UDP :
+                   (mode & 0x0fu) == W5500_MODE_ICMP ? W5500_SOCK_IPRAW : W5500_SOCK_INIT;
     return r8(Sn_SR, SREG(sn)) == want ? 0 : -1;
 }
 
@@ -204,7 +207,7 @@ uint8_t w5500_status(int sn) { return r8(Sn_SR, SREG(sn)); }
 int w5500_can_send(int sn)
 {
     uint8_t sr = w5500_status(sn);
-    return sr == W5500_SOCK_ESTABLISHED || sr == W5500_SOCK_CLOSE_WAIT || sr == W5500_SOCK_UDP;
+    return sr == W5500_SOCK_ESTABLISHED || sr == W5500_SOCK_CLOSE_WAIT || sr == W5500_SOCK_UDP || sr == W5500_SOCK_IPRAW;
 }
 
 void w5500_peer(int sn, uint8_t ip[4], uint16_t *port)

@@ -18,6 +18,7 @@ static uint8_t rx[512];
 static uint32_t rd, wr, reopens;
 static int fail_recv = -1, fail_skip;   /* fail_recv: which recv call fails (0: the next), -1 none */
 static uint16_t port = 5353;
+static uint8_t active_mode = W5500_MODE_UDP;
 
 static void datagram(const uint8_t ip[4], uint16_t from, const char *data)
 {
@@ -48,10 +49,10 @@ int w5500_skip(int sn, uint16_t n)
     rd += n;
     return 0;
 }
-int w5500_open(int sn, uint8_t mode, uint16_t p) { (void)sn; (void)mode; port = p; rd = wr = 0; reopens++; return 0; }
-uint8_t w5500_status(int sn) { (void)sn; return W5500_SOCK_UDP; }
+int w5500_open(int sn, uint8_t mode, uint16_t p) { (void)sn; active_mode = mode; port = p; rd = wr = 0; reopens++; return 0; }
+uint8_t w5500_status(int sn) { (void)sn; return active_mode == W5500_MODE_ICMP ? W5500_SOCK_IPRAW : W5500_SOCK_UDP; }
 uint16_t w5500_port(int sn) { (void)sn; return port; }
-uint8_t w5500_mode(int sn) { (void)sn; return W5500_MODE_UDP; }
+uint8_t w5500_mode(int sn) { (void)sn; return active_mode; }
 void w5500_peer(int sn, uint8_t ip[4], uint16_t *p) { (void)sn; memset(ip, 0, 4); *p = 0; }
 uint16_t w5500_tx_room(int sn) { (void)sn; return 0; }
 int w5500_wait(int sn, uint32_t ms) { (void)sn; (void)ms; return 0; }
@@ -138,5 +139,49 @@ int main(void)
     datagram(peer, 53, "GOOD");
     CHECK_EQ_INT(rd_sock(buf, sizeof buf), 4);
     CHECK(!strcmp(buf, "GOOD"));
+    /* UDP peers must match both IP and source port. */
+    datagram(peer, 54, "BAD");
+    CHECK_EQ_INT(rd_sock(buf, sizeof buf), SYS_EAGAIN);
+    datagram(peer, 53, "GOOD");
+    CHECK_EQ_INT(rd_sock(buf, sizeof buf), 4);
+    struct file *f = files[fd];
+    f->mnt->ops->close(f); free(f); files[fd] = 0;
+
+    /* IPRAW uses a six-byte sender/length header, no UDP ports. */
+    fd = sock_create(NN_SOCK_ICMP);
+    CHECK_EQ_INT(fd, 3);
+    CHECK_EQ_INT(sock_create(NN_SOCK_ICMP), SYS_EBUSY);
+    CHECK_EQ_INT(sock_listen(fd, 123), SYS_EINVAL);
+    CHECK_EQ_INT(sock_connect(fd, &a), SYS_EINVAL); /* port must be zero */
+    a.port = 0;
+    CHECK_EQ_INT(sock_connect(fd, &a), 0);
+    CHECK_EQ_INT(active_mode, W5500_MODE_ICMP);
+    struct nn_sockinfo info;
+    CHECK_EQ_INT(sock_info(fd, &info), 0);
+    CHECK_EQ_INT(info.proto, NN_SOCK_ICMP);
+    CHECK_EQ_INT(info.state, NN_SS_IPRAW);
+    static const uint8_t packets[] = {
+        10, 0, 0, 9, 0, 3, 'B', 'A', 'D',
+        198, 18, 0, 1, 0, 4, 'G', 'O', 'O', 'D',
+        198, 18, 0, 1, 0, 2, 'O', 'K'
+    };
+    memcpy(rx, packets, sizeof packets); wr = sizeof packets; rd = 0;
+    CHECK_EQ_INT(rd_sock(buf, 2), 2); /* stranger skipped; tail of GOOD dropped */
+    CHECK(!strcmp(buf, "GO"));
+    CHECK_EQ_INT(rd_sock(buf, sizeof buf), 2);
+    CHECK(!strcmp(buf, "OK"));
+    memcpy(rx, packets + 9, 10); wr = 10; rd = 0;
+    before = reopens; fail_recv = 0;
+    CHECK_EQ_INT(rd_sock(buf, sizeof buf), SYS_EIO);
+    CHECK_EQ_INT(reopens, before + 1);
+    CHECK_EQ_INT(active_mode, W5500_MODE_ICMP); /* SPI recovery preserves ICMP */
+    memcpy(rx, packets + 9, 10); wr = 10; rd = 0; fail_recv = 1;
+    CHECK_EQ_INT(rd_sock(buf, sizeof buf), SYS_EIO);
+    memcpy(rx, packets + 9, 8); wr = 8; rd = 0; /* incomplete datagram */
+    CHECK_EQ_INT(rd_sock(buf, sizeof buf), SYS_EIO);
+    f = files[fd]; f->mnt->ops->close(f); free(f); files[fd] = 0;
+    fd = sock_create(NN_SOCK_ICMP); /* closing releases the global ICMP claim */
+    CHECK_EQ_INT(fd, 3);
+    f = files[fd]; f->mnt->ops->close(f); free(f); files[fd] = 0;
     return check_summary("test_socket");
 }

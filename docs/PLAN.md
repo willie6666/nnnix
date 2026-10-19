@@ -334,7 +334,7 @@ uploaded from the NanoPi land in `/home` (M5a).
 - RTC (R4): the onboard 32.768 kHz crystal starts and the RTC runs from it. It keeps counting through resets and
   firmware updates (verified across reboots within 1 s) but not through power loss; the NUC140 has no backup
   supply. Without the crystal the clock falls back to the system timer. `date` (UTC or the `/etc/tz` offset),
-  `date -s`, `date +%s`; `ntpdate` (SNTP, IP address only).
+  `date -s`, `date +%s`; `ntpdate` (SNTP, IPv4 address or DNS name).
 - `ed`: a line editor core (`user/edcore.c`, 77 host checks) with literal search and substitution, sized for the
   21x8 LCD (`z` pages 7 lines); the buffer is one heap block that grows in 256-byte steps.
 - Network configuration: the interface starts with the static test address so the board is reachable before
@@ -788,7 +788,7 @@ the firmware, and only data, bss and the stack take RAM.
 
 ### `wget` and `host` (2026-10-18)
 
-- `bin/dns.c`: a stub resolver (RFC 1035) for programs: one A question with recursion desired, over UDP to
+- `lib/dns.c`: a shared stub resolver (RFC 1035) for programs: one A question with recursion desired, over UDP to
   the configured DNS server, three tries of 2 s, compression pointers and CNAME chains in the answer.
   Also the command `host NAME`.
 - `bin/wget.c`: `wget [-q] [-S] [-O FILE] URL` over HTTP/1.0 with `Connection: close`; the body ends at
@@ -965,11 +965,77 @@ firmware's fonts, handed to programs in `nn_lib` version 2 (`font3x5`, `font5x7`
 
 ### The computer's screen on the LCD: `remote`, `nnscreen.py`, `nninput.py` (2026-10-19)
 
+- Connection direction updated: the computer runs `python3 tools/nnremote.py PORT`
+  first; `remote [-v] IP PORT` on the board initiates TCP, with a 10 s connection
+  timeout. The server starts `nnscreen.py` and `nninput.py` after accepting, stops
+  both at disconnect (releasing keys), and accepts another board connection.
+  `--bind IP` limits the local listening address and `--once` ends after one
+  session. The wire format is unchanged. Host tests cover the board's client
+  setup, validation, timeout/cancel, fragmented frames and input, and the host
+  server's duplex transport, reconnection, child failure and shutdown cleanup.
+  Validation: `make host-test` passed (116 new board-client checks and five
+  server tests); the on-target input suite passed, including six remote input
+  events and a truncated stream. A real GNOME session through `nnremote.py`
+  on port 4321 showed 15 frames / 1039 bytes, exited with status 0 on both
+  ends, and restored the board's free heap. `/bin/remote` was installed over
+  HTTP; the previous program is backed up in `build/remote-before-client.nxe`.
+
+- Pointer-lock support: board keypad **1** toggles absolute desktop motion and
+  relative mouse deltas (`NotifyPointerMotionRelative`, signature `(dd)`,
+  verified against the running Mutter and its upstream D-Bus XML). Relative
+  mode hides the synthetic arrow, shows **R** at the LCD's top right, and
+  centres the zoom on the monitor; normal pointer position is remembered.
+  **2 / 8 / 5** still zoom and **SW_INT** still exits. `nnremote.py PORT
+  --relative` starts each connection in relative mode. This is entirely in
+  the host scripts; `/bin/remote` already forwards keypad events. Restart a
+  running host server and reconnect to load the changes.
+  Validation: full `make host-test` passed, including 15 new screen/input
+  checks (46 total) and the server option propagation test. A native Wayland
+  SDL window with relative mode enabled received all ten injected `(20, -10)`
+  moves while locked, and switching back to absolute mode and EOF cleanup
+  succeeded. Existing live board remote was preserved; this lock test fed
+  the same eight-byte events directly to `nninput.py`, not through the board.
+
+- Remote startup keyboard fix: reproduced Mutter's `Invalid key event` by
+  sending Enter-up before this input session had pressed any key. This can
+  happen when the board acquires `/dev/input` before the Enter that started
+  `remote` is released. `nninput.py` now filters unmatched releases and
+  duplicate transitions, and records held keys only after successful replay.
+  Cleanup attempts all releases even if one fails; real input errors return
+  status 1 instead of the previous misleading status 0. Full host tests pass
+  (54 screen/input checks and six server tests). A real GNOME TCP session
+  received initial Enter/Shift releases, a normal Shift pair, duplicates and
+  both mouse-mode switches without an error, and streamed 684 bytes of NNV.
+
+- Fullscreen capture fix: on the M6's GNOME 46, a fullscreen YouTube video
+  stopped updating the old shared-memory capture after the cursor/controls
+  hid. A simultaneous comparison recorded zero old-source image changes for
+  roughly ten seconds while the DMA-BUF source kept changing every interval.
+  `Frames` now requests linear BGRx DMA-BUF and averages/converts it on the CPU
+  after copying/mapping. The original `videoscale` pipeline cannot retain that
+  memory feature across its resize, so keeping it before the sink would
+  negotiate away the direct-scanout-capable path. Preview zoom still changes
+  at runtime; an unsupported/unmappable DMA-BUF falls back once to the old
+  pipeline. True capture errors now exit with status 1.
+  Validation: 15 seconds of real fullscreen Bad Apple capture continuously
+  changed every interval without pointer movement; a separate old/new source
+  comparison is in `build/fullscreen-comparison.json`. Host screen/input tests
+  now have 62 checks, including colour conversion, averaging, padded rows,
+  small scales and both negotiation/mapping fallback paths; full host tests
+  passed. Source references:
+  [Mutter's direct-scanout monitor capture](https://github.com/GNOME/mutter/blob/gnome-46/src/backends/meta-screen-cast-monitor-stream-src.c)
+  and [PipeWire 1.0.5's copy/keepalive implementation](https://github.com/PipeWire/pipewire/blob/1.0.5/src/gst/gstpipewiresrc.c).
+  A final real board/client run through `nnremote.py` on port 4321 used DMA-BUF
+  without fallback, decoded two frames / 885 bytes, exited with status 0 on
+  both ends and restored the board's free heap. A capture-only check after
+  optimising the averaging read 29 frames in three seconds, about one M6 CPU
+  core; that figure is not the old software path's 45% CPU measurement.
+
 - The board side was first `cat /dev/input | nc -l 1234 | play`: five tasks with the shell, too little RAM
   left to even start the diag service's worker, and `cat` stays blocked in `/dev/input` (holding the
   keyboard) after the stream ends, until a key gets it `EPIPE`. Then `nc -i` (the events sent from nc's own
   receive loop); replaced, on request, by a program of its own: `remote` (`bin/remote.c`, 2.2 KiB of text
-  in APROM), which listens, decodes the stream a piece at a time into its one frame for `/dev/lcd`, and
+  in APROM), which originally listened, decodes the stream a piece at a time into its one frame for `/dev/lcd`, and
   polls `/dev/input` with `O_NONBLOCK` between socket reads (every 10 ms while nothing arrives), sending
   the events back on the same connection. One task and no pipe: about 1 KiB more free than `nc -l | play`.
 - `play` treats a header with no time per frame (and a frame count other than 1) as a live stream: each
@@ -1070,3 +1136,243 @@ Repository: <https://github.com/willie6666/nnnix>; at least one commit and tag p
 | The LIN transceiver pulls PB4 low again | Keep the verified LIN normal-idle setup in arch initialisation |
 | A bad flash image stops the board from booting | The original APROM is backed up; only M7 touches CONFIG/LDROM, and only with consent |
 | Keyboard input cannot be automated | Automated tests use telnet; keyboard parsing is unit tested with recorded CH9350 frames |
+
+### Network command additions (2026-10-19)
+
+- `bin/ping.c`: ICMP Echo with IPv4/DNS, `-c COUNT`, `-W SECONDS`, Ctrl-C,
+  sequence/payload/checksum validation, millisecond RTT and loss statistics.
+- W5500 IPRAW ICMP uses Sn_PROTO=1 at 0x14, mode 3, state 0x32, six-byte RX
+  header. The socket layer shares UDP datagram handling, including SPI recovery
+  and peer filtering; only one ICMP socket is allowed. Closing restores the
+  chip's hardware echo responder (disabled while IPRAW ICMP is open).
+- Resolver moved from `bin/dns.c` to `lib/dns.c`; `bin/host.c`, `wget`, `ping`
+  and built-in `ntpdate` share it. NTP's source and nonce checks are preserved.
+- Host regressions cover forged/stale/truncated ICMP, DNS failure/cancellation,
+  numeric-IP lookup bypass, NTP domain resolution and forged originate times.
+- Verified on NUC140: numeric and CNAME-based ping (11-13 ms RTT to the
+  NanoPi), NTP via DNS after forged replies, NXDOMAIN, timeout, Ctrl-C (130),
+  a second ping reporting busy, netstat IPRAW, host/wget regressions, and
+  hardware echo replies after close. All heap blocks were reclaimed; observed
+  ping stack use was 640/1024 B. Firmware 106244 B, ping NXE 2688 B.
+
+### Script control flow (2026-10-19)
+
+- `user/shflow.c`: eight bounded control frames shared across up to three
+  script files. Supports if/then/elif/else/fi, while/do/done, break/continue.
+  Keywords occupy separate lines; headers may end in `; then` or `; do`.
+  Raw reserved words are handled before expansion, so skipped branches have no
+  variable, redirection or source side effects. Conditions use command status.
+- Loop conditions are reread with lseek, preserving the 64-byte script buffer
+  semantics and re-expanding variables on every iteration. No AST or whole
+  script in RAM. Control state is 100 B while scripting; a shell grows by 8 B.
+  Script scopes cannot close/break caller blocks. Structural errors stop that
+  file; Ctrl-C (including from a builtin or child) unwinds the script chain.
+- `user/shtest.c`: true/false, test/[, string and signed 32-bit integer comparisons,
+  file predicates and negation. `inc NAME [AMOUNT]` uses shell variables and
+  checks overflow without modifying the old value.
+- Execution reuses the consumed source line for executable paths, saving 64 B
+  of stack. NSH_STACK remains 1152 B; observed peak 928 B, with the 128 B
+  red zone intact. Firmware 110744 B; 19.5 KiB APROM remains for program text.
+- Host tests run the actual shell, parser and buffered reader against host files
+  (28 cases, including boot scripts, memory/FD cleanup, CRLF/no-final-newline,
+  nesting limits, interrupted loops, oversized/binary lines and seek failures). The existing full
+  host suite also passes. On-board checks cover branches, loops, sourced files,
+  skipped side effects, a pipeline/ICMP/DNS command as a condition, bounds and
+  error handling. A concurrent shell answered in 6 ms; Ctrl-C took 8 ms; all
+  temporary allocations were reclaimed.
+- Ready-to-run examples: `examples/scripts/counter.sh` and `netcheck.sh`; the
+  development board has copies under `/home/nsh-examples/`.
+
+### Positional script arguments and LCD example (2026-10-19)
+
+- Scripts accept `sh FILE ARG...` (also source/.), up to nine arguments.
+  `$0` is the path, `$1`-`$9` the arguments, `$#` the remaining count.
+  Standalone `"$@"` forwards the list without splitting spaces or losing empty
+  strings; metacharacters remain data. Braced forms work too. `shift [N]`
+  validates bounds and does not alter a caller's list.
+- Every invocation owns a packed copy of its arguments. Copies survive parser
+  cleanup and are released on EOF, exit, structural error and Ctrl-C. Nested
+  calls restore the caller's list; no implicit inheritance on source without
+  arguments. The interactive shell adds 8 B; script allocations depend on the
+  path and arguments, not a fixed extra word buffer.
+- The initial `examples/scripts/lcd-argv.sh` called `lcd -- "$@"` (replaced by
+  the direct shell primitives below). Installed
+  on the development board as `/home/nsh-examples/lcd-argv.sh`. `bin/lcd.c` uses
+  the firmware's ASCII font, one argument per row, wrapping at 21 columns;
+  `-t` allows a timed display, otherwise Ctrl-C/SW_INT ends it. It frees the
+  1024-byte drawing buffer after writing, while still owning `/dev/lcd`.
+- Host checks: parser 133, LCD rendering/lifetime 1014, shell integration 36
+  cases, with the full previous suite passing. On-board checks cover positional
+  scalars, forwarding spaces/empty values/metacharacters, nested shift scope,
+  all nine arguments, the actual LCD script, Ctrl-C/SW_INT, busy ownership,
+  console restoration and heap recovery. Observed shell stack peak 952/1152 B,
+  LCD program 592/1024 B. Firmware 111820 B; 18.5 KiB APROM for loaded code.
+
+### Direct LCD primitives in shell scripts (2026-10-19)
+
+- `lcd open`, `lcd clear`, `lcd text COL ROW TEXT` and `lcd close` are shell
+  built-ins. They use the existing 5x7 font in 21x8 cells and stream small
+  writes to `/dev/lcd`; there is no loaded executable, child task, extra stack
+  or 1024-byte drawing buffer. Session state is two bytes. Script descriptors
+  and flow bases live beside the active script's arguments, and bounded
+  indices use bytes; the shell allocation is 16 B smaller than before this
+  feature (24 B smaller than its first implementation).
+- The script that first claims the display owns its lifetime. EOF, exit,
+  structural error and Ctrl-C close it and restore the terminal. Nested scripts
+  can draw into a caller's session without prematurely releasing it. At the
+  prompt a session stays open until `lcd close` or logout. Other LCD owners
+  get `busy`; invalid coordinates or text that exceeds one row return 2 before
+  changing the display. These stateful commands cannot run as jobs/pipelines.
+- Both `lcd-argv.sh` and `lcd-counter.sh` now use only built-ins, and their
+  updated copies are installed under `/home/nsh-examples/`. The argument
+  example shows up to eight arguments for five seconds. The optional old text
+  program remains callable explicitly as `/bin/lcd`, with its wrapping/holding
+  behaviour; the examples do not use it.
+- The full host suite passes; 49 shell integration scenarios include exact
+  glyph pixels, placement, padding, UTF-8 replacements, short writes, invalid
+  input, I/O failures, ownership, scope and cleanup. Thirteen focused board
+  checks pass with `/bin/lcd` temporarily absent; ten checks of the optional
+  program also pass. Nine keyboard-console checks cover the installed script,
+  direct commands, display release, stack margin, RAM floor and resource recovery.
+- Firmware 112664 B, CRC a177f9c3; 17.5 KiB APROM remains for program code.
+  Observed shell peaks: telnet 896/1152 B, LCD keyboard 704/1152 B. Heap free
+  after cleanup is 7352 B with one telnet shell; fixed data/BSS
+  remains 2880 B. Previous firmware is backed up in
+  `build/nnnix-before-shlcd.bin` (111820 B, CRC 1961d4a9).
+  With the LCD shell and one telnet session, `free` reports 5208 B, above the
+  existing 5200 B regression threshold.
+
+### Cancel a built-in LCD session at the prompt (2026-10-19)
+
+- The earlier LCD checks missed the interactive case: after `lcd text 0 0
+  test` returned, Ctrl-C only cancelled line editing; SW_INT tried to kill the
+  protected shell and failed. The shell now closes its LCD session on a
+  terminal-read interruption or foreground status 130, and unwinds all nested
+  scripts even when the display was opened earlier at the prompt.
+- SW_INT still ends loaded programs. For a protected LCD/input owner with a
+  terminal it instead requests a terminal interrupt. A pending flag bypasses
+  full type-ahead buffers, clears an unfinished line/escape sequence, and is
+  consumed by the reader or foreground poll. Normal bounded reads/checks
+  handle it; unrelated waits are not aborted underneath child cleanup. The
+  prompt notices within one second. The login survives, with status 130.
+- Full host suite passes: 28 new terminal-I/O checks and 52 shell scenarios.
+  Board: 27 telnet/LCD-program checks plus 8 keyboard-console checks pass,
+  including the exact direct command followed by Ctrl-C or SW_INT, a sleeping
+  nested script interrupted with SW_INT, partial-line cancellation, restored
+  ownership, a surviving shell, stack margin and complete resource recovery.
+- Installed firmware: 113024 B, CRC 88e7a9d8. Fixed data/BSS remains 2880 B;
+  the terminal flag fits existing padding. Free heap stays 7352 B with one
+  telnet shell, 5208 B with the LCD and telnet shells; observed shell peaks
+  904/1152 B (telnet) and 680/1152 B (keyboard). Previous firmware is saved as
+  `build/nnnix-before-lcd-cancel.bin` (112664 B, CRC a177f9c3).
+
+### Binary printf and removal of the LCD command (2026-10-19)
+
+- `printf FORMAT [ARG...]` is now a stateless built-in. Formats and `%b`
+  arguments decode hex/octal and common control escapes, including NUL.
+  `%B` is an explicit numeric-byte extension (0-255, decimal or hexadecimal).
+  `%s`, `%c`, `%d`/`%i`, `%u`, `%x`/`%X` and `%%` are also supported; the
+  format is reused for remaining arguments. Widths/flags/floats are rejected.
+  Validation covers all repetitions before output. It streams through 32 B
+  without allocating; invalid input returns 2, I/O failure 1, cancellation
+  130. Redirection still opens/truncates before the command validates input.
+- Removed the `lcd` built-in, its session state, `user/shlcd.*`, `bin/lcd.c`,
+  the program build/test targets, and the old LCD text/counter examples.
+  `/bin/lcd` and old copies on the development board are removed. Program
+  installers discard stale lcd NXEs and remove any previously installed
+  command. The raw `/dev/lcd` ABI and the LCD driver are unchanged.
+- `raw-box.sh` now calculates a filled 80x32 rectangle itself using nested
+  `if`/`while` and binary printf; it batches 32 bytes per append to a small
+  generated file, then copies it to `/dev/lcd` and waits on `/dev/tty`.
+  No precomputed asset is needed. The board takes about nine seconds to
+  generate the frame. `argv.sh` demonstrates quoted argument forwarding.
+- `cat` now returns 130 on interrupted reads, stops before any subsequent
+  file, and does not write an error message into the pixel stream. The shell
+  therefore unwinds the whole script on Ctrl-C/SW_INT while the device closes
+  normally. EOF remains a successful exit.
+- Full host suite passes: 1751 printf checks (all byte values, NULs, format
+  reuse, bounds, validation before output, short/zero/failed writes and
+  cancellation), 44 shell cases with the actual file commands, plus existing
+  checks. The generated bitmap is compared byte for byte on host and board.
+  Board: 17 binary/pipeline/removal/cancellation checks and 8 keyboard checks
+  pass. Both terminal types retain the login and reclaim all resources.
+- Installed firmware 113360 B, CRC 40890e0b; fixed data/BSS 2880 B, heap
+  12992 B. Free heap remains 7352 B with one telnet shell and 5208 B with LCD
+  and telnet shells. Observed shell peaks 936/1152 B (telnet generator) and
+  948/1152 B (keyboard generator). 17 KiB APROM remains for loaded programs.
+  Previous firmware and removed NXE are backed up in
+  `build/nnnix-before-printf.bin` and `build/removed-lcd.nxe`.
+
+
+### Review R67/R68 and APROM capacity (2026-10-19)
+
+- `push_script` checks the seek that returns buffered bytes to its parent.
+  Failure closes the new file and frees its arguments, returns 1, and keeps
+  the parent's buffer and control state intact. Three new integration cases
+  cover failure/retry inside a loop, `sh`/`.` and unbuffered reads.
+- Module supervision latches every confirmed CH376/rail loss. fsd consumes
+  that event under the CH376 lock and permanently invalidates all currently
+  open USB handles, including inactive files and directories. A reused
+  generation cannot revive one. Close and diagnostic release consume the
+  event before any write-back; dirty handles retain EIO. A diagnostic reset
+  without media loss still preserves handles (R35).
+- The CH376 model has 151 checks; the new supervisor model has 391. They
+  cover 126 reconnects, no filesystem activity during a full generation
+  wrap, stale reads/writes/listings, close/release after loss, and deferred
+  probes while fsd owns the chip. The host suite passes 10474 checks plus
+  80243 date conversions, 47 shell cases and 6 remote-server cases.
+- Network built-ins use the existing shared `dns_parse_ip`, preserving the
+  original parser's accepted inputs. Kernel builds default to `-Oz`; NXE
+  programs and LDROM keep `-Os`. `make OPT=-Os` provides a comparison and
+  changing OPT rebuilds every kernel object. No LTO or command removal.
+- `make size` now reports firmware bytes, page-aligned XIP capacity, all
+  NXE slot sizes and selected combinations. Custom groups are available
+  through `python3 tools/nnsize.py --group remote,wget,ed`.
+- Original firmware: 113360 B. Fixes plus parser consolidation with `-Os`:
+  113376 B. Final `-Oz`: 104968 B, CRC 83380b43; 8392 B smaller than the
+  original. XIP increases from 17408 B (17 KiB) to 25600 B (25 KiB).
+  All 14 programs would need 40960 B, so cache eviction remains necessary.
+- Board: 60 main checks and 15 supplemental checks pass. This covers
+  scheduler preemption/fairness, SDK/SVC calls, XIP relocation/full-cache/
+  RAM fallback/reboot persistence, network CRCs, USB programs and nested
+  scripts, audio/video during USB copies, input/remote, binary printf, and
+  LCD scripts on both terminal types with Ctrl-C/SW_INT/EOF. Input tests
+  inject CH9350 frames and console/keypad events through the diagnostic API.
+  The 126 disconnects and failing seek are host fault models, not physical
+  power cycling. The full destructive/fault-injection suite was not run.
+- Measured heap 13000 B; one telnet shell leaves 7360 B, LCD plus telnet
+  leaves 5216 B. Observed shell peaks: 976/1152 B (nested USB script on
+  telnet), 864/1152 B (LCD bitmap script); fsd 1232/1664 B, kd 612/1024 B,
+  MSP 264/512 B. Saturated 10 ms ticker: 0 ms late; CPU hogs 500/500 ms;
+  audio interrupt latency under ps/proc: 16 us. No fault, UART errors or
+  SPI timeouts appeared. Previous firmware: `build/review-before-fixes-Os.bin`.
+
+### Project review R69–R74 (2026-10-20)
+
+- TTY continues looking for Ctrl-C after its 16-byte type-ahead fills, with
+  bounded work per poll. Overflow clears pending input through the next line
+  boundary; truncated commands cannot execute. Ctrl-C also escapes incomplete
+  ANSI sequences. A key arriving with SW_INT is kept for the next prompt.
+- `jobs`, `kill` and `wait` honor redirections before doing their work. A
+  redirected built-in's final close error changes success to status 1 and
+  reports on stderr; existing errors and status 130 survive. Built-ins without
+  redirection avoid two redundant descriptor-reset system calls.
+- Stale USB handles reject all seek modes, including directory seeks, after
+  media loss or generation wrap. The USB model now has 161 checks.
+- `nninput` rejects a partial final event while still releasing held input
+  and cleaning up the desktop session. Screen/input host tests have 86 checks.
+- TTY poll distinguishes an empty queue from hang-up, so telnet disconnect
+  and `console=off` cancel foreground scripts. Telnet checks connection state
+  in its existing 50 ms daemon poll rather than every script tty poll.
+- The scheduler applies the existing safe saved-frame exit to killed loaded
+  programs even without another system call. Kernel PCs remain excluded so
+  in-flight operations release their locks. Added board regressions for kill
+  and Ctrl-C on `keys spin`; disconnect tests verify program/shell/heap cleanup.
+- Host: 10534 checks plus 80243 date conversions, 52 shell integration cases,
+  6 remote-server cases. Board: 62 main, 18 cancellation/hang-up and 15
+  supplemental checks pass. The destructive reset/fault suite was not rerun.
+- Installed image 105336 B, CRC 6894e079; XIP remains 25600 B at 0x19c00,
+  fixed RAM 2872 B, heap 13000 B, measured free heap 7360 B with telnet and
+  5216 B with LCD plus telnet. Details and replayable evidence are in the
+  workspace report `docs/reports/NNNIX_PROJECT_REVIEW_FIXES_2026-10-20.md`
+  (outside this nested repository).

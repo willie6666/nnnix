@@ -20,7 +20,7 @@ echo $?
 start with a letter or underscore and may then contain digits. Double quotes
 allow `$NAME` and `${NAME}` expansion; single quotes preserve literal text.
 `$?` is the previous command's status (0 for success). An unset variable expands
-to an empty string. Expansion stays in one argument, including when unquoted;
+to an empty string. Except for standalone `"$@"`, expansion stays in one argument, including when unquoted;
 there is no field splitting or globbing. A backslash escapes the next character
 outside single quotes. Adjacent quoted and unquoted fragments form one word.
 
@@ -28,11 +28,16 @@ An unquoted `#` at the start of a word begins a comment. `<`, `>` and `>>` may
 touch a word, as in `cat</home/in.txt>/home/out.txt`. Quoted operators are literal
 text. There can be at most ten arguments after the command and four
 redirections. Syntax errors are rejected before files are opened.
+`jobs`, `kill` and `wait` honor redirections too; a failed open prevents the
+command from running. A failed final close (including USB write-back) makes
+an otherwise successful command return 1 and prints `redirection close failed`
+on standard error. An existing failure or cancellation status is preserved.
 
 The interactive terminal accepts up to 94 characters per line. Script lines
 may contain up to 127 bytes; expanded words share a 192-byte buffer. Excess
 arguments, unclosed quotes and oversized expansions produce an error rather
-than executing a partial command. Semicolon command lists are not supported.
+than executing a partial command. General semicolon command lists are not supported;
+script conditions may end in `; then` or `; do` as shown below.
 
 ## Pipes, background jobs and Ctrl-C
 
@@ -59,15 +64,27 @@ still goes to the terminal. `jobs` lists running jobs, `kill %N` stops job N
 (`kill PID` stops any program task), and `wait` waits for all jobs. Finished jobs
 are reported before the next prompt. Logging out stops the session's jobs.
 
-Ctrl-C stops the foreground command or pipeline. Without memory protection a
-program cannot be stopped at an arbitrary point: it leaves at its next system
-call, and sleeping or waiting on a pipe, the terminal or a child ends at once.
+Ctrl-C stops the foreground command or pipeline. A loaded program executing
+its own code can be ended at a saved scheduling point, even if it never makes
+a system call. A task inside kernel code finishes its current kernel operation
+before exiting, so cancellation does not abandon locks. Sleeping or waiting
+on a pipe, the terminal or a child is interrupted.
 Writing to a pipe whose reader has gone also ends the writer, like SIGPIPE.
+Disconnecting telnet or selecting `console=off` also cancels foreground
+scripts and programs before the session and its jobs are reclaimed.
+
+While a command is busy, the terminal buffers up to 16 bytes of type-ahead.
+If this overflows, it clears the buffered input and discards through the next
+CR, LF or Ctrl-D;
+it never executes a truncated command. Ctrl-C is still recognized when the
+buffer is full or an arrow-key escape sequence is incomplete. This small
+type-ahead limit does not change the 94-character interactive line limit.
 
 ## Scripts and boot
 
 ```
 sh /home/setup.sh
+sh /home/nsh-examples/argv.sh hello "two words"
 source /usb/SETUP.SH
 ```
 
@@ -78,6 +95,94 @@ that script and returns to its caller. LF, CRLF and a final line without a
 newline are accepted. An overlong or binary line stops the script without
 executing its truncated prefix. A script invocation itself cannot be redirected;
 individual commands in the script can use redirection.
+
+The reader hands unread buffered bytes back to the parent before starting a
+nested file. If that seek fails, the child does not start: the command returns
+1 and prints `cannot rewind parent script`. The parent's remaining buffered
+commands are preserved.
+
+Pass up to nine positional arguments with `sh FILE ARG...` (also `source` and
+`.`). Each invocation gets its own argument list, including when no arguments
+are supplied; the caller's list is restored when a nested script ends.
+
+| Expansion/command | Meaning |
+| --- | --- |
+| `$0` | Script path as passed to `sh` (at the prompt: `nsh`) |
+| `$1` through `$9` | Positional arguments; a missing argument expands to empty |
+| `$#` | Number of arguments remaining |
+| `"$@"` | All remaining arguments as separate words, preserving spaces and empty arguments |
+| `shift [N]` | Drop the first N arguments; default 1, 0 is allowed |
+
+Braces are also accepted (`${1}`, `${#}`, `"${@}"`). `"$@"` must occupy a whole
+word; embedding it in a prefix/suffix or using it as a redirection target is
+unsupported. With no arguments it adds no words. Other expansions still
+produce a single word. There is no globbing or field splitting. `shift` rejects
+negative, nonnumeric or excessive counts without changing the list; it cannot
+run in a pipeline/background job or outside a script. `$0` never shifts.
+
+`examples/scripts/argv.sh` prints each argument with `printf '%s\n' "$@"`.
+It preserves spaces and empty arguments. Use `sh /home/nsh-examples/argv.sh
+hello "two words"` to try it; the output goes to the calling terminal.
+
+Scripts support `if`/`elif`/`else`/`fi`, `while`/`do`/`done`, `break` and
+`continue`. A condition is a command or pipeline: status 0 is true. Variables
+in a loop's condition and body are expanded again on every iteration.
+
+```
+set COUNT 0
+while [ "$COUNT" -lt 5 ]; do
+    if [ "$COUNT" -eq 2 ]; then
+        echo halfway
+    else
+        echo "count: $COUNT"
+    fi
+    inc COUNT
+    sleep 1
+done
+```
+
+Save this in a text file with `ed`, HTTP PUT or `tools/nncp.py`, then run
+`sh /home/counter.sh`. The repository has ready-to-run examples in
+`examples/scripts/counter.sh` and `examples/scripts/netcheck.sh`. Output goes
+to the calling terminal: run from the LCD shell to display text there.
+
+`then` and `do` can alternatively be on the next line. The other control words
+occupy their own lines (comments and indentation are allowed); `then COMMAND`,
+one-line compound statements, general `;` lists, `&&` and `||` are unsupported.
+Control flow is available in `sh`/`source` files and `/etc/rc`; typing a control
+word at the interactive prompt explains that a script file is required.
+`test`, `[`, `true`, `false` and `inc` also work at the prompt or in pipelines
+(`inc`, like `set`, changes this shell and cannot run in a pipeline/job).
+
+| Condition | Meaning |
+| --- | --- |
+| `[ "$X" = ready ]`, `[ "$X" != ready ]` | String equality/inequality |
+| `[ -n "$X" ]`, `[ -z "$X" ]` | Nonempty/empty string |
+| `[ "$N" -eq 3 ]` | Integer equality; also `-ne`, `-lt`, `-le`, `-gt`, `-ge` |
+| `[ -e /home/config ]` | Path exists |
+| `[ -f /home/config ]`, `[ -d /home ]` | Regular file/directory |
+| `[ -s /home/config ]` | Exists and has nonzero size |
+| `[ ! -e /home/config ]` | Negate a test |
+| `true`, `false` | Always succeed/fail |
+
+Spaces around `[` and `]` are required. `test EXPR` is equivalent to `[ EXPR ]`.
+Tests return 0 for true, 1 for false, 2 for an invalid expression. Quote values
+that may be empty. `inc NAME [AMOUNT]` adds a signed integer (default 1), starting
+an unset/empty variable at zero. For example `inc COUNT -1` decrements it.
+Integers are signed 32-bit; invalid values and overflow are rejected without
+changing the variable. There is no arithmetic expansion or automatic `NAME=VALUE`
+assignment; continue to use `set NAME VALUE`.
+
+Control nesting is limited to eight blocks across the three nested script
+files. Loops seek back to their condition in the file; the whole script is
+never loaded into RAM. A sourced file cannot close or break a caller's block.
+`break`/`continue` affect the innermost loop in that file and take no argument.
+Structural errors and missing `fi`/`done` stop the current script with status 2.
+Ctrl-C stops the entire script chain with status 130, including a loop of only
+`true`; each iteration yields to other tasks. A completed `if` returns its last
+executed body command's status (0 if no branch ran), and a completed `while`
+returns its last body status (0 if no iteration ran). Conditions can use commands
+such as `ping`, but cannot invoke `sh`/`source` or `exit`/`logout`.
 
 The optional `/etc/rc` runs once at boot, before starting the LCD and telnet
 shells. Its unredirected output goes to the serial kernel log. It is absent by
@@ -206,7 +311,7 @@ date                      local time, or UTC without /etc/tz
 date -u                   UTC
 date +%s                  seconds since 1970-01-01 UTC
 date -s '2026-10-16 14:30[:00]'   set the clock (local time)
-ntpdate 198.18.0.1        set the clock from an (S)NTP server
+ntpdate pool.ntp.org      set the clock from an (S)NTP server (name or IP)
 echo +8 > /etc/tz         local offset: +8, -5, +05:30 or +0530
 ```
 
@@ -215,7 +320,7 @@ through resets and firmware updates but not through power loss: the chip has no
 backup supply, so after power-up the clock starts from its reset value (2005)
 until `date -s` or `ntpdate` sets it. If the crystal does not start within 5 s,
 the kernel log says so and the time is kept with the system timer instead.
-`ntpdate` takes an IP address (`host NAME` looks one up), tries three times
+`ntpdate` takes an IPv4 address or a DNS name, tries three times
 with a 2 s timeout, and steps the clock; it does not slew it. It takes only an
 answer from that server's port 123 that gives back the request's transmit time
 (a server's reply, NTP version 3 or 4, stratum 1-15).
@@ -262,6 +367,26 @@ Socket plan (W5500 buffer per direction): 0 diag (4 KiB), 1-3 telnet (2 KiB
 each), 4 HTTP (2 KiB), 5 and 6 for programs such as `nc` and `ntpdate` (2 and
 1 KiB), 7 DHCP (1 KiB). So two `nc`/`ntpdate` commands can run at once.
 
+`ping` is a program in `/bin`:
+
+```
+ping 198.18.0.1                 until Ctrl-C; one request per second
+ping -c 4 example.org           four ICMP Echo requests; IPv4 or DNS name
+ping -c 2 -W 1 198.18.0.1       wait at most one second per reply (default 2)
+```
+
+It checks the reply's checksum, identifier, sequence and payload, and reports
+round-trip time in milliseconds and packet loss. Exit status is 0 if at least
+one reply arrived, 1 on total loss/error, 2 for invalid arguments, 130 on Ctrl-C.
+`-c` accepts 1-65535, `-W` 1-60 seconds. Replies from routers reporting ICMP
+errors currently appear as timeouts. One ICMP socket can be open at a time;
+another `ping` reports busy. It uses one program socket (5 or 6); TCP/UDP can
+use the other. The W5500's IPRAW ICMP mode temporarily disables its automatic
+reply to incoming pings; closing the socket restores it. This is described in
+[WIZnet's IPRAW application note](https://docs.wiznet.io/img/products/w5500/w5500_ap_ipraw_v110e.pdf).
+The SDK exposes it as `NN_SOCK_ICMP`: connect with port 0, read/write whole
+ICMP messages without an IPv4 header; listening is unsupported.
+
 `nc` connects (or waits for one connection) and then copies standard input to
 the socket and the socket to standard output. With the terminal as input it
 runs interactively until the peer closes, Ctrl-D or Ctrl-C; typed lines are
@@ -281,9 +406,14 @@ until the peer closes or Ctrl-C: nothing typed is sent, and no sending task
 takes its 1 KiB. Its messages go to the terminal, never into the data.
 
 To show a GNOME computer's screen on the LCD and work that computer from the
-board's keyboard and mouse, the board runs the program `remote` instead (one
-connection that carries the pictures one way and the input the other; see
-docs/NNV.md, "This computer's screen on the LCD").
+board's keyboard and mouse, first run `python3 tools/nnremote.py PORT` in the
+computer's GNOME desktop session, then `remote COMPUTER-IP PORT` on the board.
+The board connects to the computer's listening TCP port; one connection carries
+the pictures one way and the input the other (see docs/NNV.md,
+"This computer's screen on the LCD").
+The board's keypad **1** toggles absolute desktop / relative game mouse
+motion; **R** on the LCD marks relative mode. **2 / 8 / 5** still zoom, and
+**SW_INT** exits remote. `nnremote.py PORT --relative` starts in relative mode.
 
 A UDP read returns one datagram. On a listening socket its sender becomes the
 destination of the next write, so `nc -u -l PORT` answers whoever spoke last. A
@@ -330,7 +460,8 @@ everything is undone (the log says why, `status` shows it). If a step of the
 undo fails, the record stays with what failed: `status` shows it, `off` tries
 again, and `on` refuses to start until it has.
 
-`host` and `wget` (programs in `/bin`) ask the DNS server of the network
+`host`, `wget`, `ping` and the built-in `ntpdate` share the resolver in
+`lib/dns.c`. They ask the DNS server of the network
 settings (`ifconfig ... dns IP`, or the one DHCP gave) for an A record, over
 UDP, three tries of 2 s; a CNAME in the answer is followed. A dotted address
 needs no lookup. `wget` fetches an `http://` URL:
@@ -361,6 +492,68 @@ Programs use sockets through system calls (`socket`, `connect`, `listen`,
 and `listen` do not wait: programs poll `sockinfo` for the state, which keeps
 Ctrl-C working while they wait.
 
+
+## Binary output and raw LCD pixels
+
+`printf FORMAT [ARG...]` is a shell built-in. It writes bytes to standard
+output, including NUL, and adds no newline. Use single quotes around escapes
+so nsh preserves the backslashes:
+
+```
+printf '\x00\x7f\xff' > /home/bytes.raw
+printf '%B' 0 127 255 >> /home/bytes.raw
+set BYTE 128
+printf '%B' "$BYTE" >> /home/bytes.raw
+printf '%s\n' "$@"
+```
+
+| Conversion | Meaning |
+| --- | --- |
+| `%s` | Literal argument, without interpreting its escapes |
+| `%b` | Argument with the escape sequences below interpreted |
+| `%B` | nsh extension: one numeric byte, 0-255 |
+| `%c` | First byte of the argument; empty/missing emits NUL |
+| `%d`, `%i` | Signed 32-bit decimal number |
+| `%u`, `%x`, `%X` | Unsigned 32-bit decimal/lowercase hex/uppercase hex output |
+| `%%` | A literal percent sign; consumes no argument |
+
+Escapes in the format and `%b` arguments: `\`, `\a`, `\b`, `\f`, `\n`,
+`\r`, `\t`, `\v`, `\xHH` (one or two hex digits), `\0OOO` (up to three
+following octal digits), and `\OOO` (up to three octal digits). `\0` emits NUL.
+Octal values above 255, malformed escapes, unknown conversions, widths,
+flags and floating-point formats are rejected. `%B` and unsigned conversions
+accept decimal or `0x` hexadecimal input; signed conversions accept decimal.
+The format is reused while arguments remain. Missing string arguments are
+empty and missing numeric arguments are zero. A format without conversions
+is written once. Shell variables/arguments remain NUL-terminated strings;
+NUL is created only when printf writes output.
+
+The complete invocation is validated before output: invalid input returns
+2 and writes no data. Opening a redirected output file still happens first,
+so `>` can truncate that file even if validation fails. Write errors return
+1, interruption returns 130. Diagnostics go to stderr. Output is streamed
+through a 32-byte buffer, without a heap allocation, and works in pipelines
+and background jobs.
+
+`/dev/lcd` remains a raw 1024-byte framebuffer. There is no `lcd` command or
+`/bin/lcd`; bytes are pixels, with byte `x + 128*(y/8)` containing pixel (x,y)
+in bit `y%8`. Writing ASCII does not draw a font. The example
+`sh /home/nsh-examples/raw-box.sh` now generates all pixels itself using
+`if`, `while` and `printf '%b'`, batching 32 bytes per append to
+`/home/.nsh-box.raw`. No precomputed bitmap is needed. An optional argument
+chooses a different output file. It then displays the filled rectangle with:
+
+```
+cat /home/.nsh-box.raw /dev/tty > /dev/lcd
+```
+
+Reading the terminal keeps the display open after the frame is copied.
+Ctrl-D on an empty line exits normally; Ctrl-C or SW_INT cancels the script
+with status 130 and restores the terminal, keeping the login alive. The
+small generated bitmap stays for reuse. `cat` also stops immediately on an
+interrupted input, without moving on to another file. The display returns to
+the terminal as soon as its last writing descriptor closes, so a standalone
+`printf '\xff' > /dev/lcd` only flashes. See `examples/scripts/RAW_LCD.md`.
 
 ## The LCD console
 
@@ -437,7 +630,10 @@ use per stack size, also of tasks that have ended.
   as it was.
 - When the USB module loses its power or stops answering, files open on
   `/usb` fail from then on (their data since the last close may be lost);
-  the next use mounts the drive again.
+  the next use mounts the drive again. Old handles remain invalid even after
+  repeated reconnects reuse the module's generation number; reopen the file
+  to use the current drive. A diagnostic remount without a disconnect keeps
+  existing handles valid.
 - At boot a blank flash is formatted. If the flash holds something that does
   not mount (damage, another format), it is left alone and `/` is unavailable;
   `mkfs /` then formats it. `mkfs` refuses while `/` is mounted.
@@ -504,6 +700,11 @@ preempted), so a game that hangs cannot take the board's keyboard and display
 with it. The kernel log says `input: SW_INT: ending pid N`. The keypad and
 SW_INT are read every 20 ms, only while a program holds `/dev/input` or
 `/dev/lcd`.
+
+For a shell writing pixels through `cat ... > /dev/lcd`, SW_INT requests
+a terminal interrupt instead of killing the protected shell. The command
+closes the display and the foreground scripts stop while the login stays
+alive. The log says `input: SW_INT: interrupting pid N`.
 
 `keys` (`sdk/examples/keys.c`) prints the events (Esc ends it).
 

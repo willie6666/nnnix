@@ -9,7 +9,7 @@
  * length is malformed, given twice differently, or in a transfer coding other
  * than chunked is refused. Up to 5 redirects are followed, relative ones
  * resolved against the URL. The exit status is 0 for a 2xx reply saved whole. */
-#include "dns.h"
+#include "../lib/dns.h"
 #include "url.h"
 #include "../user/cmds.h"
 #include "../lib/stdio.h"

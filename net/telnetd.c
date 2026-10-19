@@ -15,13 +15,15 @@
 #define PORT 23
 #define SESSION_STACK NSH_STACK
 #define SESSION_PRIO 5
+#define SESSION_DONE   1u
+#define SESSION_HANGUP 2u
 
 struct session {
     struct tty tty;
     struct telnet tn;
     struct task *task;
     uint8_t sn, rpos, rlen;
-    volatile uint8_t done;
+    volatile uint8_t flags;
     uint8_t rx[32];
 };
 
@@ -33,6 +35,7 @@ static int session_getc(void *ctx, uint32_t timeout_ms)
 {
     struct session *s = ctx;
     for (;;) {
+        if (s->tty.interrupt_pending) return TTY_TIMEOUT;
         while (s->rpos < s->rlen) {
             int c = telnet_rx(&s->tn, s->rx[s->rpos++]);
             if (c >= 0) return c;
@@ -53,9 +56,10 @@ static int session_poll(void *ctx)
             int c = telnet_rx(&s->tn, s->rx[s->rpos++]);
             if (c >= 0) return c;
         }
-        if (!w5500_rx_available(s->sn)) return -1;
+        if (!w5500_rx_available(s->sn))
+            return s->flags & SESSION_HANGUP ? TTY_HANGUP : -1;
         int n = net_recv(s->sn, s->rx, sizeof s->rx, 1);
-        if (n <= 0) return -1;
+        if (n <= 0) return TTY_HANGUP;
         s->rlen = (uint8_t)n;
         s->rpos = 0;
     }
@@ -74,7 +78,7 @@ static void session_main(void *arg)
     struct session *s = arg;
     task_self()->tty = &s->tty;
     nsh_main();
-    s->done = 1;
+    s->flags |= SESSION_DONE;
 }
 
 static void start(int i)
@@ -128,7 +132,12 @@ void telnetd_poll(void)
     for (int i = 0; i < NET_TELNET_SOCKS; ++i) active += sessions[i] != 0;
     for (int i = 0; i < NET_TELNET_SOCKS; ++i) {
         struct session *s = sessions[i];
-        if (s) { if (s->done && (!s->task || s->task->state == TASK_ZOMBIE)) finish(i); }
+        if (s) {
+            if ((s->flags & SESSION_DONE) && (!s->task || s->task->state == TASK_ZOMBIE)) finish(i);
+            /* Check once per daemon poll, not on every foreground tty poll.
+             * Buffered input is still drained before session_poll returns EOF. */
+            else if (w5500_status(s->sn) != W5500_SOCK_ESTABLISHED) s->flags |= SESSION_HANGUP;
+        }
         else if (listener_poll(&listeners[i], (net_services & NN_SVC_TELNETD) && active < max_sessions)) {
             start(i);
             active++;

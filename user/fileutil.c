@@ -120,14 +120,15 @@ int cmd_ls(int argc, char **argv)
 
 int cmd_cat(int argc, char **argv)
 {
-    if (argc == 1) return copy_fd(0, 1) < 0;
+    if (argc == 1) { int e = copy_fd(0, 1); return e == SYS_EINTR ? 130 : e < 0; }
     int rc = 0;
     for (int i = 1; i < argc; ++i) {
         int fd = sys_open(argv[i], O_RDONLY);
         if (fd < 0) { rc = fail("cat", argv[i], fd); continue; }
         int e = copy_fd(fd, 1);
-        if (e < 0) rc = fail("cat", argv[i], e);
         sys_close(fd);
+        if (e == SYS_EINTR) return 130;
+        if (e < 0) rc = fail("cat", argv[i], e);
     }
     return rc;
 }
